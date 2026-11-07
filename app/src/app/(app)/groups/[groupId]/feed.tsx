@@ -48,7 +48,7 @@ function ReviewForm({
     setBusy(true);
     setError(null);
     try {
-      const photoPath = photo ? await uploadEvidencePhoto(photo, item.result.instance_id, userId) : null;
+      const photoPath = photo ? await uploadEvidencePhoto(photo, item.pact.group_id, userId) : null;
       await openReview({
         instanceId: item.result.instance_id,
         subjectUserId: item.result.user_id,
@@ -111,7 +111,8 @@ function FeedCard({
   const isMine = result.user_id === userId;
   const who = isMine ? 'You' : displayName(feed.profiles, result.user_id);
   const label = resultLabel[result.status];
-  const participants = feed.participantsByPact.get(pact.id) ?? [];
+  // voters and challengers are the instance roster (users with a result row), not today's pact members
+  const participants = feed.rosterByInstance.get(instance.id) ?? [];
   const { canAppeal, canChallenge } = reviewActions({
     isMine,
     isParticipant: participants.includes(userId),

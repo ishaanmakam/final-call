@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ReviewKind, ReviewStatus } from '../api/types';
-import { reviewActions, type ReviewActionInput } from './reviews';
+import { reviewActions, reviewPhotoPath, type ReviewActionInput } from './reviews';
 
 const r = (kind: ReviewKind, status: ReviewStatus) => ({ kind, status });
 
@@ -60,5 +60,20 @@ describe('reviewActions', () => {
     expect(reviewActions({ ...base, isMine: false, isParticipant: false, resultStatus: 'success' }).canChallenge).toBe(
       false,
     );
+  });
+});
+
+describe('reviewPhotoPath', () => {
+  // storage policy: (foldername)[1] must be a group the uploader belongs to, [2] must be auth.uid()
+  it('puts the group id first and the uploader second', () => {
+    expect(reviewPhotoPath({ groupId: 'g-1', userId: 'u-1', nowMs: 1700000000000, mimeType: 'image/jpeg' })).toBe(
+      'g-1/u-1/1700000000000.jpg',
+    );
+  });
+
+  it('derives the extension from the mime type, defaulting to jpg', () => {
+    expect(reviewPhotoPath({ groupId: 'g', userId: 'u', nowMs: 1, mimeType: 'image/png' })).toBe('g/u/1.png');
+    expect(reviewPhotoPath({ groupId: 'g', userId: 'u', nowMs: 1, mimeType: null })).toBe('g/u/1.jpg');
+    expect(reviewPhotoPath({ groupId: 'g', userId: 'u', nowMs: 1, mimeType: 'image/heic' })).toBe('g/u/1.heic');
   });
 });

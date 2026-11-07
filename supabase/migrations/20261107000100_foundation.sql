@@ -895,7 +895,8 @@ begin
   if v_uid is null then
     raise exception 'not authenticated' using errcode = '28000';
   end if;
-  perform 1 from public.groups where id = p_group for update;
+  -- NO KEY UPDATE: see GLOBAL LOCK ORDER in 20261107000300
+  perform 1 from public.groups where id = p_group for no key update;
   select role into v_role from public.group_members
    where group_id = p_group and user_id = v_uid and left_at is null;
   if v_role is null then
@@ -904,6 +905,8 @@ begin
 
   -- No dodging a stake: refuse while on the roster of an instance (of this group's pacts) that is
   -- open, or due but not yet opened by the tick. Same roster rule as _instance_participants.
+  -- Paused pacts are not exempt: until the tick voids a due instance, a resume would let the tick
+  -- open it with this user still on its roster (left_at > window_open_at).
   if exists (
     select 1
       from public.pact_instances i
@@ -913,7 +916,7 @@ begin
        and pp.joined_at <= i.window_open_at
        and (pp.left_at is null or pp.left_at > i.window_open_at)
        and (i.status = 'open'
-            or (i.status = 'scheduled' and not p.paused and i.window_open_at <= now() and now() < i.deadline_at))
+            or (i.status = 'scheduled' and i.window_open_at <= now() and now() < i.deadline_at))
   ) then
     raise exception 'cannot leave while a check-in window you are part of is open or awaiting its result'
       using errcode = '23514';

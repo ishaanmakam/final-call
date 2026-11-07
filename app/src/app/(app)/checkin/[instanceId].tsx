@@ -11,7 +11,8 @@ import { Badge, Body, Button, Card, ErrorText, Heading, Loading, QueryState, Scr
 import { useUserId } from '@/lib/auth';
 import type { CheckinAttempt } from '@/lib/checkinQueue';
 import { enqueueCheckin, kickQueue } from '@/lib/checkinQueueRuntime';
-import { attemptFromFix, attemptWithoutFix, ensureForegroundPermission, takeHighAccuracyFix } from '@/lib/location';
+import { captureAttempt } from '@/lib/checkinAttempt';
+import { ensureForegroundPermission, takeHighAccuracyFix } from '@/lib/location';
 import { deviceTimeZone, formatCountdown, formatDateInZone, formatTimeInZone, msUntil, windowState } from '@/lib/time';
 import { useNow } from '@/lib/useNow';
 
@@ -21,7 +22,6 @@ type Phase =
   | { kind: 'sending' }
   | { kind: 'verdict'; row: CheckinRow }
   | { kind: 'queued' }
-  | { kind: 'nofix'; capturedAt: number; reason: string }
   | { kind: 'permission'; blocked: boolean }
   | { kind: 'error'; error: unknown };
 
@@ -39,7 +39,7 @@ function verdictMessage(row: CheckinRow, radiusM: number | undefined): { title: 
     case 'unjudgeable':
       return {
         title: 'GPS too weak to judge',
-        body: `Accuracy was ${acc}. Try again near a window. If nothing better lands, the day counts as unverified, not missed.`,
+        body: `${row.accuracy_m !== null ? `Accuracy was ${acc}.` : 'No position was available.'} Try again near a window. If nothing better lands, the day counts as unverified, not missed.`,
         good: false,
       };
     case 'rejected_simulated':
@@ -54,10 +54,12 @@ export default function CheckInScreen() {
   const now = useNow(1000);
   const qc = useQueryClient();
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
+  // set when the GPS fix failed; the attempt was still sent without coordinates (fail-open)
+  const [fixError, setFixError] = useState<string | null>(null);
 
   if (detail.isPending) return <Loading />;
   if (detail.isError) return <QueryState error={detail.error} onRetry={() => void detail.refetch()} />;
-  const { instance, pact, myPlace, myCheckins, myResult, myFreeze } = detail.data;
+  const { instance, pact, myPlace, judgedPlace, myCheckins, myResult, myFreeze } = detail.data;
 
   const state = windowState(now, instance.window_open_at, instance.deadline_at);
   const finished = ['closed', 'settled', 'voided'].includes(instance.status);
@@ -99,13 +101,12 @@ export default function CheckInScreen() {
       return;
     }
     setPhase({ kind: 'locating' });
-    const tappedAt = Date.now();
-    try {
-      const fix = await takeHighAccuracyFix();
-      await submit(attemptFromFix(instanceId, fix));
-    } catch (e) {
-      setPhase({ kind: 'nofix', capturedAt: tappedAt, reason: e instanceof Error ? e.message : String(e) });
-    }
+    setFixError(null);
+    // Fail-open: a failed or timed-out fix still sends the attempt with null coordinates, stamped with
+    // the tap time, so the server records it as unverified instead of the day counting as missed.
+    const { attempt, fixError: problem } = await captureAttempt(instanceId, takeHighAccuracyFix, Date.now());
+    setFixError(problem);
+    await submit(attempt);
   };
 
   const onFreeze = () =>
@@ -158,16 +159,16 @@ export default function CheckInScreen() {
 
       {!myPlace ? <Body muted>You haven't joined this pact, so there's nothing to check in to.</Body> : null}
       {myFreeze ? <Body muted>You froze this day.</Body> : null}
-      {myPlace && state === 'open' && !finished ? (
+      {judgedPlace && state === 'open' && !finished ? (
         <Body muted>
-          Target: {myPlace.place_label} ({myPlace.place_radius_m} m). Your location is read once, right now, and
-          nowhere else.
+          Target: {judgedPlace.label ?? 'your place'} ({judgedPlace.radiusM} m). Your location is read once, right
+          now, and nowhere else.
         </Body>
       ) : null}
 
       {phase.kind === 'verdict'
         ? (() => {
-            const v = verdictMessage(phase.row, myPlace?.place_radius_m);
+            const v = verdictMessage(phase.row, judgedPlace?.radiusM);
             return (
               <Card style={{ borderColor: v.good ? colors.success : colors.warn }}>
                 <Heading>{v.title}</Heading>
@@ -185,17 +186,14 @@ export default function CheckInScreen() {
           </Body>
         </Card>
       ) : null}
-      {phase.kind === 'nofix' ? (
+      {fixError && !busy ? (
         <Card>
           <Heading>No GPS fix</Heading>
-          <Body>{phase.reason}</Body>
-          <Button title="Try again" onPress={() => void onCheckIn()} />
-          <Button
-            title="Send without location"
-            variant="secondary"
-            accessibilityHint="Records that you tried. It counts as unverified, which never costs you."
-            onPress={() => void submit(attemptWithoutFix(instanceId, phase.capturedAt))}
-          />
+          <Body>
+            {fixError} Your tap was still recorded without a location, so at worst today counts as unverified, which
+            never costs you. Try again for a check-in that counts.
+          </Body>
+          <Button title="Try again" onPress={() => void onCheckIn()} disabled={!canCheckIn} />
         </Card>
       ) : null}
       {phase.kind === 'permission' ? (

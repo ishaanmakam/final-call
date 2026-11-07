@@ -42,7 +42,7 @@ export default function Settings() {
     setSaved(false);
     const v = venmo.trim() === '' ? null : normalizeVenmoUsername(venmo);
     if (venmo.trim() !== '' && v === null) {
-      setError(new Error('Venmo usernames use letters, numbers, - and _ only.'));
+      setError(new Error('Venmo usernames are 5 to 30 letters, numbers, - or _.'));
       return;
     }
     if (name.trim().length === 0) {

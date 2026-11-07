@@ -26,14 +26,14 @@ function NextWindowPlace({ schedule, tz }: { schedule: PlaceSchedule; tz: string
       {nextInstance ? (
         <Body>
           Next window ({at(nextInstance.window_open_at)}) uses{' '}
-          {nextPlace ? `${nextPlace.label} (${nextPlace.radius_m} m)` : 'no place yet'}.
+          {nextPlace ? `${nextPlace.label ?? 'your place'} (${nextPlace.radius_m} m)` : 'no place yet'}.
         </Body>
       ) : (
         <Body>No upcoming window is scheduled yet.</Body>
       )}
       {latestSaved && nextPlace && latestSaved !== nextPlace ? (
         <Body muted>
-          {latestSaved.label} applies to windows opening from {at(latestSaved.effective_from)}.
+          {latestSaved.label ?? 'Your new place'} applies to windows opening from {at(latestSaved.effective_from)}.
         </Body>
       ) : null}
     </Card>
@@ -67,7 +67,7 @@ export default function PlacePicker() {
     if (mine && !spot) {
       setSpot({ lat: mine.place_lat, lng: mine.place_lng, accuracy: null });
       setRadius(mine.place_radius_m);
-      setLabel(mine.place_label);
+      setLabel(mine.place_label ?? '');
     }
   }, [mine, spot]);
 

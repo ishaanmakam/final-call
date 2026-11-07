@@ -91,7 +91,7 @@ Reviews then override: appeal accepted → success (first_success_at = deadline_
 
 **Freeze**: `declared_at < window_open_at`; one per (pact, user, ISO week of the instance's local_date).
 
-**Review**: subject appeals their own `failed`; any other roster member challenges `success` or `unverified`. At most one appeal and one challenge per (instance, subject), ever. Voters = the instance roster except the subject; the opener of a challenge may vote. Majority of votes cast decides (`supports` = true means agree with the opener); ties → rejected. Reviews still open at settlement time → `defaulted`.
+**Review**: subject appeals their own `failed`; any other roster member challenges `success` or `unverified`. At most one appeal and one challenge per (instance, subject), ever. Voters = the instance roster except the subject, limited to current group members; the opener of a challenge may vote. Former members may appeal their own result but not challenge. A settled instance accepts only a challenge of a result that a late tap changed after settlement (`results.decided_at > pact_instances.settled_at`). Majority of votes cast decides (`supports` = true means agree with the opener); ties → rejected. Reviews still open at settlement time → `defaulted`.
 
 **Settlement**: weekly per group, Mondays 12:00 in `settlement_tz`, for the week Mon–Sun just ended (plus a 12h review grace is implied by noon). Steps: default open reviews for instances in the week, apply corrections, mark previous `pending` obligations `superseded` (`marked_paid` ones survive and count as provisionally paid), compute obligations from `billable_member_balances` (lines of settled instances plus settlement payments only) by greedy largest-debtor-to-largest-creditor (ties by user_id), insert `settlements` row (idempotent per group+week). Money still in carry is not owed to anyone yet.
 
@@ -124,7 +124,7 @@ tick_instances(p_now timestamptz default now()) returns void     -- open due, cl
 settle_due_groups(p_now timestamptz default now()) returns int
 purge_old_locations(p_now timestamptz default now()) returns int -- null lat/lng older than 30 days
 ```
-All jobs take `p_now` so tests can control time. Re-running any job is a no-op.
+All jobs take `p_now` so tests can control time. Re-running any job is a no-op. `tick_instances` and `settle_due_groups` process each instance/group in its own subtransaction; failures go to `job_failures` and are retried next run. Global lock order (deadlock avoidance) is documented at the top of `20261107000300_payouts_settlement.sql`.
 
 Notification outbox rows are inserted by: instance opening (kind `window_open`), 15 min before deadline for participants without a success (`deadline_soon`), result posted (`result`), review opened (`review_opened`), settlement (`settlement`).
 

@@ -35,3 +35,28 @@ export function nextWindow(instances: readonly PactInstanceRow[], nowMs: number)
   }
   return best;
 }
+
+export interface WindowPlace {
+  label: string | null;
+  radiusM: number;
+}
+
+/**
+ * The place a check-in for a window is judged against, with the same fallbacks as the server's
+ * _place_at: the history row in force at window open; else the earliest history row; else the
+ * participant row. pact_participants holds the newest saved place, which may not apply yet.
+ */
+export function placeForWindow(
+  places: readonly PactParticipantPlaceRow[],
+  windowOpenAt: string,
+  participant: { place_label: string | null; place_radius_m: number } | null,
+): WindowPlace | null {
+  const inForce = effectivePlaceAt(places, windowOpenAt);
+  const earliest = places.reduce<PactParticipantPlaceRow | null>(
+    (a, p) => (a === null || Date.parse(p.effective_from) < Date.parse(a.effective_from) ? p : a),
+    null,
+  );
+  const row = inForce ?? earliest;
+  if (row) return { label: row.label, radiusM: row.radius_m };
+  return participant ? { label: participant.place_label, radiusM: participant.place_radius_m } : null;
+}

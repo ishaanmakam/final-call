@@ -1,5 +1,6 @@
 import * as ImagePicker from 'expo-image-picker';
 import { REVIEW_PHOTO_BUCKET, supabase } from '../api/supabase';
+import { reviewPhotoPath } from './reviews';
 
 /** Pick a photo from the library. Returns null if the user cancels. */
 export async function pickEvidencePhoto(): Promise<ImagePicker.ImagePickerAsset | null> {
@@ -13,17 +14,16 @@ export async function pickEvidencePhoto(): Promise<ImagePicker.ImagePickerAsset 
 }
 
 /**
- * Uploads to Storage bucket `review-photos` at `<instance>/<user>/<timestamp>.<ext>` and
- * returns the object path for open_review(p_photo_path). Needs the bucket + RLS (see README).
+ * Uploads to Storage bucket `review-photos` at `<group>/<user>/<timestamp>.<ext>` (the layout the
+ * bucket's RLS policy checks) and returns the object path for open_review(p_photo_path).
  */
 export async function uploadEvidencePhoto(
   asset: ImagePicker.ImagePickerAsset,
-  instanceId: string,
+  groupId: string,
   userId: string,
 ): Promise<string> {
   const contentType = asset.mimeType ?? 'image/jpeg';
-  const ext = contentType.split('/')[1]?.replace('jpeg', 'jpg') ?? 'jpg';
-  const path = `${instanceId}/${userId}/${Date.now()}.${ext}`;
+  const path = reviewPhotoPath({ groupId, userId, nowMs: Date.now(), mimeType: contentType });
   const body = await (await fetch(asset.uri)).arrayBuffer();
   const { error } = await supabase.storage.from(REVIEW_PHOTO_BUCKET).upload(path, body, { contentType, upsert: false });
   if (error) throw new Error(error.message);

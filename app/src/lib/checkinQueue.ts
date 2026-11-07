@@ -2,8 +2,8 @@
  * Offline check-in queue. Pure logic plus a small orchestrator with injected storage,
  * transport and clock, so it runs under Vitest with no React Native imports.
  *
- * The client time sent to the server is always the fix timestamp captured when the user
- * tapped Check In, never the time the request is (re)sent.
+ * The client time sent to the server is the earlier of the Check In tap and the GPS fix,
+ * never the time the request is (re)sent.
  */
 
 export interface CheckinAttempt {
@@ -12,7 +12,7 @@ export interface CheckinAttempt {
   lat: number | null;
   lng: number | null;
   accuracyM: number | null;
-  /** ISO instant of the location fix (LocationObject.timestamp), not the send time. */
+  /** ISO instant: the earlier of the tap and the location fix, never the send time. */
   clientCapturedAt: string;
   isSimulated: boolean;
 }

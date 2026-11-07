@@ -46,6 +46,9 @@ Decisions are either **founder** (Ishaan chose) or **default** (made overnight b
 | D26 | Check-in spam | 20 per person per instance. | Each late check-in triggers recomputation. |
 | D27 | Late out-of-fence check-in | Stays Failed; only a late in-fence tap becomes Unverified. | Consistent with D4. |
 | D28 | Phone clock running fast | Ignored for on-time check-ins; only checked for late ones. | A fast clock used to reject an on-time tap. |
+| D29 | Which time a tap claims | The earlier of the tap and the GPS fix. A tap at 8:59:50 whose fix finishes at 9:00:05 counts as on time. | A slow GPS fix shouldn't turn an on-time tap into a late one. |
+| D30 | Location permission denied | Nothing is sent and the app asks you to enable location. | Sending a no-location attempt would let anyone make every day Unverified by turning location off. |
+| D31 | Challenging a result changed after settlement | Allowed (challenges only, not appeals) when a late tap changed the result after its week settled. | Otherwise a forged late tap couldn't be challenged at all (found by the final re-review). |
 | D23 | Settlement catch-up | Missed weeks are settled in order; only the latest week sends a settlement notification. | Earlier weeks' obligations are superseded immediately. |
 
 ## Open questions for you

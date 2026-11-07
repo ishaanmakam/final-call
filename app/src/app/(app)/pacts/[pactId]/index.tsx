@@ -85,7 +85,7 @@ export default function PactDetail() {
         <Card key={p.user_id}>
           <Body>{p.user_id === userId ? 'You' : displayName(profiles, p.user_id)}</Body>
           <Body muted>
-            {p.place_label} · {p.place_radius_m} m radius
+            {p.place_label ?? 'Place set'} · {p.place_radius_m} m radius
           </Body>
         </Card>
       ))}

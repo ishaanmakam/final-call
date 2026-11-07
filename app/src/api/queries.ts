@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
+import { DbError } from '../lib/errors';
 import { OPEN_OBLIGATION_STATUSES } from '../lib/obligations';
-import { effectivePlaceAt, nextWindow } from '../lib/places';
+import { effectivePlaceAt, nextWindow, placeForWindow, type WindowPlace } from '../lib/places';
 import { summarizeInstance, type InstanceSummary, type MemberDayState } from '../lib/instanceStatus';
 import { localDateInZone, windowState } from '../lib/time';
 import { supabase } from './supabase';
@@ -33,8 +34,8 @@ export const queryKeys = {
 };
 
 /** Unwraps a PostgREST response, throwing its error. */
-function must<T>(res: { data: T | null; error: { message: string } | null }): NonNullable<T> {
-  if (res.error) throw new Error(res.error.message);
+function must<T>(res: { data: T | null; error: { message: string; code?: string } | null }): NonNullable<T> {
+  if (res.error) throw new DbError(res.error);
   if (res.data === null || res.data === undefined) throw new Error('No data returned');
   return res.data as NonNullable<T>;
 }
@@ -64,7 +65,7 @@ export function useUpdateProfile(userId: string) {
   return useMutation({
     mutationFn: async (patch: { display_name?: string; venmo_username?: string | null }) => {
       const { error } = await supabase.from('profiles').update(patch).eq('id', userId);
-      if (error) throw new Error(error.message);
+      if (error) throw new DbError(error);
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.profile(userId) }),
   });
@@ -285,7 +286,10 @@ export function usePlaceSchedule(pactId: string, userId: string, enabled = true)
 export interface InstanceDetail {
   instance: PactInstanceRow;
   pact: PactRow;
+  /** my participant row (null = not in this pact) */
   myPlace: PactParticipantRow | null;
+  /** the place this instance's check-ins are judged against (may differ from a newly saved one) */
+  judgedPlace: WindowPlace | null;
   myCheckins: CheckinRow[];
   myResult: ResultRow | null;
   myFreeze: FreezeRow | null;
@@ -296,7 +300,7 @@ export function useInstanceDetail(instanceId: string, userId: string) {
     queryKey: queryKeys.instance(instanceId),
     queryFn: async (): Promise<InstanceDetail> => {
       const instance = await supabase.from('pact_instances').select('*').eq('id', instanceId).single().then(must);
-      const [pact, places, myCheckins, results, freezes] = await Promise.all([
+      const [pact, places, history, myCheckins, results, freezes] = await Promise.all([
         supabase.from('pacts').select('*').eq('id', instance.pact_id).single().then(must),
         supabase
           .from('pact_participants')
@@ -304,6 +308,12 @@ export function useInstanceDetail(instanceId: string, userId: string) {
           .eq('pact_id', instance.pact_id)
           .eq('user_id', userId)
           .is('left_at', null)
+          .then(must),
+        supabase
+          .from('pact_participant_places')
+          .select('*')
+          .eq('pact_id', instance.pact_id)
+          .eq('user_id', userId)
           .then(must),
         supabase
           .from('checkins')
@@ -319,6 +329,7 @@ export function useInstanceDetail(instanceId: string, userId: string) {
         instance,
         pact,
         myPlace: places[0] ?? null,
+        judgedPlace: places[0] ? placeForWindow(history, instance.window_open_at, places[0]) : null,
         myCheckins,
         myResult: results[0] ?? null,
         myFreeze: freezes[0] ?? null,
@@ -344,8 +355,8 @@ export interface FeedItem {
 export interface Feed {
   items: FeedItem[];
   profiles: Map<string, ProfileRow>;
-  /** participant ids per pact, to know who may vote */
-  participantsByPact: Map<string, string[]>;
+  /** roster per instance (users with a result row): who may challenge and vote, as the server checks */
+  rosterByInstance: Map<string, string[]>;
   /** Excluded results this calendar month per user: visible so it can't be farmed quietly. */
   excludedThisMonth: Map<string, number>;
 }
@@ -362,26 +373,19 @@ export function useFeed(groupId: string) {
         supabase.from('group_members').select('user_id').eq('group_id', groupId).then(must),
       ]);
       const profiles = await fetchProfiles(members.map((m) => m.user_id));
-      const empty: Feed = { items: [], profiles, participantsByPact: new Map(), excludedThisMonth: new Map() };
+      const empty: Feed = { items: [], profiles, rosterByInstance: new Map(), excludedThisMonth: new Map() };
       if (pacts.length === 0) return empty;
       const pactIds = pacts.map((p) => p.id);
       const since = new Date(now - FEED_DAYS * 86_400_000).toISOString();
-      const [instances, participants] = await Promise.all([
-        supabase
-          .from('pact_instances')
-          .select('*')
-          .in('pact_id', pactIds)
-          .gte('deadline_at', since)
-          .in('status', ['closed', 'settled', 'voided'])
-          .then(must),
-        supabase.from('pact_participants').select('pact_id,user_id').in('pact_id', pactIds).is('left_at', null).then(must),
-      ]);
-      const participantsByPact = new Map<string, string[]>();
-      for (const p of participants) {
-        participantsByPact.set(p.pact_id, [...(participantsByPact.get(p.pact_id) ?? []), p.user_id]);
-      }
+      const instances = await supabase
+        .from('pact_instances')
+        .select('*')
+        .in('pact_id', pactIds)
+        .gte('deadline_at', since)
+        .in('status', ['closed', 'settled', 'voided'])
+        .then(must);
       const instanceIds = instances.map((i) => i.id);
-      if (instanceIds.length === 0) return { ...empty, participantsByPact };
+      if (instanceIds.length === 0) return empty;
       const [results, reviews] = await Promise.all([
         supabase.from('results').select('*').in('instance_id', instanceIds).neq('status', 'pending').then(must),
         supabase.from('reviews').select('*').in('instance_id', instanceIds).order('opened_at').then(must),
@@ -416,7 +420,11 @@ export function useFeed(groupId: string) {
           excludedThisMonth.set(item.result.user_id, (excludedThisMonth.get(item.result.user_id) ?? 0) + 1);
         }
       }
-      return { items, profiles, participantsByPact, excludedThisMonth };
+      const rosterByInstance = new Map<string, string[]>();
+      for (const r of results) {
+        rosterByInstance.set(r.instance_id, [...(rosterByInstance.get(r.instance_id) ?? []), r.user_id]);
+      }
+      return { items, profiles, rosterByInstance, excludedThisMonth };
     },
   });
 }

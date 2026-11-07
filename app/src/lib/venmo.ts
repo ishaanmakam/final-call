@@ -1,6 +1,6 @@
 import { centsToDecimalString } from './money';
 
-const USERNAME_PATTERN = /^[A-Za-z0-9_-]{1,30}$/;
+const USERNAME_PATTERN = /^[A-Za-z0-9_-]{5,30}$/;
 
 export function normalizeVenmoUsername(raw: string | null | undefined): string | null {
   if (raw == null) return null;

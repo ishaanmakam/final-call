@@ -12,6 +12,10 @@ describe('normalizeVenmoUsername', () => {
     expect(normalizeVenmoUsername('@')).toBeNull();
     expect(normalizeVenmoUsername('has space')).toBeNull();
     expect(normalizeVenmoUsername('a&b=c')).toBeNull();
+    // the database only stores 5 to 30 characters
+    expect(normalizeVenmoUsername('abcd')).toBeNull();
+    expect(normalizeVenmoUsername('a'.repeat(31))).toBeNull();
+    expect(normalizeVenmoUsername('abcde')).toBe('abcde');
     expect(normalizeVenmoUsername(null)).toBeNull();
     expect(normalizeVenmoUsername(undefined)).toBeNull();
   });

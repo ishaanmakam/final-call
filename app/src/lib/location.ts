@@ -1,5 +1,4 @@
 import * as Location from 'expo-location';
-import type { CheckinAttempt } from './checkinQueue';
 
 export type PermissionOutcome = 'granted' | 'denied' | 'blocked';
 
@@ -36,28 +35,4 @@ export async function takeHighAccuracyFix(timeoutMs = FIX_TIMEOUT_MS): Promise<L
   } finally {
     if (timer) clearTimeout(timer);
   }
-}
-
-/** Build the check-in attempt from a fix. client_captured_at is the fix time, not the send time. */
-export function attemptFromFix(instanceId: string, fix: Location.LocationObject): CheckinAttempt {
-  return {
-    instanceId,
-    lat: fix.coords.latitude,
-    lng: fix.coords.longitude,
-    accuracyM: fix.coords.accuracy ?? null,
-    clientCapturedAt: new Date(fix.timestamp).toISOString(),
-    isSimulated: fix.mocked === true,
-  };
-}
-
-/** Attempt with no location: lets a dead GPS become "unverified" instead of "failed". */
-export function attemptWithoutFix(instanceId: string, capturedAtMs: number): CheckinAttempt {
-  return {
-    instanceId,
-    lat: null,
-    lng: null,
-    accuracyM: null,
-    clientCapturedAt: new Date(capturedAtMs).toISOString(),
-    isSimulated: false,
-  };
 }

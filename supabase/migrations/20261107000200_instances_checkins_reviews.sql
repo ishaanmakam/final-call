@@ -22,9 +22,25 @@
 --     joined_at <= window_open_at and (left_at is null or left_at > window_open_at); once an
 --     instance has closed, exactly the users holding a result row (a later rejoin, which resets
 --     joined_at, cannot rewrite it). Used for results, check-ins, freezes, review openers,
---     review notifications and voters (eligible voters = roster minus the subject).
+--     review notifications and voters.
+--   Voters (_review_voters): the roster minus the subject, minus anyone who has left the group
+--     (they cannot vote, are not counted as eligible, and votes they cast before leaving are not
+--     counted, also when settlement defaults the review).
 --   leave_group (foundation) refuses while the caller is on the roster of an instance that is
---     open, or 'scheduled' with window_open_at <= now() < deadline_at (cron lag): 23514.
+--     open, or 'scheduled' with window_open_at <= now() < deadline_at (cron lag), paused pacts
+--     included (a resume before the tick voids it would open it with the leaver on the roster): 23514.
+--   pact_instances.settled_at: stamped by settlement (20261107000300) when it marks the instance
+--     'settled'. Reviews: closed instances as before; on a settled instance only a CHALLENGE, and
+--     only of a result whose decided_at > settled_at (changed by a late offline tap after
+--     settlement). Such challenges can be voted on, and the next settlement's default_open_reviews
+--     resolves them (deadline_at < p_until) before billing, so their correction is billed then.
+--   A late tap that leaves fewer than 2 active participants does NOT void a closed/settled
+--     instance: the payout plan is already empty (money refunded by the correction), and keeping
+--     the instance closed keeps the late result challengeable (voiding would make a forged
+--     capture time unreviewable, and an accepted challenge restores the payout).
+--   tick_instances: each instance's open / deadline_soon / close runs in its own subtransaction;
+--     a failure is logged to job_failures (job 'tick_instances', the pact's group) and the tick
+--     carries on (the instance is retried next tick). Lock order: see 20261107000300.
 --   join_pact (foundation) refuses joins, rejoins and place changes while any instance of the
 --     pact is open or has window_open_at <= now() and is not closed/settled/voided: 23514.
 --   check_in: at most 20 check-ins per user per instance (23514; idempotent retries don't count).
@@ -42,6 +58,7 @@
 -- =====================================================================
 
 alter table public.pact_instances add column deadline_soon_sent_at timestamptz null;
+alter table public.pact_instances add column settled_at timestamptz null;  -- set by settlement (20261107000300)
 alter table public.checkins add column client_attempt_id uuid null;
 
 create unique index checkins_user_attempt_uniq on public.checkins (user_id, client_attempt_id)
@@ -150,6 +167,23 @@ language sql stable
 set search_path = pg_catalog, public, pg_temp
 as $$
   select exists (select 1 from public._instance_participants(p_instance) u where u = p_user)
+$$;
+
+-- Eligible voters of a review: the instance roster minus the subject, limited to current members
+-- of the pact's group (a challenge's opener may vote).
+create function public._review_voters(p_review uuid) returns setof uuid
+language sql stable
+set search_path = pg_catalog, public, pg_temp
+as $$
+  select u.uid
+    from public.reviews r
+    join public.pact_instances i on i.id = r.instance_id
+    join public.pacts p on p.id = i.pact_id
+    cross join lateral public._instance_participants(r.instance_id) as u(uid)
+   where r.id = p_review and u.uid <> r.subject_user_id
+     and exists (select 1 from public.group_members m
+                  where m.group_id = p.group_id and m.user_id = u.uid and m.left_at is null)
+   order by u.uid
 $$;
 
 -- The place a check-in for an instance opening at p_at is judged against: the latest place in
@@ -397,58 +431,108 @@ set search_path = pg_catalog, public, pg_temp
 as $$
 declare
   v_now timestamptz := coalesce(p_now, now());
+  v_pact record;
+  v_cand record;
   v_inst public.pact_instances;
+  v_skip uuid[] := '{}';
 begin
-  -- Paused pacts: instances that have not opened are voided (no results).
-  update public.pact_instances i set status = 'voided'
-    from public.pacts p
-   where p.id = i.pact_id and p.paused and i.status = 'scheduled';
+  -- Lock order (20261107000300 header): the carry of every pact this tick will touch is locked
+  -- first, in (group_id, pact_id) order, before any instance row. Paused pacts: instances that
+  -- have not opened are voided (no results).
+  for v_pact in
+    select distinct p.group_id, p.id, p.paused
+      from public.pacts p
+      join public.pact_instances i on i.pact_id = p.id
+     where (i.status = 'scheduled' and (p.paused or i.window_open_at <= v_now))
+        or (i.status = 'open' and i.deadline_at - interval '15 minutes' <= v_now)
+     order by p.group_id, p.id
+  loop
+    begin
+      perform public._lock_pact_carry(v_pact.group_id, v_pact.id);
+      if v_pact.paused then
+        update public.pact_instances set status = 'voided' where pact_id = v_pact.id and status = 'scheduled';
+      end if;
+    exception when others then
+      v_skip := v_skip || v_pact.id;
+      insert into public.job_failures (job, group_id, error)
+      values ('tick_instances', v_pact.group_id, sqlstate || ': ' || sqlerrm);
+    end;
+  end loop;
+
+  -- Each instance below is handled in its own subtransaction: a failure is logged and rolled
+  -- back (the instance keeps its status and is retried by the next tick), the others go on.
 
   -- (a) scheduled -> open
-  for v_inst in
-    select * from public.pact_instances
-     where status = 'scheduled' and window_open_at <= v_now
-     order by window_open_at, id
-     for update
+  for v_cand in
+    select i.id, p.group_id
+      from public.pact_instances i join public.pacts p on p.id = i.pact_id
+     where i.status = 'scheduled' and i.window_open_at <= v_now and not (i.pact_id = any (v_skip))
+     order by i.window_open_at, i.id
   loop
-    update public.pact_instances set status = 'open' where id = v_inst.id;
-    if v_inst.deadline_at > v_now then
-      insert into public.notification_outbox (user_id, kind, payload)
-      select u.uid, 'window_open', public._instance_payload(v_inst.id, u.uid)
-        from public._instance_participants(v_inst.id) as u(uid)
-       where not exists (select 1 from public.freezes f where f.instance_id = v_inst.id and f.user_id = u.uid);
-    end if;
+    begin
+      select * into v_inst from public.pact_instances where id = v_cand.id and status = 'scheduled' for update;
+      if found then
+        update public.pact_instances set status = 'open' where id = v_inst.id;
+        if v_inst.deadline_at > v_now then
+          insert into public.notification_outbox (user_id, kind, payload)
+          select u.uid, 'window_open', public._instance_payload(v_inst.id, u.uid)
+            from public._instance_participants(v_inst.id) as u(uid)
+           where not exists (select 1 from public.freezes f where f.instance_id = v_inst.id and f.user_id = u.uid);
+        end if;
+      end if;
+    exception when others then
+      insert into public.job_failures (job, group_id, error)
+      values ('tick_instances', v_cand.group_id, sqlstate || ': ' || sqlerrm);
+    end;
   end loop;
 
   -- (b) one 'deadline_soon' fan-out per instance, to participants without a success (not frozen)
-  for v_inst in
-    select * from public.pact_instances
-     where status = 'open' and deadline_soon_sent_at is null
-       and deadline_at - interval '15 minutes' <= v_now and v_now < deadline_at
-     order by deadline_at, id
-     for update
+  for v_cand in
+    select i.id, p.group_id
+      from public.pact_instances i join public.pacts p on p.id = i.pact_id
+     where i.status = 'open' and i.deadline_soon_sent_at is null
+       and i.deadline_at - interval '15 minutes' <= v_now and v_now < i.deadline_at
+       and not (i.pact_id = any (v_skip))
+     order by i.deadline_at, i.id
   loop
-    update public.pact_instances set deadline_soon_sent_at = v_now where id = v_inst.id;
-    insert into public.notification_outbox (user_id, kind, payload)
-    select u.uid, 'deadline_soon',
-           public._instance_payload(v_inst.id, u.uid)
-           || jsonb_build_object('minutes_left', ceil(extract(epoch from v_inst.deadline_at - v_now) / 60)::int)
-      from public._instance_participants(v_inst.id) as u(uid)
-     where not exists (select 1 from public.freezes f where f.instance_id = v_inst.id and f.user_id = u.uid)
-       and not exists (
-         select 1 from public.checkins c
-          where c.instance_id = v_inst.id and c.user_id = u.uid
-            and c.verdict = 'in_fence' and c.server_received_at <= v_inst.deadline_at);
+    begin
+      select * into v_inst from public.pact_instances
+       where id = v_cand.id and status = 'open' and deadline_soon_sent_at is null for update;
+      if found then
+        update public.pact_instances set deadline_soon_sent_at = v_now where id = v_inst.id;
+        insert into public.notification_outbox (user_id, kind, payload)
+        select u.uid, 'deadline_soon',
+               public._instance_payload(v_inst.id, u.uid)
+               || jsonb_build_object('minutes_left', ceil(extract(epoch from v_inst.deadline_at - v_now) / 60)::int)
+          from public._instance_participants(v_inst.id) as u(uid)
+         where not exists (select 1 from public.freezes f where f.instance_id = v_inst.id and f.user_id = u.uid)
+           and not exists (
+             select 1 from public.checkins c
+              where c.instance_id = v_inst.id and c.user_id = u.uid
+                and c.verdict = 'in_fence' and c.server_received_at <= v_inst.deadline_at);
+      end if;
+    exception when others then
+      insert into public.job_failures (job, group_id, error)
+      values ('tick_instances', v_cand.group_id, sqlstate || ': ' || sqlerrm);
+    end;
   end loop;
 
   -- (c) open -> closed / voided
-  for v_inst in
-    select * from public.pact_instances
-     where status = 'open' and deadline_at <= v_now
-     order by deadline_at, id
-     for update
+  for v_cand in
+    select i.id, p.group_id
+      from public.pact_instances i join public.pacts p on p.id = i.pact_id
+     where i.status = 'open' and i.deadline_at <= v_now and not (i.pact_id = any (v_skip))
+     order by i.deadline_at, i.id
   loop
-    perform public._close_instance(v_inst.id, v_now);
+    begin
+      perform 1 from public.pact_instances where id = v_cand.id and status = 'open' for update;
+      if found then
+        perform public._close_instance(v_cand.id, v_now);
+      end if;
+    exception when others then
+      insert into public.job_failures (job, group_id, error)
+      values ('tick_instances', v_cand.group_id, sqlstate || ': ' || sqlerrm);
+    end;
   end loop;
 end;
 $$;
@@ -495,6 +579,8 @@ declare
   v_sim boolean := coalesce(p_is_simulated, false);
   v_dist float8;
   v_verdict public.checkin_verdict;
+  v_pact uuid;
+  v_group uuid;
 begin
   if p_user is null then
     raise exception 'not authenticated' using errcode = '28000';
@@ -507,10 +593,19 @@ begin
     end if;
   end if;
 
-  select * into v_inst from public.pact_instances where id = p_instance for update;
+  -- Lock order (20261107000300 header): the pact's carry before the instance. A check-in can turn
+  -- into a correction (late tap, or the tick closing the instance while we wait for its lock).
+  -- Unlocked pre-checks first, so outsiders never queue on the carry.
+  select i.pact_id, p.group_id into v_pact, v_group
+    from public.pact_instances i join public.pacts p on p.id = i.pact_id where i.id = p_instance;
   if not found then
     raise exception 'instance not found' using errcode = 'P0002';
   end if;
+  if not public._on_instance_roster(p_instance, p_user) then
+    raise exception 'not a participant of this pact instance' using errcode = '42501';
+  end if;
+  perform public._lock_pact_carry(v_group, v_pact);
+  select * into v_inst from public.pact_instances where id = p_instance for update;
   if not public._on_instance_roster(p_instance, p_user) then
     raise exception 'not a participant of this pact instance' using errcode = '42501';
   end if;
@@ -704,7 +799,17 @@ begin
   if not public._on_instance_roster(p_instance, p_user) then
     raise exception 'not a participant of this pact instance' using errcode = '42501';
   end if;
-  if v_inst.status <> 'closed' then
+  if v_inst.status = 'settled' then
+    -- Only a challenge of a result changed after settlement (a late offline tap): the one
+    -- defence against a forged capture time. Appeals and everything else stay final.
+    if p_kind is distinct from 'challenge' or not exists (
+      select 1 from public.results r
+       where r.instance_id = p_instance and r.user_id = p_subject and r.decided_at > v_inst.settled_at
+    ) then
+      raise exception 'a settled instance can only get a challenge of a result changed after settlement'
+        using errcode = '23514';
+    end if;
+  elsif v_inst.status <> 'closed' then
     raise exception 'only closed, unsettled instances can be reviewed' using errcode = '23514';
   end if;
   if p_kind is null or p_subject is null then
@@ -727,6 +832,14 @@ begin
   else
     if p_user = p_subject then
       raise exception 'you cannot challenge your own result' using errcode = '42501';
+    end if;
+    -- Former members keep their own appeal (they can still be charged) but can't challenge others.
+    if not exists (
+      select 1 from public.group_members gm
+        join public.pacts pa on pa.group_id = gm.group_id
+       where pa.id = v_inst.pact_id and gm.user_id = p_user and gm.left_at is null
+    ) then
+      raise exception 'only current group members can challenge a result' using errcode = '42501';
     end if;
     if v_status not in ('success', 'unverified') then
       raise exception 'only a success or unverified result can be challenged' using errcode = '23514';
@@ -771,8 +884,9 @@ begin
 end;
 $$;
 
--- D3: voters = the instance roster except the subject (a challenge's opener may vote).
--- Resolves as soon as supports or opposes exceed half of the eligible voters.
+-- D3: voters = _review_voters (the instance roster except the subject, current group members
+-- only; a challenge's opener may vote). Resolves as soon as supports or opposes exceed half of
+-- the eligible voters. Open reviews of closed instances, and late challenges of settled ones.
 create function public.cast_vote_at(p_user uuid, p_review uuid, p_supports boolean, p_now timestamptz) returns void
 language plpgsql volatile
 set search_path = pg_catalog, public, pg_temp
@@ -781,6 +895,8 @@ declare
   v_now timestamptz := coalesce(p_now, now());
   v_rev public.reviews;
   v_inst_status public.instance_status;
+  v_pact uuid;
+  v_group uuid;
   v_eligible int;
   v_sup int;
   v_opp int;
@@ -788,15 +904,27 @@ begin
   if p_user is null then
     raise exception 'not authenticated' using errcode = '28000';
   end if;
-  select * into v_rev from public.reviews where id = p_review for update;
+  select i.pact_id, p.group_id into v_pact, v_group
+    from public.reviews r
+    join public.pact_instances i on i.id = r.instance_id
+    join public.pacts p on p.id = i.pact_id
+   where r.id = p_review;
   if not found then
     raise exception 'review not found' using errcode = 'P0002';
   end if;
-  select status into v_inst_status from public.pact_instances where id = v_rev.instance_id;
-  if p_user = v_rev.subject_user_id or not public._on_instance_roster(v_rev.instance_id, p_user) then
+  if not exists (select 1 from public._review_voters(p_review) e where e = p_user) then
     raise exception 'not an eligible voter for this review' using errcode = '42501';
   end if;
-  if v_rev.status <> 'open' or v_inst_status <> 'closed' then
+  -- Lock order (20261107000300 header): the pact's carry before the review (a vote can resolve it
+  -- and post a correction).
+  perform public._lock_pact_carry(v_group, v_pact);
+  select * into v_rev from public.reviews where id = p_review for update;
+  select status into v_inst_status from public.pact_instances where id = v_rev.instance_id;
+  if not exists (select 1 from public._review_voters(p_review) e where e = p_user) then
+    raise exception 'not an eligible voter for this review' using errcode = '42501';
+  end if;
+  if v_rev.status <> 'open'
+     or not (v_inst_status = 'closed' or (v_inst_status = 'settled' and v_rev.kind = 'challenge')) then
     raise exception 'review is already resolved' using errcode = '23514';
   end if;
   if p_supports is null then
@@ -807,14 +935,12 @@ begin
   values (p_review, p_user, p_supports, v_now)
   on conflict (review_id, voter_id) do update set supports = excluded.supports, cast_at = excluded.cast_at;
 
-  select count(*) into v_eligible
-    from public._instance_participants(v_rev.instance_id) as u(uid)
-   where u.uid <> v_rev.subject_user_id;
+  select count(*) into v_eligible from public._review_voters(p_review);
   select count(*) filter (where v.supports), count(*) filter (where not v.supports)
     into v_sup, v_opp
     from public.review_votes v
-    join public._instance_participants(v_rev.instance_id) as u(uid) on u.uid = v.voter_id
-   where v.review_id = p_review and v.voter_id <> v_rev.subject_user_id;
+    join public._review_voters(p_review) as e(uid) on e.uid = v.voter_id
+   where v.review_id = p_review;
   if 2 * v_sup > v_eligible then
     perform public._resolve_review(p_review, 'accepted', v_now);
   elsif 2 * v_opp > v_eligible then
@@ -844,12 +970,22 @@ set search_path = pg_catalog, public, pg_temp
 as $$
 declare
   v_rev record;
+  v_pact uuid;
   v_n int := 0;
 begin
+  -- Lock order (20261107000300 header): the group's carries (pact id order) before any review.
+  -- A no-op re-lock when called from settlement, which already holds them.
+  for v_pact in select id from public.pacts where group_id = p_group order by id loop
+    perform public._lock_pact_carry(p_group, v_pact);
+  end loop;
+  -- Includes late challenges of settled instances (deadline_at < p_until too). Only votes of
+  -- current eligible voters count (_review_voters).
   for v_rev in
     select r.id, r.opened_at,
-           (select count(*) from public.review_votes v where v.review_id = r.id and v.supports) as sup,
-           (select count(*) from public.review_votes v where v.review_id = r.id and not v.supports) as opp
+           (select count(*) from public.review_votes v join public._review_voters(r.id) e(uid) on e.uid = v.voter_id
+             where v.review_id = r.id and v.supports) as sup,
+           (select count(*) from public.review_votes v join public._review_voters(r.id) e(uid) on e.uid = v.voter_id
+             where v.review_id = r.id and not v.supports) as opp
       from public.reviews r
       join public.pact_instances i on i.id = r.instance_id
       join public.pacts p on p.id = i.pact_id
@@ -881,6 +1017,7 @@ begin
     'public._haversine_m(float8, float8, float8, float8)',
     'public._instance_participants(uuid)',
     'public._on_instance_roster(uuid, uuid)',
+    'public._review_voters(uuid)',
     'public._place_at(uuid, uuid, timestamptz)',
     'public._instance_payload(uuid, uuid)',
     'public._base_result(uuid, uuid)',

@@ -13,6 +13,7 @@ Status legend: [x] done overnight, [ ] next.
 - [x] Differential test: SQL payouts vs `packages/rules` on random cases
 - [x] Push-outbox Edge Function
 - [x] Expo app: all MVP screens, offline check-in queue, Venmo links
+- [x] Independent money review, malicious-user attack suite, full-week end-to-end simulation, re-review after fixes, app-vs-database review; every confirmed finding fixed with a test
 
 ## Phase 2: get it on your phone (you, in order)
 

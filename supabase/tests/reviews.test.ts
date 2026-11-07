@@ -270,3 +270,14 @@ describe('RLS', () => {
     await asUser(db, u[0], (d) => expectError(d.query(`insert into public.review_votes (review_id, voter_id, supports) values ($1, $2, true)`, [id, u[2]]), /permission denied/));
   });
 });
+
+describe('former members and reviews', () => {
+  it('someone who left the group cannot challenge, but can still appeal their own failed result', async () => {
+    const { fx, inst, u } = await closedInstance(['success', 'failed', 'failed']);
+    const [a, b] = u as [string, string, string];
+    await asUser(db, b, (d) => d.query('select public.leave_group($1)', [fx.groupId]));
+    expect(await code(open(b, inst, a, 'challenge'))).toBe('42501');
+    const appeal = await open(b, inst, b, 'appeal');
+    expect(appeal).toMatch(/^[0-9a-f-]{36}$/);
+  });
+});

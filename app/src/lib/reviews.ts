@@ -26,3 +26,13 @@ export function reviewActions(i: ReviewActionInput): { canAppeal: boolean; canCh
       !has('challenge'),
   };
 }
+
+/**
+ * Storage path for appeal evidence. The review-photos bucket policy requires
+ * `<group_id>/<uploader user_id>/<file>`: folder 1 must be a group the uploader belongs to.
+ */
+export function reviewPhotoPath(p: { groupId: string; userId: string; nowMs: number; mimeType: string | null | undefined }): string {
+  const subtype = p.mimeType?.split('/')[1]?.toLowerCase().replace(/[^a-z0-9]/g, '') ?? '';
+  const ext = subtype === '' || subtype === 'jpeg' ? 'jpg' : subtype;
+  return `${p.groupId}/${p.userId}/${p.nowMs}.${ext}`;
+}

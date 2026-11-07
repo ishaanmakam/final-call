@@ -1,4 +1,23 @@
 -- =====================================================================
+-- GLOBAL LOCK ORDER (every function in 20261107000100..0500 follows it; PGlite cannot test it)
+--   1. groups row, FOR NO KEY UPDATE (settle_due_groups, leave_group; join_group / the member-cap
+--      trigger use FOR UPDATE but take nothing below). Never FOR UPDATE on a path that waits for a
+--      carry: FOR UPDATE conflicts with the FOR KEY SHARE that every ledger_entries / ledger_accounts
+--      insert takes on its group (FK), so settlement holding the group FOR UPDATE and waiting for a
+--      carry would deadlock with any money path holding that carry and posting an entry.
+--   2. carry accounts (_lock_pact_carry), several at once only in (group_id, pact_id) order:
+--      settle_due_groups (groups by id, then each group's pacts by id), default_open_reviews (its
+--      group's pacts by id), tick_instances (pre-locks every pact it will touch, by group_id,
+--      pact_id, before any instance). A transaction that may lock more than one of
+--      {pact_instances, reviews, results} of a pact, or post to its ledger, takes that pact's carry
+--      first: check_in_at, cast_vote_at, post_instance_payout, apply_instance_correction,
+--      _settle_group_week, tick_instances.
+--   3. pact_instances rows, then reviews, then results (in any order once the carry is held: the
+--      carry serializes everything below it per pact).
+--   Leaves that take a single row lock and wait for nothing below it: open_review_at and
+--   declare_freeze_at (instance, then pacts row), join_pact (pacts row, participant row),
+--   generate_instances, obligation RPCs (obligation row; their entries only take FK KEY SHARE).
+-- =====================================================================
 -- Payouts, corrections, weekly settlement, obligations (settle-up).
 -- Spec: docs/CONTRACT.md ("Payout", "Settlement", "Settle-up"). Owner: payouts agent.
 -- Oracle: packages/rules/src/index.ts (computeInstancePayout, simplifyDebts);
@@ -13,7 +32,8 @@
 --     first_success_at asc (nulls last), user_id asc; carry -C. Active = success + failed;
 --     fewer than 2 active, or instance status 'voided' -> empty plan.
 --   * C = carry_in_cents, stored on the instance at its first posting (= carry balance then).
---   * All money operations on a pact serialize on a row lock of the pact's carry account.
+--   * All money operations on a pact serialize on a row lock of the pact's carry account
+--     (see GLOBAL LOCK ORDER above).
 --
 -- Corrections: posted net (sum of lines of entries with instance_id = X, pot excluded) is compared
 -- with the plan from current results and the stored carry_in_cents; the difference is posted as
@@ -64,7 +84,10 @@
 -- billed yet), with every still-'marked_paid' obligation treated as provisionally paid (payer
 -- +amount, payee -amount), using the same greedy as simplifyDebts (largest debtor <-> largest
 -- creditor, ties by user_id asc). Corrections of settled instances (late offline check-ins,
--- claw-backs) are billed at the next settlement.
+-- claw-backs) are billed at the next settlement. Marking an instance 'settled' stamps settled_at
+-- (the run's p_now). Late challenges of settled instances (allowed only for results changed after
+-- settled_at, see 20261107000200) are resolved by the next week's default_open_reviews before
+-- billing, so their corrections are billed in that run.
 -- 'settlement' outbox rows go out only for the latest week settled in a run (catch-up weeks
 -- are superseded immediately) to current members and anyone with a non-zero billable balance.
 -- =====================================================================
@@ -185,20 +208,7 @@ as $$
   select coalesce(sum(amount_cents), 0)::bigint from public.ledger_lines where account_id = p_account
 $$;
 
--- Get the pact's carry account and take the per-pact money lock.
-create or replace function public._lock_pact_carry(p_group uuid, p_pact uuid)
-returns uuid
-language plpgsql volatile
-set search_path = pg_catalog, public, pg_temp
-as $$
-declare
-  v_carry uuid;
-begin
-  v_carry := public.ensure_account(p_group, 'carry', null, null, p_pact);
-  perform 1 from public.ledger_accounts where id = v_carry for update;
-  return v_carry;
-end;
-$$;
+-- _lock_pact_carry(p_group, p_pact) is defined in 20261107000150_interfaces.sql.
 
 -- First posting. Caller holds the carry lock and the instance row lock; carry_in_cents is null.
 -- Earlier-deadline instances of the pact that are closed but were never posted (tick lag; settlement
@@ -528,8 +538,10 @@ end;
 $$;
 
 -- Settle one group-week. Caller holds the group row lock. p_week_end = the following Monday
--- 00:00 in settlement_tz. Returns the settlements id.
-create or replace function public._settle_group_week(p_group uuid, p_week date, p_week_end timestamptz)
+-- 00:00 in settlement_tz; p_now = the settlement run time, stamped as settled_at. Returns the
+-- settlements id.
+create or replace function public._settle_group_week(p_group uuid, p_week date, p_week_end timestamptz,
+                                                     p_now timestamptz default null)
 returns uuid
 language plpgsql volatile
 set search_path = pg_catalog, public, pg_temp
@@ -563,7 +575,8 @@ begin
   foreach v_inst in array v_ids loop
     perform public.apply_instance_correction(v_inst);
   end loop;
-  update public.pact_instances set status = 'settled' where id = any (v_ids) and status = 'closed';
+  update public.pact_instances set status = 'settled', settled_at = coalesce(p_now, now())
+   where id = any (v_ids) and status = 'closed';
 
   -- Unpaid IOUs are recomputed (D7). Ones the payer marked paid stay open for the payee to
   -- confirm (or dispute back to pending) and count as paid below.
@@ -624,16 +637,7 @@ begin
 end;
 $$;
 
--- Failures of scheduled jobs, one row per group that failed. Server-only (RLS on, no client grants).
-create table if not exists public.job_failures (
-  id bigserial primary key,
-  job text not null,
-  group_id uuid null references public.groups (id),
-  error text not null,
-  failed_at timestamptz not null default now()
-);
-alter table public.job_failures enable row level security;
-revoke all on public.job_failures from public, anon, authenticated;
+-- job_failures is created in 20261107000150_interfaces.sql.
 
 create or replace function public.settle_due_groups(p_now timestamptz default now())
 returns int
@@ -660,7 +664,7 @@ begin
   begin
     v_group_count := 0;
     select g.id, g.name, g.settlement_tz, g.created_at into v_group
-      from public.groups g where g.id = v_gid for update;
+      from public.groups g where g.id = v_gid for no key update;  -- see GLOBAL LOCK ORDER
     select max(week_start) into v_last from public.settlements where group_id = v_group.id;
     v_week := coalesce(v_last + 7, date_trunc('week', v_group.created_at at time zone v_group.settlement_tz)::date);
     v_settlement := null;
@@ -668,7 +672,7 @@ begin
       v_due := ((v_week + 7) + time '12:00') at time zone v_group.settlement_tz;
       exit when p_now < v_due;
       v_settlement := public._settle_group_week(v_group.id, v_week,
-                                                ((v_week + 7)::timestamp) at time zone v_group.settlement_tz);
+                                                ((v_week + 7)::timestamp) at time zone v_group.settlement_tz, p_now);
       v_last_week := v_week;
       v_group_count := v_group_count + 1;
       v_week := v_week + 7;
@@ -809,11 +813,10 @@ $$;
 revoke all on function public._payout_plan(uuid, bigint) from public, anon, authenticated, service_role;
 revoke all on function public._instance_posted(uuid) from public, anon, authenticated, service_role;
 revoke all on function public._account_balance(uuid) from public, anon, authenticated, service_role;
-revoke all on function public._lock_pact_carry(uuid, uuid) from public, anon, authenticated, service_role;
 revoke all on function public._post_initial(uuid, uuid, uuid) from public, anon, authenticated, service_role;
 revoke all on function public._instance_diff(uuid, uuid, uuid, bigint) from public, anon, authenticated, service_role;
 revoke all on function public._correct_instance(uuid, uuid, uuid, uuid) from public, anon, authenticated, service_role;
-revoke all on function public._settle_group_week(uuid, date, timestamptz) from public, anon, authenticated, service_role;
+revoke all on function public._settle_group_week(uuid, date, timestamptz, timestamptz) from public, anon, authenticated, service_role;
 
 revoke all on function public.post_instance_payout(uuid) from public, anon, authenticated;
 revoke all on function public.apply_instance_correction(uuid) from public, anon, authenticated;

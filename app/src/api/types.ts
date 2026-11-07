@@ -20,11 +20,8 @@ export type GroupRole = 'owner' | 'member';
 export type ProfileRow = {
   id: string;
   display_name: string;
-  /**
-   * NOT IN CONTRACT YET: required schema addition `profiles.venmo_username text null`.
-   * Optional so the client works before the column exists.
-   */
-  venmo_username?: string | null;
+  /** added in 20261107000500_app_support.sql; 5 to 30 of [A-Za-z0-9_-] when set */
+  venmo_username: string | null;
   created_at: string;
 };
 
@@ -66,7 +63,7 @@ export type PactParticipantRow = {
   place_lat: number;
   place_lng: number;
   place_radius_m: number;
-  place_label: string;
+  place_label: string | null;
   joined_at: string;
   left_at: string | null;
 };
@@ -81,7 +78,7 @@ export type PactParticipantPlaceRow = {
   lat: number;
   lng: number;
   radius_m: number;
-  label: string;
+  label: string | null;
   effective_from: string;
   created_at: string;
 };
@@ -95,13 +92,14 @@ export type PactInstanceRow = {
   status: InstanceStatus;
   carry_in_cents: number | null;
   closed_at: string | null;
+  deadline_soon_sent_at: string | null;
 };
 
 export type CheckinRow = {
   id: string;
   instance_id: string;
   user_id: string;
-  client_captured_at: string;
+  client_captured_at: string | null;
   server_received_at: string;
   lat: number | null;
   lng: number | null;
@@ -109,6 +107,7 @@ export type CheckinRow = {
   distance_m: number | null;
   is_simulated: boolean;
   verdict: CheckinVerdict;
+  client_attempt_id: string | null;
 };
 
 export type FreezeRow = {
@@ -125,7 +124,7 @@ export type ResultRow = {
   user_id: string;
   status: ResultStatus;
   first_success_at: string | null;
-  decided_at: string;
+  decided_at: string | null;
 };
 
 export type ReviewRow = {
@@ -134,7 +133,7 @@ export type ReviewRow = {
   subject_user_id: string;
   opened_by: string;
   kind: ReviewKind;
-  reason: string;
+  reason: string | null;
   photo_path: string | null;
   status: ReviewStatus;
   opened_at: string;
@@ -163,7 +162,7 @@ export type LedgerEntryRow = {
   kind: EntryKind;
   idempotency_key: string;
   instance_id: string | null;
-  memo: string;
+  memo: string | null;
   created_at: string;
 };
 
@@ -202,6 +201,7 @@ export type NotificationOutboxRow = {
   sent_at: string | null;
   attempts: number;
   last_error: string | null;
+  claimed_until: string | null;
 };
 
 export type PushTokenRow = {
@@ -317,6 +317,8 @@ export type Database = {
     Views: {
       account_balances: View<AccountBalanceRow>;
       member_balances: View<MemberBalanceRow>;
+      /** what settlement bills: settled instances plus settlement payments only */
+      billable_member_balances: View<MemberBalanceRow>;
     };
     Functions: RpcFunctions;
     Enums: {
