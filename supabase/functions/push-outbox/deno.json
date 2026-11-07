@@ -1,0 +1,4 @@
+{
+  "nodeModulesDir": "none",
+  "exclude": ["node_modules", "test"]
+}
