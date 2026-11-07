@@ -69,7 +69,7 @@ Views: `account_balances(account_id, group_id, kind, user_id, pact_id, instance_
 **Result per participant** (computed when an instance closes, and recomputed for that user if a late offline check-in arrives before the instance is settled):
 - frozen: a freeze exists for this instance.
 - success: some `in_fence` check-in with `server_received_at <= deadline_at`. `first_success_at` = earliest such.
-- unverified: no success, and there is a check-in that is `unjudgeable`, OR there is a check-in with `server_received_at > deadline_at` and `client_captured_at <= deadline_at`.
+- unverified: no success, and there is a check-in that is `unjudgeable`, OR an `in_fence` check-in with `server_received_at > deadline_at` and `client_captured_at <= deadline_at` (a late offline tap). Late `out_of_fence` / `rejected_simulated` check-ins stay failed.
 - failed: otherwise (no check-in, or only out_of_fence / rejected_simulated).
 - void (instance-level): if fewer than 2 participants are active (success or failed), every non-frozen participant's result is `void` and the instance status is `voided`. Unverified participants are not active.
 - excluded: only set by review outcomes.

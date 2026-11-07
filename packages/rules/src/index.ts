@@ -71,7 +71,8 @@ export function computeResults(input: {
     if (first) return { userId, status: "success", firstSuccessAt: first.serverReceivedAt };
     const unverified = mine.some(
       (c) =>
-        c.verdict === "unjudgeable" || (ms(c.serverReceivedAt) > deadline && ms(c.clientCapturedAt) <= deadline),
+        c.verdict === "unjudgeable" ||
+        (c.verdict === "in_fence" && ms(c.serverReceivedAt) > deadline && ms(c.clientCapturedAt) <= deadline),
     );
     return { userId, status: unverified ? "unverified" : "failed", firstSuccessAt: null };
   });

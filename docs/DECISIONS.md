@@ -35,6 +35,14 @@ Decisions are either **founder** (Ishaan chose) or **default** (made overnight b
 | D15 | A phone that can't get any GPS fix | The app still submits the attempt with no coordinates; it's judged Unverified. | Fail-open. |
 | D16 | Push delivery | A 5-minute lease on each outbox row (`claimed_until`) prevents overlapping runs from double-sending. | Found by the notifications agent. |
 
+| D17 | DST edge cases when generating instances | A time skipped by spring-forward moves forward by the gap (02:30 → 03:30); a time repeated by fall-back uses the first occurrence. | Deterministic and tested on 2027-03-14 and 2026-11-01. |
+| D18 | Who counts in an instance | Participants who joined at or before the window opened and haven't left. | Prevents joining mid-window to grab a pot. |
+| D19 | Resuming a paused pact | Future instances voided by the pause come back if they never closed. | Pausing shouldn't permanently delete the schedule. |
+| D20 | Changing a vote | Allowed while the review is open. | Normal group-chat behaviour. |
+| D21 | Correcting a result after the carry was already paid out | The money is clawed back from the later instance(s) that drew that carry, oldest first, as if the result had been right from the start. Carry can never go negative. | The only rule that never creates money from nowhere. |
+| D22 | Which reviews close at settlement | Open reviews on instances whose deadline was before Monday 00:00 (settlement zone) of the week being settled. | Monday-morning instances of the new week keep their review window. |
+| D23 | Settlement catch-up | Missed weeks are settled in order; only the latest week sends a settlement notification. | Earlier weeks' obligations are superseded immediately. |
+
 ## Open questions for you
 
 1. Should someone be able to leave a group while they owe money? Right now they can (their obligations stay visible to them).

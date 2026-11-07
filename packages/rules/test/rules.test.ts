@@ -92,6 +92,23 @@ describe("computeResults", () => {
     expect(byUser).toEqual({ a: "unverified", b: "success", c: "failed" });
   });
 
+  it("keeps a late out-of-fence or simulated check-in as failed rather than unverified", () => {
+    const r = computeResults({
+      deadlineAt: deadline,
+      participants: [
+        { userId: "a", frozen: false },
+        { userId: "b", frozen: false },
+        { userId: "c", frozen: false },
+      ],
+      checkins: [
+        ci("a", "out_of_fence", "2026-11-09T17:10:00Z", "2026-11-09T16:50:00Z"),
+        ci("b", "rejected_simulated", "2026-11-09T17:10:00Z", "2026-11-09T16:50:00Z"),
+        ci("c", "unjudgeable", "2026-11-09T17:10:00Z", "2026-11-09T16:50:00Z"),
+      ],
+    });
+    expect(r.results.map((x) => x.status)).toEqual(["failed", "failed", "unverified"]);
+  });
+
   it("makes a participant unverified when their only check-in was unjudgeable", () => {
     const r = computeResults({
       deadlineAt: deadline,
