@@ -88,6 +88,23 @@ describe('open_review', () => {
     expect(await code(open(c, inst, c, 'appeal'))).toBe('23514'); // one open review per subject
   });
 
+  it('at most one appeal and one challenge per subject per instance, whatever their outcome', async () => {
+    const { inst, u } = await closedInstance(['success', 'success', 'failed', 'unverified']);
+    const [a, b, c, d] = u;
+    const ap = await open(c, inst, c, 'appeal');
+    await vote(a, ap, false);
+    await vote(b, ap, false);
+    expect(await reviewStatus(ap)).toBe('rejected');
+    expect(await code(open(c, inst, c, 'appeal'))).toBe('23514');
+    const ch = await open(a, inst, d, 'challenge');
+    await vote(b, ch, false);
+    await vote(c, ch, false);
+    expect(await reviewStatus(ch)).toBe('rejected');
+    expect(await code(open(b, inst, d, 'challenge'))).toBe('23514');
+    await open(c, inst, a, 'challenge'); // another subject is fine
+    expect(await scalar(db, `select count(*)::int from public.reviews`)).toBe(3);
+  });
+
   it('challenges: any other participant, only on success or unverified; one open review per subject', async () => {
     const { inst, u } = await closedInstance(['success', 'success', 'failed', 'unverified']);
     const [a, b, c, d] = u;
@@ -168,6 +185,24 @@ describe('cast_vote', () => {
     expect(await code(vote(e, id, true))).toBe('23514');
   });
 
+  it('voters are the instance roster: later joiners cannot vote; a participant who left after the window still can', async () => {
+    const { fx, inst, u } = await closedInstance(['success', 'success', 'failed', 'success'], 1);
+    const [a, b, c, d] = u;
+    const late = fx.userIds[4];
+    await asUser(db, late, (x) => x.query(`select public.join_pact($1, 47.7, -122.4, 100, 'late')`, [fx.pactId]));
+    // superuser fixture: d left the pact after the window opened (leave_group refuses mid-window)
+    await db.query(`update public.pact_participants set left_at = $3 where pact_id = $1 and user_id = $2`, [fx.pactId, d, at(MON_OPEN, 30)]);
+    expect(await code(open(late, inst, a, 'challenge'))).toBe('42501'); // not on the roster: cannot open either
+    const id = await open(c, inst, c, 'appeal'); // eligible: a, b, d
+    const notified = await rows<{ user_id: string }>(db, `select user_id from public.notification_outbox where kind = 'review_opened'`);
+    expect(notified.map((n) => n.user_id).sort()).toEqual([a, b, d].sort());
+    expect(await code(vote(late, id, true))).toBe('42501');
+    await vote(a, id, true);
+    expect(await reviewStatus(id)).toBe('open'); // 1 of 3
+    await vote(d, id, true);
+    expect(await reviewStatus(id)).toBe('accepted');
+  });
+
   it('an accepted challenge on an unverified result survives a later offline check-in', async () => {
     const { inst, u } = await closedInstance(['success', 'success', 'unverified']);
     const [a, b, c] = u;
@@ -207,6 +242,8 @@ describe('default_open_reviews', () => {
     expect(await reviewStatus(appealOneVote)).toBe('accepted');
     expect(await reviewStatus(challengeNoVotes)).toBe('defaulted');
     expect(await reviewStatus(otherReview)).toBe('open');
+    // stamped with the job's time, not the wall clock
+    expect(await scalar(db, `select resolved_at from public.reviews where id = $1`, [appealNoVotes])).toEqual(new Date(at(MON_DEADLINE, 60 * 24)));
 
     expect(await resultOf(inst, a)).toEqual({ status: 'success', first: at(MON_OPEN, 10) });
     expect(await resultOf(inst, b)).toEqual({ status: 'success', first: at(MON_OPEN, 11) });

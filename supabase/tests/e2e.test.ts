@@ -141,6 +141,32 @@ async function balancesOf(db: DB, groupId: string): Promise<Record<string, numbe
   );
   return Object.fromEntries(r.map((x) => [x.user_id, Number(x.b)]));
 }
+/** What settlement bills: lines of settled instances + settlement payments (D7 / billable_member_balances). */
+async function billableOf(db: DB, groupId: string): Promise<Record<string, number>> {
+  const r = await rows<{ user_id: string; b: string }>(
+    db,
+    `select user_id::text, balance_cents::text b from public.billable_member_balances where group_id = $1`,
+    [groupId],
+  );
+  return Object.fromEntries(r.map((x) => [x.user_id, Number(x.b)]));
+}
+/**
+ * The balances a settlement computes obligations from: billable balances, with every obligation
+ * still 'marked_paid' counted as provisionally paid (payer +amount, payee -amount).
+ */
+async function settlementInputOf(db: DB, groupId: string): Promise<Record<string, number>> {
+  const b = await billableOf(db, groupId);
+  const mp = await rows<{ from_user: string; to_user: string; amount_cents: string }>(
+    db,
+    `select from_user::text, to_user::text, amount_cents::text from public.obligations where group_id = $1 and status = 'marked_paid'`,
+    [groupId],
+  );
+  for (const o of mp) {
+    b[o.from_user] = (b[o.from_user] ?? 0) + Number(o.amount_cents);
+    b[o.to_user] = (b[o.to_user] ?? 0) - Number(o.amount_cents);
+  }
+  return b;
+}
 const carryOf = async (db: DB, groupId: string) =>
   Number(
     await scalar(db, `select coalesce(sum(balance_cents), 0)::text from public.account_balances where kind = 'carry' and group_id = $1`, [groupId]),
@@ -294,18 +320,30 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
   const expectNames = (rec: Partial<Record<Name, number>>) =>
     Object.fromEntries(Object.entries(rec).filter(([, v]) => v !== 0).sort());
   const balances = async () => byName(await balancesOf(db, groupId));
+  const billable = async () => byName(await billableOf(db, groupId));
   const nets = async (date: string) => byName(await instanceNets(db, await instanceOf(db, pact, date)));
   const inst = (date: string) => instanceOf(db, pact, date);
+  // Second pact (created mid-simulation on Thu 10-29): "Sunday long run", Sun 18:00-19:00, A, B, C.
+  let sunPact: string;
+  const sunInst = (date: string) => instanceOf(db, sunPact, date);
+  const sunNets = async (date: string) => byName(await instanceNets(db, await sunInst(date)));
 
   let sim: SimResult;
   const reviewRecipients: Record<string, Name[]> = {};
   const reviewIds: Record<string, string> = {};
-  const settlementMoments: Record<string, { balances: Record<string, number>; carry: number }> = {};
+  /** Per settled week: the obligations input (billable, marked_paid counted as paid) and carry. */
+  const settlementMoments: Record<string, { input: Record<string, number>; carry: number }> = {};
 
   beforeAll(async () => {
     db = await createDb();
+    // Names are assigned in user_id order (A < B < ... < E) so the settlement greedy's tie-break
+    // (user_id asc) is deterministic and obligations can be hand-computed.
+    const uids: string[] = [];
+    for (let i = 0; i < NAMES.length; i++) uids.push(await createUser(db, `roommate${i + 1}@roommates.test`));
+    uids.sort();
     for (const [i, n] of NAMES.entries()) {
-      id[n] = await createUser(db, `${n.toLowerCase()}@roommates.test`, `Roommate ${n}`);
+      id[n] = uids[i];
+      await db.query(`update public.profiles set display_name = $2 where id = $1`, [id[n], `Roommate ${n}`]);
       place[n] = { lat: 47.6553 + i * 0.01, lng: -122.3035 };
     }
     groupId = await asUser(db, id.A, (d) => scalar<string>(d, `select public.create_group('Roommates', $1)`, [TZ]));
@@ -376,7 +414,17 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
         expect.soft(obs.every((o) => o.status === 'confirmed'), `all confirmed ${week}`).toBe(true);
       });
     };
-    const assertSettlement = (week: string, at: number, expected: Partial<Record<Name, number>>, carry: number) => {
+    type Bal = Partial<Record<Name, number>>;
+    /**
+     * live = member_balances (everything posted), billable = billable_member_balances (settled
+     * instances + payments), input = billable with outstanding marked_paid obligations counted as
+     * paid (defaults to billable), obligations = hand-computed greedy result.
+     */
+    const assertSettlement = (
+      week: string,
+      at: number,
+      exp: { live: Bal; billable: Bal; input?: Bal; obligations: string[]; carry: number },
+    ) => {
       after(at - MIN, `week ${week} not yet settled at 11:59`, async () => {
         expect.soft(await settlementFor(week), `week ${week} settled early`).toBeUndefined();
       });
@@ -384,18 +432,30 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
         const s = await settlementFor(week);
         expect.soft(s, `week ${week} settled at noon`).toBeDefined();
         if (!s) return;
-        const bal = await balancesOf(db, groupId);
-        expect.soft(byName(bal), `balances at settlement of ${week}`).toEqual(expectNames(expected));
-        expect.soft(await carryOf(db, groupId), `carry at settlement of ${week}`).toBe(carry);
-        settlementMoments[week] = { balances: bal, carry };
+        expect.soft(await balances(), `live balances at settlement of ${week}`).toEqual(expectNames(exp.live));
+        expect.soft(await billable(), `billable balances at settlement of ${week}`).toEqual(expectNames(exp.billable));
+        const input = await settlementInputOf(db, groupId);
+        expect.soft(byName(input), `settlement input of ${week}`).toEqual(expectNames(exp.input ?? exp.billable));
+        expect.soft(Object.values(input).reduce((a, b) => a + b, 0), `input sums to -carry ${week}`).toBe(0 - exp.carry);
+        expect.soft(await carryOf(db, groupId), `carry at settlement of ${week}`).toBe(exp.carry);
+        settlementMoments[week] = { input, carry: exp.carry };
         const obs = await obligationsOf(db, s.id);
-        const oracle = simplifyDebts(bal).obligations.map((o) => `${name(o.from)}->${name(o.to)}:${o.amountCents}`).sort();
-        expect.soft(obs.map((o) => `${name(o.from_user)}->${name(o.to_user)}:${Number(o.amount_cents)}`).sort(), `obligations ${week}`).toEqual(oracle);
+        const got = obs.map((o) => `${name(o.from_user)}->${name(o.to_user)}:${Number(o.amount_cents)}`).sort();
+        const oracle = simplifyDebts(input).obligations.map((o) => `${name(o.from)}->${name(o.to)}:${o.amountCents}`).sort();
+        expect.soft(got, `obligations ${week} vs simplifyDebts(billable adjusted for marked_paid)`).toEqual(oracle);
+        expect.soft(got, `obligations ${week} vs hand-computed`).toEqual([...exp.obligations].sort());
         expect.soft(obs.every((o) => o.status === 'pending')).toBe(true);
-        const positive = Object.values(bal).filter((b) => b > 0).reduce((a, b) => a + b, 0);
+        const positive = Object.values(input).filter((b) => b > 0).reduce((a, b) => a + b, 0);
         expect.soft(obs.reduce((a, o) => a + Number(o.amount_cents), 0)).toBe(positive);
       });
     };
+    const obligationFrom = async (week: string, from: Name) => {
+      const s = await settlementFor(week);
+      const obs = (await obligationsOf(db, s!.id)).filter((o) => o.from_user === id[from]);
+      expect(obs, `exactly one obligation from ${from} in ${week}`).toHaveLength(1);
+      return obs[0];
+    };
+    const obligationStatus = (oid: string) => scalar<string>(db, `select status::text from public.obligations where id = $1`, [oid]);
 
     // ---------------- Week 1: Mon 2026-10-19 .. Fri 10-23 (PDT, window 15:00Z-16:00Z) ----------------
     // Mon: A,B,C,D on time, E never checks in. n=5,k=4: pot 500 -> 125 each.
@@ -482,22 +542,70 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
     //   C: 125 - 500 - 500 - 500 + 0 = -1375     D: 125 + 166 - 500 + 0 + 0 = -209
     //   E: -500 + 0 - 500 + 0 (frozen) + 0 = -1000          sum = 0, carry = 0
     after(la('2026-10-25', '23:00'), 'week 1 hand-computed balances', async () => {
-      expect.soft(await balances(), 'week 1 net').toEqual(expectNames({ A: 1293, B: 1292, C: -1375, D: -209, E: -1000 }));
+      expect.soft(await balances(), 'week 1 net').toEqual(expectNames({ A: 1292, B: 1292, C: -1375, D: -209, E: -1000 }));
       expect.soft(await carryOf(db, groupId)).toBe(0);
     });
 
     // ---------------- Week 2: Mon 10-26 .. Fri 10-30 (PDT); the week ends on the DST change ----------------
-    // Mon (closes 09:00, before the noon settlement of week 1, so it is in week 1's obligations).
+    // Mon 10-26: A,B,C,D in, E out of fence. k=4: 125 each, E -500. It closes at 09:00, before the
+    // noon settlement of week 1, but it is a week-2 instance: it stays 'closed' (still reviewable)
+    // and is NOT billed until week 2's settlement.
     ci('A', '2026-10-26', '08:05', 'in');
     ci('B', '2026-10-26', '08:10', 'in');
     ci('C', '2026-10-26', '08:15', 'in');
     ci('D', '2026-10-26', '08:20', 'in');
     ci('E', '2026-10-26', '08:25', 'out');
-    // week 1 + Mon 10-26: A 1417, B 1417, C -1250, D -84, E -1500
-    assertSettlement('2026-10-19', la('2026-10-26', '12:00'), { A: 1417, B: 1417, C: -1250, D: -84, E: -1500 }, 0);
-    settleUp('2026-10-19', la('2026-10-26', '14:00'), la('2026-10-26', '15:00'));
-    after(la('2026-10-26', '15:00'), 'all square after week 1 settle-up', async () => {
-      expect.soft(await balances(), 'after week 1 settle-up').toEqual({});
+    // live = week 1 + Mon 10-26: A 1417, B 1417, C -1250, D -84, E -1500
+    // billable = week 1 only:     A 1292, B 1292, C -1375, D -209, E -1000
+    // greedy (A<B<...<E): A,B tie -> A takes C (1292); B takes E (1000), D (209), C's rest (83).
+    assertSettlement('2026-10-19', la('2026-10-26', '12:00'), {
+      live: { A: 1417, B: 1417, C: -1250, D: -84, E: -1500 },
+      billable: { A: 1292, B: 1292, C: -1375, D: -209, E: -1000 },
+      obligations: ['C->A:1292', 'E->B:1000', 'D->B:209', 'C->B:83'],
+      carry: 0,
+    });
+    after(la('2026-10-26', '12:00'), 'Mon 10-26 closed but not settled (not billed in week 1)', async () => {
+      expect.soft(await scalar(db, `select status::text from public.pact_instances where id = $1`, [await inst('2026-10-26')])).toBe('closed');
+      expect.soft(await nets('2026-10-26'), 'Mon 10-26').toEqual(expectNames({ A: 125, B: 125, C: 125, D: 125, E: -500 }));
+    });
+    // Week 1 settle-up. Every payer marks paid at 14:00. At 15:00 the payees confirm everything
+    // except: (1) B disputes E's 1000 (says it never arrived: marked_paid -> pending);
+    // (2) B never gets round to confirming D's 209 before the next settlement.
+    const w1Held: { eToB?: string; dToB?: string } = {};
+    before(la('2026-10-26', '14:00'), 'week 1 payers mark paid', async () => {
+      const s = await settlementFor('2026-10-19');
+      await markAllPaid(db, s!.id);
+      const obs = await obligationsOf(db, s!.id);
+      expect.soft(obs.every((o) => o.status === 'marked_paid'), 'all week 1 marked paid').toBe(true);
+      w1Held.eToB = (await obligationFrom('2026-10-19', 'E')).id;
+      w1Held.dToB = (await obligationFrom('2026-10-19', 'D')).id;
+    });
+    before(la('2026-10-26', '15:00'), 'week 1 payees confirm all but two; B disputes E', async () => {
+      const s = await settlementFor('2026-10-19');
+      // only the payee can dispute
+      const notPayee = await expectError(asUser(db, id.E, (d) => d.query(`select public.dispute_obligation($1)`, [w1Held.eToB])));
+      expect.soft(notPayee.code).toBe('42501');
+      await asUser(db, id.B, (d) => d.query(`select public.dispute_obligation($1)`, [w1Held.eToB]));
+      for (const o of await obligationsOf(db, s!.id)) {
+        if (o.status !== 'marked_paid' || o.id === w1Held.dToB) continue;
+        await asUser(db, o.to_user, (d) => d.query(`select public.confirm_obligation($1)`, [o.id]));
+      }
+      const st = Object.fromEntries((await obligationsOf(db, s!.id)).map((o) => [`${name(o.from_user)}->${name(o.to_user)}`, o.status]));
+      expect.soft(st, 'week 1 obligation statuses after settle-up').toEqual({
+        'C->A': 'confirmed',
+        'C->B': 'confirmed',
+        'D->B': 'marked_paid',
+        'E->B': 'pending',
+      });
+      expect.soft(
+        await scalar(db, `select marked_paid_at from public.obligations where id = $1`, [w1Held.eToB]),
+        'dispute clears marked_paid_at',
+      ).toBeNull();
+    });
+    // Unpaid: E's 1000 (disputed) and D's 209 (unconfirmed) are still on the books; Mon 10-26 unbilled.
+    after(la('2026-10-26', '15:00'), 'after week 1 settle-up', async () => {
+      expect.soft(await billable(), 'billable after week 1 settle-up').toEqual(expectNames({ B: 1209, D: -209, E: -1000 }));
+      expect.soft(await balances(), 'live after week 1 settle-up').toEqual(expectNames({ A: 125, B: 1334, C: 125, D: -84, E: -1500 }));
     });
     // Tue: everyone but E checks in; A challenges B; A (opener), C, D vote yes -> accepted, B failed.
     // k=3, l=2 (B, E): pot 1000 -> 333 r1 (A earliest).
@@ -523,9 +631,14 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
     after(la('2026-10-28', '09:00'), 'Wed 10-28 nets', async () => {
       expect.soft(await nets('2026-10-28'), 'Wed 10-28').toEqual(expectNames({ A: 167, B: 167, C: 166, D: -500 }));
     });
+    // D24: E is on the roster of the open Wed window, so leaving is refused until it closes.
+    before(la('2026-10-28', '08:45'), 'E cannot leave during an open window', async () => {
+      const e = await expectError(asUser(db, id.E, (d) => d.query(`select public.leave_group($1)`, [groupId])), /cannot leave/);
+      expect.soft(e.code).toBe('23514');
+    });
     openReview('C', 'A', 'challenge', 'wed-challenge', '2026-10-28', '10:00');
     openReview('D', 'D', 'appeal', 'wed-appeal', '2026-10-28', '10:10');
-    // Wed 12:00: E leaves the group mid-week (also leaves the pact).
+    // Wed 12:00: E leaves the group mid-week (also leaves the pact), still owing the disputed 1000.
     before(la('2026-10-28', '12:00'), 'E leaves', async () => {
       await asUser(db, id.E, (d) => d.query(`select public.leave_group($1)`, [groupId]));
       const t = iso(la('2026-10-28', '12:00'));
@@ -543,16 +656,42 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
     after(la('2026-10-29', '09:00'), 'Thu 10-29 nets', async () => {
       expect.soft(await nets('2026-10-29'), 'Thu 10-29').toEqual(expectNames({ A: 500, B: 500, C: -500, D: -500 }));
     });
+    // Thu 12:00: A creates a second pact, "Sunday long run" (Sun 18:00-19:00, $5); A, B, C join.
+    before(la('2026-10-29', '12:00'), 'A creates the Sunday pact; A, B, C join', async () => {
+      sunPact = await asUser(db, id.A, (d) =>
+        scalar<string>(d, `select public.create_pact($1, 'Sunday long run', '{7}'::smallint[], '18:00', '19:00', 500, $2)`, [groupId, TZ]),
+      );
+      for (const n of ['A', 'B', 'C'] as Name[]) {
+        await asUser(db, id[n], (d) => d.query(`select public.join_pact($1, $2, $3, 100, $4)`, [sunPact, place[n].lat, place[n].lng, `${n}'s park`]));
+      }
+      // join_pact stamps wall-clock now(); move the join and first place to the simulated instant.
+      const t = iso(la('2026-10-29', '12:00'));
+      await db.query(`update public.pact_participants set joined_at = $2 where pact_id = $1`, [sunPact, t]);
+      await db.query(`update public.pact_participant_places set effective_from = $2 where pact_id = $1`, [sunPact, t]);
+    });
     // Fri: only D. k=1,l=3 -> D +1500.
     ci('D', '2026-10-30', '08:30', 'in');
     after(la('2026-10-30', '09:00'), 'Fri 10-30 nets', async () => {
       expect.soft(await nets('2026-10-30'), 'Fri 10-30').toEqual(expectNames({ D: 1500, A: -500, B: -500, C: -500 }));
     });
-    // Sun 11-01 (PST now): Tue..Fri of week 2 (Mon was settled with week 1).
-    //   A 334+167+500-500 = 501   B -500+167+500-500 = -333   C 333+166-500-500 = -501
-    //   D 333-500-500+1500 = 833  E -500
+    // Sun 11-01 (PST, the fall-back day) 18:00-19:00: A and C run; B doesn't check in (on time).
+    // k=2, l=1: pot 500 -> A 250, C 250, B -500.
+    const ciSun = (n: Name, date: string, hm: string, fix: Fix) =>
+      before(la(date, hm), `${n} ${fix} Sunday pact ${date} ${hm}`, async () => {
+        await checkInAt(db, id[n], await sunInst(date), place[n], fix, la(date, hm));
+      });
+    ciSun('A', '2026-11-01', '18:10', 'in');
+    ciSun('C', '2026-11-01', '18:20', 'in');
+    after(la('2026-11-01', '19:00'), 'Sun 11-01 nets at close', async () => {
+      expect.soft(await sunNets('2026-11-01'), 'Sun 11-01 at close').toEqual(expectNames({ A: 250, C: 250, B: -500 }));
+    });
+    // Sun 11-01 23:00 (PST): live = after week 1 settle-up + Tue..Fri + Sunday.
+    //   Tue..Fri: A 334+167+500-500 = 501   B -500+167+500-500 = -333   C 333+166-500-500 = -501
+    //             D 333-500-500+1500 = 833  E -500
+    //   A 125+501+250 = 876   B 1334-333-500 = 501   C 125-501+250 = -126   D -84+833 = 749   E -1500-500 = -2000
     after(la('2026-11-01', '23:00'), 'week 2 balances before settlement', async () => {
-      expect.soft(await balances(), 'week 2 pre-settlement').toEqual(expectNames({ A: 501, B: -333, C: -501, D: 833, E: -500 }));
+      expect.soft(await balances(), 'week 2 pre-settlement').toEqual(expectNames({ A: 876, B: 501, C: -126, D: 749, E: -2000 }));
+      expect.soft(await billable(), 'nothing new billed mid-week').toEqual(expectNames({ B: 1209, D: -209, E: -1000 }));
       expect.soft(await reviewStatus('wed-challenge')).toBe('open');
       expect.soft(await reviewStatus('wed-appeal')).toBe('open');
     });
@@ -566,9 +705,78 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
     after(la('2026-11-02', '11:00'), 'no settlement at 12:00 PDT (= 11:00 PST)', async () => {
       expect.soft(await settlementFor('2026-10-26'), 'settled at the PDT noon').toBeUndefined();
     });
-    // Settlement defaults: C's challenge on A stands; D's appeal -> excluded (+500 to D, A -167, B -167, C -166).
-    // Then + Mon 11-02: A 501, B -333, C -501, D 833, E -500.
-    assertSettlement('2026-10-26', la('2026-11-02', '12:00'), { A: 501, B: -333, C: -501, D: 833, E: -500 }, 0);
+    // Settlement defaults: C's challenge on A stands; D's appeal -> excluded (+500 to D, A -167, B -167, C -166),
+    // which Mon 11-02 (A 167, B 167, C 166, D -500) exactly cancels in the live view:
+    //   live      A 876, B 501, C -126, D 749, E -2000
+    // Mon 11-02 is closed but unsettled, so billable excludes it; the Sunday instance is settled:
+    //   billable  A 876-167 = 709, B 501-167 = 334, C -126-166 = -292, D 749+500 = 1249, E -2000
+    // (1) E's disputed 1000 was superseded and is billed again; (2) D's 209 is still marked_paid,
+    // so it counts as paid: D +209, B -209:
+    //   input     A 709, B 125, C -292, D 1458, E -2000
+    // greedy: E->D 1458, E->A 542, C->A 167, C->B 125.
+    assertSettlement('2026-10-26', la('2026-11-02', '12:00'), {
+      live: { A: 876, B: 501, C: -126, D: 749, E: -2000 },
+      billable: { A: 709, B: 334, C: -292, D: 1249, E: -2000 },
+      input: { A: 709, B: 125, C: -292, D: 1458, E: -2000 },
+      obligations: ['E->D:1458', 'E->A:542', 'C->A:167', 'C->B:125'],
+      carry: 0,
+    });
+    after(la('2026-11-02', '12:00'), 'week 1 leftovers: disputed superseded, unconfirmed survives', async () => {
+      expect.soft(await obligationStatus(w1Held.eToB!), '(1) disputed obligation superseded').toBe('superseded');
+      expect.soft(await obligationStatus(w1Held.dToB!), '(2) marked_paid obligation survives settlement').toBe('marked_paid');
+      const eOwes = (await obligationsOf(db, (await settlementFor('2026-10-26'))!.id))
+        .filter((o) => o.from_user === id.E)
+        .reduce((a, o) => a + Number(o.amount_cents), 0);
+      expect.soft(eOwes, '(1) E re-billed: disputed 1000 + week 2 1000').toBe(2000);
+    });
+    before(la('2026-11-02', '12:10'), 'superseded obligation can no longer be confirmed, disputed or marked', async () => {
+      for (const [who, fn] of [
+        ['B', 'confirm_obligation'],
+        ['B', 'dispute_obligation'],
+        ['E', 'mark_obligation_paid'],
+      ] as const) {
+        const e = await expectError(asUser(db, id[who], (d) => d.query(`select public.${fn}($1)`, [w1Held.eToB])), /superseded/);
+        expect.soft(e.code, fn).toBe('23514');
+      }
+      // repeat mark by the payer of the surviving marked_paid obligation is a no-op
+      await asUser(db, id.D, (d) => d.query(`select public.mark_obligation_paid($1)`, [w1Held.dToB]));
+      expect.soft(await obligationStatus(w1Held.dToB!)).toBe('marked_paid');
+    });
+    after(la('2026-11-02', '12:00'), 'Sunday instance settled with week 2', async () => {
+      expect.soft(await scalar(db, `select status::text from public.pact_instances where id = $1`, [await sunInst('2026-11-01')])).toBe('settled');
+    });
+    // (3) B's phone was offline on Sunday. Mon 12:20 a late OUT-of-fence tap (captured 18:40) arrives:
+    // it stays failed (D27), nothing changes. Mon 12:30 a late IN-fence tap (captured 18:50) arrives,
+    // 17.5 h after the deadline, on an instance that is already settled: B -> unverified, so B is not
+    // active, k=2 l=0 -> nobody moves money. Correction: A -250, C -250, B +500, billed next week.
+    before(la('2026-11-02', '12:20'), 'B late out-of-fence tap for Sunday', async () => {
+      const c = await checkInAt(db, id.B, await sunInst('2026-11-01'), place.B, 'out', la('2026-11-02', '12:20'), la('2026-11-01', '18:40'));
+      expect.soft(c.verdict).toBe('out_of_fence');
+    });
+    after(la('2026-11-02', '12:20'), 'late out-of-fence stays failed', async () => {
+      expect.soft(await scalar(db, `select status::text from public.results where instance_id = $1 and user_id = $2`, [await sunInst('2026-11-01'), id.B])).toBe('failed');
+      expect.soft(await sunNets('2026-11-01')).toEqual(expectNames({ A: 250, C: 250, B: -500 }));
+    });
+    before(la('2026-11-02', '12:30'), 'B late in-fence tap for Sunday (settled instance)', async () => {
+      const c = await checkInAt(db, id.B, await sunInst('2026-11-01'), place.B, 'in', la('2026-11-02', '12:30'), la('2026-11-01', '18:50'));
+      expect.soft(c.verdict).toBe('in_fence');
+    });
+    after(la('2026-11-02', '12:30'), 'Sunday corrected after settlement', async () => {
+      const sun = await sunInst('2026-11-01');
+      expect.soft(await scalar(db, `select status::text from public.results where instance_id = $1 and user_id = $2`, [sun, id.B])).toBe('unverified');
+      expect.soft(await scalar(db, `select status::text from public.pact_instances where id = $1`, [sun])).toBe('settled');
+      expect.soft(await sunNets('2026-11-01'), 'Sun 11-01 corrected').toEqual({});
+      expect.soft(
+        await scalar<number>(db, `select count(*)::int from public.ledger_entries where instance_id = $1 and kind = 'correction'`, [sun]),
+      ).toBe(1);
+      // week 2's obligations were computed before the correction and stay as they are
+      const obs = await obligationsOf(db, (await settlementFor('2026-10-26'))!.id);
+      expect.soft(obs.map((o) => `${name(o.from_user)}->${name(o.to_user)}:${o.amount_cents}`).sort()).toEqual(
+        ['E->D:1458', 'E->A:542', 'C->A:167', 'C->B:125'].sort(),
+      );
+      // the correction is billable right away (the instance is settled) -> picked up next Monday
+      expect.soft(await billable(), 'billable incl. correction').toEqual(expectNames({ A: 459, B: 834, C: -542, D: 1249, E: -2000 }));
+    });
     after(la('2026-11-02', '12:00'), 'week 2 reviews defaulted', async () => {
       expect.soft(await reviewStatus('wed-challenge')).toBe('defaulted');
       expect.soft(await reviewStatus('wed-appeal')).toBe('defaulted');
@@ -584,8 +792,22 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
       expect.soft(st.find((s) => s.local_date === '2026-11-02')?.status).toBe('closed');
     });
     settleUp('2026-10-26', la('2026-11-02', '14:00'), la('2026-11-02', '15:00'));
-    after(la('2026-11-02', '15:00'), 'all square after week 2 settle-up (E paid after leaving)', async () => {
-      expect.soft(await balances(), 'after week 2 settle-up').toEqual({});
+    // (2) A week late, B finally confirms D's week-1 payment: the surviving obligation still works.
+    before(la('2026-11-02', '15:30'), 'B confirms the week-1 obligation that survived settlement', async () => {
+      await asUser(db, id.B, (d) => d.query(`select public.confirm_obligation($1)`, [w1Held.dToB]));
+      expect.soft(await obligationStatus(w1Held.dToB!)).toBe('confirmed');
+      expect.soft(
+        await scalar<number>(db, `select count(*)::int from public.ledger_entries where idempotency_key = $1`, [`payment:${w1Held.dToB}`]),
+      ).toBe(1);
+    });
+    // Everything billed so far is paid (E paid after leaving). What's left: the Sunday correction
+    // (billable, not yet billed) and Mon 11-02 (A 167, B 167, C 166, D -500; closed, unsettled).
+    after(la('2026-11-02', '15:30'), 'after week 2 settle-up', async () => {
+      expect.soft(await billable(), 'billable after week 2 settle-up').toEqual(expectNames({ A: -250, B: 500, C: -250 }));
+      expect.soft(await balances(), 'live after week 2 settle-up').toEqual(expectNames({ A: -83, B: 667, C: -84, D: -500 }));
+    });
+    before(la('2026-11-02', '16:00'), 'A pauses the Sunday pact', async () => {
+      await asUser(db, id.A, (d) => d.query(`select public.set_pact_paused($1, true)`, [sunPact]));
     });
     // Tue: only A. A +1500; B,C,D -500. B's check-in captured after the deadline is refused.
     ci('A', '2026-11-03', '08:10', 'in');
@@ -615,10 +837,16 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
     before(la('2026-11-06', '10:00'), 'A pauses the pact', async () => {
       await asUser(db, id.A, (d) => d.query(`select public.set_pact_paused($1, true)`, [pact]));
     });
-    //   A 1500-500+0-500 = 500   B -500+167-500 = -833   C -500+167-500 = -833   D -500+166-500 = -834
+    // Tue..Fri: A 1500-500+0-500 = 500   B -500+167-500 = -833   C -500+167-500 = -833   D -500+166-500 = -834
+    // + after week 2 settle-up (A -83, B 667, C -84, D -500):
+    //   A 417   B -166   C -917   D -1334
     after(la('2026-11-08', '23:00'), 'week 3 balances before settlement', async () => {
-      expect.soft(await balances(), 'week 3 pre-settlement').toEqual(expectNames({ A: 500, B: -833, C: -833, D: -834 }));
+      expect.soft(await balances(), 'week 3 pre-settlement').toEqual(expectNames({ A: 417, B: -166, C: -917, D: -1334 }));
       expect.soft(await carryOf(db, groupId)).toBe(2000);
+      expect.soft(
+        await scalar(db, `select status::text from public.pact_instances where pact_id = $1 and local_date = '2026-11-08'`, [sunPact]),
+        'Sun 11-08 voided by the pause',
+      ).toBe('voided');
       const mon = await rows<{ status: string; n: number }>(
         db,
         `select i.status::text, (select count(*)::int from public.results r where r.instance_id = i.id) n
@@ -627,7 +855,15 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
       );
       expect.soft(mon, 'Mon 11-09 voided by the pause').toEqual([{ status: 'voided', n: 0 }]);
     });
-    assertSettlement('2026-11-02', la('2026-11-09', '12:00'), { A: 500, B: -833, C: -833, D: -834 }, 2000);
+    // Everything is settled now (Mon 11-09 voided), so live = billable = input; the Sunday correction
+    // (B +500, A -250, C -250) is billed here, one week after it was posted.
+    // greedy: D->A 417. Remaining debts (B -166, C -917, D -917) are the 2000 riding in the carry.
+    assertSettlement('2026-11-02', la('2026-11-09', '12:00'), {
+      live: { A: 417, B: -166, C: -917, D: -1334 },
+      billable: { A: 417, B: -166, C: -917, D: -1334 },
+      obligations: ['D->A:417'],
+      carry: 2000,
+    });
     settleUp('2026-11-02', la('2026-11-09', '13:00'), la('2026-11-09', '14:00'));
 
     // DST: generated UTC instants follow local 08:00/09:00 across the fall-back.
@@ -647,23 +883,44 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
     const hot: [number, number][] = [
       ...PACT_DAYS.map((d): [number, number] => [la(d, '07:30'), la(d, '10:00')]),
       ...MONDAY_NOONS.map((t): [number, number] => [t - 30 * MIN, t + 30 * MIN]),
+      [la('2026-11-01', '17:30'), la('2026-11-01', '19:30')],
+      [la('2026-11-02', '12:00'), la('2026-11-02', '16:30')],
     ];
     const points = [
       ...PACT_DAYS.flatMap((d) => [la(d, '08:00'), la(d, '08:45'), la(d, '09:00')]),
       ...MONDAY_NOONS.flatMap((t) => [t - MIN, t]),
+      ...['2026-11-01', '2026-11-08'].flatMap((d) => [la(d, '18:00'), la(d, '18:45'), la(d, '19:00')]),
     ];
     sim = await simulate(db, { from: START, to: END, hot, points, events });
 
     expect(sim.violations, 'ledger invariants after every tick').toEqual([]);
-    console.log('TICKS', sim.ticks); expect(sim.ticks).toBeGreaterThan(500);
+    expect(sim.ticks).toBeGreaterThan(500);
     expect(await invariants(db)).toEqual(ZERO_INVARIANTS);
   }, 600_000);
 
-  it('final settlement: all obligations confirmed; balances are zero except money riding in the carry', async () => {
+  it('final settlement: every obligation confirmed or superseded; balances are zero except money riding in the carry', async () => {
     const sets = await settlementsOf(db, groupId);
     expect(sets.map((s) => s.week_start)).toEqual(['2026-10-19', '2026-10-26', '2026-11-02']);
-    const final = await obligationsOf(db, sets[2].id);
-    expect(final.map((o) => `${name(o.from_user)}->${name(o.to_user)}:${o.amount_cents}:${o.status}`)).toEqual(['D->A:501:confirmed']);
+    const statuses = async (sid: string) =>
+      (await obligationsOf(db, sid)).map((o) => `${name(o.from_user)}->${name(o.to_user)}:${o.amount_cents}:${o.status}`).sort();
+    expect(await statuses(sets[0].id)).toEqual(
+      ['C->A:1292:confirmed', 'C->B:83:confirmed', 'D->B:209:confirmed', 'E->B:1000:superseded'].sort(),
+    );
+    expect(await statuses(sets[1].id)).toEqual(
+      ['C->A:167:confirmed', 'C->B:125:confirmed', 'E->A:542:confirmed', 'E->D:1458:confirmed'].sort(),
+    );
+    expect(await statuses(sets[2].id)).toEqual(['D->A:417:confirmed']);
+    // one settlement_payment per confirmed obligation, for exactly its amount
+    const payments = await rows<{ n: number; m: number }>(
+      db,
+      `select (select count(*)::int from public.ledger_entries where kind = 'settlement_payment' and group_id = $1) n,
+              (select count(*)::int from public.obligations o where o.group_id = $1 and o.status = 'confirmed'
+                 and exists (select 1 from public.ledger_entries e join public.ledger_lines l on l.entry_id = e.id
+                              join public.ledger_accounts a on a.id = l.account_id
+                             where e.idempotency_key = 'payment:' || o.id and a.user_id = o.from_user and l.amount_cents = o.amount_cents)) m`,
+      [groupId],
+    );
+    expect(payments).toEqual([{ n: 8, m: 8 }]);
     const open = await scalar<number>(
       db,
       `select count(*)::int from public.obligations where group_id = $1 and status in ('pending', 'marked_paid')`,
@@ -676,12 +933,13 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
     expect(Object.values(bal).reduce((a, b) => a + b, 0)).toBe(-carry);
     // Remaining debts are exactly what still rides in the carry: nobody is owed anything.
     expect(Object.values(bal).every((b) => b <= 0)).toBe(true);
-    expect(byName(bal)).toEqual({ B: -833, C: -833, D: -334 });
-    // Each week's confirmed payments equal the positive balances at that settlement.
+    expect(byName(bal)).toEqual({ B: -166, C: -917, D: -917 });
+    expect(byName(await billableOf(db, groupId))).toEqual({ B: -166, C: -917, D: -917 });
+    // Each week's obligations total the positive settlement input (billable, marked_paid counted as paid).
     for (const s of sets) {
       const m = settlementMoments[s.week_start];
-      const paid = (await obligationsOf(db, s.id)).reduce((a, o) => a + Number(o.amount_cents), 0);
-      expect(paid).toBe(Object.values(m.balances).filter((b) => b > 0).reduce((a, b) => a + b, 0));
+      const owed = (await obligationsOf(db, s.id)).reduce((a, o) => a + Number(o.amount_cents), 0);
+      expect(owed, s.week_start).toBe(Object.values(m.input).filter((b) => b > 0).reduce((a, b) => a + b, 0));
     }
   });
 
@@ -732,7 +990,7 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
     );
     expect(ds, 'deadline_soon recipients').toEqual([]);
     const instancesWithResults = await scalar<number>(db, `select count(distinct instance_id)::int from public.results`);
-    expect(instancesWithResults).toBe(15);
+    expect(instancesWithResults).toBe(16); // 15 weekday instances + Sunday 11-01
     expect(
       await scalar<number>(db, `select count(*)::int from public.pact_instances where pact_id = $1 and deadline_soon_sent_at is not null`, [pact]),
     ).toBe(15);
@@ -756,8 +1014,9 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
       `select instance_id::text i, split_part(idempotency_key, ':', 3) c from public.ledger_entries where kind = 'correction' order by 1, 2`,
     );
     expect(corrections.map((c) => `${c.i}:${c.c}`)).toEqual(correctionEntries.map((c) => `${c.i}:${c.c}`));
-    // Thu 10-22 (late check-in), Fri 10-23 (appeal), Tue 10-27 (challenge), Wed 10-28 (defaulted appeal)
-    expect(correctionEntries).toHaveLength(4);
+    // Thu 10-22 (late check-in), Fri 10-23 (appeal), Tue 10-27 (challenge), Wed 10-28 (defaulted appeal),
+    // Sun 11-01 (late check-in after settlement)
+    expect(correctionEntries).toHaveLength(5);
 
     // review_opened: every other current participant, once per review.
     for (const [key, rid] of Object.entries(reviewIds)) {
@@ -916,18 +1175,27 @@ describe('Scenario B: two groups in different settlement time zones', () => {
       expect.soft(await weekSettled(ny_g)).toBe(false);
       nySnap = await snapshot(db, ny_g);
     });
+    // Mon 11-09 instances close (all fail, stakes roll into the carry) before each noon settlement,
+    // but they belong to the new week: they stay 'closed' and are not billed now.
+    const settledObligations = async (g: string, input: Record<string, number>) => {
+      const s = (await settlementsOf(db, g)).find((x) => x.week_start === '2026-11-02')!;
+      const obs = (await obligationsOf(db, s.id)).map((o) => `${name(o.from_user)}->${name(o.to_user)}:${o.amount_cents}`).sort();
+      const oracle = simplifyDebts(input).obligations.map((o) => `${name(o.from)}->${name(o.to)}:${o.amountCents}`).sort();
+      expect.soft(obs, 'obligations vs simplifyDebts(billable adjusted for marked_paid)').toEqual(oracle);
+      return obs;
+    };
+    const monStatus = (p: string) =>
+      scalar<string>(db, `select status::text from public.pact_instances where pact_id = $1 and local_date = '2026-11-09'`, [p]);
     after(KOL_NOON, 'Kolkata settles at its noon; NY untouched', async () => {
       expect.soft(await weekSettled(kol_g), 'KOL settled').toBe(true);
       expect.soft(await weekSettled(ny_g), 'NY not yet').toBe(false);
       expect.soft(await snapshot(db, ny_g), 'NY untouched by KOL settlement').toEqual(nySnap);
-      const bal = await balancesOf(db, kol_g);
-      expect.soft(byName(bal), 'KOL at settlement').toEqual(exp({ X: -3150, K1: 2100, K2: -1050 }));
+      expect.soft(byName(await balancesOf(db, kol_g)), 'KOL live at settlement').toEqual(exp({ X: -3150, K1: 2100, K2: -1050 }));
       expect.soft(await carryOf(db, kol_g)).toBe(2100);
-      const s = (await settlementsOf(db, kol_g)).find((x) => x.week_start === '2026-11-02')!;
-      const obs = await obligationsOf(db, s.id);
-      expect.soft(obs.map((o) => `${name(o.from_user)}->${name(o.to_user)}:${o.amount_cents}`)).toEqual(['X->K1:2100']);
-      const oracle = simplifyDebts(bal).obligations.map((o) => `${name(o.from)}->${name(o.to)}:${o.amountCents}`);
-      expect.soft(obs.map((o) => `${name(o.from_user)}->${name(o.to_user)}:${o.amount_cents}`)).toEqual(oracle);
+      expect.soft(await monStatus(kol_p), 'KOL Mon 11-09 closed, not settled').toBe('closed');
+      const input = await settlementInputOf(db, kol_g);
+      expect.soft(byName(input), 'KOL billed at settlement').toEqual(exp({ X: -2450, K1: 2800, K2: -350 }));
+      expect.soft(await settledObligations(kol_g, input)).toEqual(['K2->K1:350', 'X->K1:2450']);
     });
     before(kol('2026-11-09', '13:00'), 'KOL payer marks paid', async () => {
       const s = (await settlementsOf(db, kol_g)).find((x) => x.week_start === '2026-11-02')!;
@@ -944,12 +1212,12 @@ describe('Scenario B: two groups in different settlement time zones', () => {
     after(NY_NOON, 'NY settles at its noon; Kolkata untouched', async () => {
       expect.soft(await weekSettled(ny_g), 'NY settled').toBe(true);
       expect.soft(await snapshot(db, kol_g), 'KOL untouched by NY settlement').toEqual(kolSnap);
-      const bal = await balancesOf(db, ny_g);
-      expect.soft(byName(bal), 'NY at settlement').toEqual(exp({ X: 1800, N1: -900, N2: -1800 }));
+      expect.soft(byName(await balancesOf(db, ny_g)), 'NY live at settlement').toEqual(exp({ X: 1800, N1: -900, N2: -1800 }));
       expect.soft(await carryOf(db, ny_g)).toBe(900);
-      const s = (await settlementsOf(db, ny_g)).find((x) => x.week_start === '2026-11-02')!;
-      const obs = await obligationsOf(db, s.id);
-      expect.soft(obs.map((o) => `${name(o.from_user)}->${name(o.to_user)}:${o.amount_cents}`)).toEqual(['N2->X:1800']);
+      expect.soft(await monStatus(ny_p), 'NY Mon 11-09 closed, not settled').toBe('closed');
+      const input = await settlementInputOf(db, ny_g);
+      expect.soft(byName(input), 'NY billed at settlement').toEqual(exp({ X: 2100, N1: -600, N2: -1500 }));
+      expect.soft(await settledObligations(ny_g, input)).toEqual(['N1->X:600', 'N2->X:1500']);
     });
     before(ny('2026-11-09', '13:00'), 'NY payer marks paid', async () => {
       const s = (await settlementsOf(db, ny_g)).find((x) => x.week_start === '2026-11-02')!;
@@ -981,14 +1249,16 @@ describe('Scenario B: two groups in different settlement time zones', () => {
     });
     expect(sim.violations, 'ledger invariants after every tick').toEqual([]);
 
-    // Final: each group's members owe exactly what rides in that group's carry.
+    // Final: everything billed is paid; what's left is Mon 11-09's all-fail stakes (unbilled until
+    // next week's settlement), which is exactly what rides in each group's carry.
     for (const [g, expected] of [
-      [ny_g, exp({ N1: -900 })],
-      [kol_g, exp({ X: -1050, K2: -1050 })],
+      [ny_g, exp({ X: -300, N1: -300, N2: -300 })],
+      [kol_g, exp({ X: -700, K1: -700, K2: -700 })],
     ] as const) {
       const bal = await balancesOf(db, g);
       expect(byName(bal)).toEqual(expected);
       expect(Object.values(bal).reduce((a, b) => a + b, 0)).toBe(-(await carryOf(db, g)));
+      expect(byName(await billableOf(db, g))).toEqual({});
     }
     // Exactly one settlement per group, for week 2026-11-02.
     expect((await settlementsOf(db, ny_g)).map((s) => s.week_start)).toEqual(['2026-11-02']);

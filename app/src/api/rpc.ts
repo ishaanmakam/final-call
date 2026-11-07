@@ -1,5 +1,5 @@
 import { attemptId, type CheckinAttempt, type SendOutcome } from '../lib/checkinQueue';
-import { classifyRpcError, type RpcErrorKind } from '../lib/errors';
+import { classifyRpcError, userMessage, type RpcErrorKind } from '../lib/errors';
 import { supabase } from './supabase';
 import type { CheckinRow, ReviewKind, RpcArgs, RpcName, RpcReturn } from './types';
 
@@ -120,7 +120,7 @@ export async function sendQueuedCheckin(a: CheckinAttempt): Promise<SendOutcome<
     return { kind: 'ok', result: await checkIn(a) };
   } catch (e) {
     const err = e instanceof RpcError ? e : new RpcError('check_in', { message: String(e) }, 0);
-    return err.kind === 'rejected' ? { kind: 'reject', error: err.message } : { kind: 'retry', error: err.message };
+    return err.kind === 'rejected' ? { kind: 'reject', error: userMessage(err) } : { kind: 'retry', error: err.message };
   }
 }
 
@@ -151,6 +151,9 @@ export const markObligationPaid = (obligationId: string) =>
 
 export const confirmObligation = (obligationId: string) =>
   call('confirm_obligation', { p_obligation: obligationId });
+
+export const disputeObligation = (obligationId: string) =>
+  call('dispute_obligation', { p_obligation: obligationId });
 
 export const registerPushToken = (token: string, platform: string) =>
   call('register_push_token', { p_token: token, p_platform: platform });

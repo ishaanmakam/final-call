@@ -13,6 +13,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { userMessage } from '../lib/errors';
 import { colors, radius, space } from './theme';
 
 export function Screen({
@@ -110,7 +111,7 @@ export function Body({ children, muted }: { children: ReactNode; muted?: boolean
 
 export function ErrorText({ error }: { error: unknown }) {
   if (!error) return null;
-  const message = error instanceof Error ? error.message : String(error);
+  const message = userMessage(error);
   return (
     <Text accessibilityRole="alert" style={styles.error}>
       {message}

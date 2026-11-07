@@ -220,7 +220,7 @@ describe('settlement contents', () => {
     expect(obs.reduce((a, o) => a + Number(o.amount_cents), 0)).toBe(positive);
   });
 
-  it('applies pending corrections, then marks the week settled; later corrections are rejected', async () => {
+  it('applies pending corrections, then marks the week settled; later corrections post and are billed next settlement', async () => {
     const i = await closedInstance(db, pact, '2026-10-28', [
       [u[0], 'success'],
       [u[1], 'failed'],
@@ -232,11 +232,59 @@ describe('settlement contents', () => {
     expect(await settle(db, '2026-11-02T20:00:00Z')).toBe(1);
     expect(await balances(db, fx.groupId)).toMatchObject({ [u[0]]: 500, [u[1]]: -500, [u[2]]: 0 });
     expect(await instStatus(db, i)).toBe('settled');
-    await db.query(`update public.results set status = 'success', first_success_at = deadline_at
-                      from public.pact_instances where id = instance_id and instance_id = $1 and user_id = $2`, [i, u[1]]);
-    const e = await expectError(correct(db, i), /settled/);
-    expect(e.code).toBe('23514');
-    expect(await balances(db, fx.groupId)).toMatchObject({ [u[0]]: 500, [u[1]]: -500 });
+    // a late offline check-in after settlement turns u1's failure into unverified: the correction posts now
+    await db.query(`update public.results set status = 'unverified' where instance_id = $1 and user_id = $2`, [i, u[1]]);
+    await correct(db, i);
+    expect(await instStatus(db, i)).toBe('settled');
+    expect(await balances(db, fx.groupId)).toMatchObject({ [u[0]]: 0, [u[1]]: 0 });
+    // ...and the next settlement bills it: last week's IOU is superseded and nothing is owed
+    expect(await settle(db, '2026-11-09T20:00:00Z')).toBe(1);
+    expect(await obligations(db, fx.groupId, 'pending')).toEqual([]);
+  });
+
+  it('obligations bill only settled instances (plus payments); closed next-week instances wait for their own settlement', async () => {
+    const i = await closedInstance(db, pact, '2026-10-28', [
+      [u[0], 'success'],
+      [u[1], 'failed'],
+    ]);
+    // Monday 2026-11-02 08:00-09:00 PST closes and posts before Monday-noon settlement of the previous week.
+    const mon = await closedInstance(db, pact, '2026-11-02', [
+      [u[2], 'success'],
+      [u[3], 'failed'],
+    ]);
+    await payout(db, mon);
+    expect(await settle(db, '2026-11-02T20:00:00Z')).toBe(1);
+    expect(await instStatus(db, i)).toBe('settled');
+    expect(await instStatus(db, mon)).toBe('closed');
+    expect((await obligations(db, fx.groupId, 'pending')).map((o) => [o.from_user, o.to_user, Number(o.amount_cents)])).toEqual([
+      [u[1], u[0], 500],
+    ]);
+    const billable = async () =>
+      Object.fromEntries(
+        (
+          await rows<{ user_id: string; b: number }>(
+            db,
+            `select user_id::text, balance_cents::bigint b from public.billable_member_balances where group_id = $1`,
+            [fx.groupId],
+          )
+        ).map((r) => [r.user_id, Number(r.b)]),
+      );
+    expect(await billable()).toMatchObject({ [u[0]]: 500, [u[1]]: -500, [u[2]]: 0, [u[3]]: 0 });
+    // the live view still shows everything
+    expect(await balances(db, fx.groupId)).toMatchObject({ [u[2]]: 500, [u[3]]: -500 });
+    // a confirmed payment is billable at once
+    const [o] = await obligations(db, fx.groupId, 'pending');
+    await asUser(db, u[0], (d) => d.query(`select public.confirm_obligation($1)`, [o.id]));
+    expect(await billable()).toMatchObject({ [u[0]]: 0, [u[1]]: 0 });
+    // members can read their group's billable balances; outsiders see nothing
+    expect(await asUser(db, u[3], (d) => rows(d, `select * from public.billable_member_balances`))).toHaveLength(4); // u0..u3 have accounts
+    const outsider = await createUser(db);
+    expect(await asUser(db, outsider, (d) => rows(d, `select * from public.billable_member_balances`))).toEqual([]);
+    expect(await settle(db, '2026-11-09T20:00:00Z')).toBe(1);
+    expect(await instStatus(db, mon)).toBe('settled');
+    expect((await obligations(db, fx.groupId, 'pending')).map((o) => [o.from_user, o.to_user, Number(o.amount_cents)])).toEqual([
+      [u[3], u[2], 500],
+    ]);
   });
 
   it('calls default_open_reviews(group, end of week) before settling the week', async () => {
@@ -283,7 +331,7 @@ describe('settlement contents', () => {
     expect(byUser[u[2]]).toMatchObject({ net_cents: 0 });
   });
 
-  it('supersedes pending and marked_paid obligations at the next settlement; confirmed ones stay', async () => {
+  it('supersedes pending obligations at the next settlement; marked_paid ones stay and count as provisionally paid', async () => {
     await closedInstance(db, pact, '2026-10-28', [
       [u[0], 'success'],
       [u[1], 'failed'],
@@ -295,11 +343,40 @@ describe('settlement contents', () => {
     await asUser(db, u[1], (d) => d.query(`select public.mark_obligation_paid($1)`, [o1.id]));
     // u2 pays and u0 confirms before the next settlement
     await asUser(db, u[0], (d) => d.query(`select public.confirm_obligation($1)`, [o2.id]));
+    // u3 fails on Wednesday; u4 wins
+    await closedInstance(db, pact, '2026-11-04', [
+      [u[4], 'success'],
+      [u[3], 'failed'],
+    ]);
     await settle(db, '2026-11-09T20:00:00Z');
     const all = await obligations(db, fx.groupId);
-    expect(all.find((o) => o.id === o1.id)!.status).toBe('superseded');
+    expect(all.find((o) => o.id === o1.id)!.status).toBe('marked_paid');
     expect(all.find((o) => o.id === o2.id)!.status).toBe('confirmed');
-    // u1 still owes (marked paid but never confirmed); u2 owes nothing
+    // u1's marked payment counts as paid: nobody owes u0; u3 owes u4
+    expect((await obligations(db, fx.groupId, 'pending')).map((o) => [o.from_user, o.to_user, Number(o.amount_cents)])).toEqual([
+      [u[3], u[4], 500],
+    ]);
+    // it can still be confirmed later, and that changes nothing owed
+    await asUser(db, u[0], (d) => d.query(`select public.confirm_obligation($1)`, [o1.id]));
+    await settle(db, '2026-11-16T20:00:00Z');
+    expect((await obligations(db, fx.groupId, 'pending')).map((o) => [o.from_user, o.to_user, Number(o.amount_cents)])).toEqual([
+      [u[3], u[4], 500],
+    ]);
+  });
+
+  it('a disputed marked_paid obligation goes back to pending, is superseded next settlement, and the debt is re-billed', async () => {
+    await closedInstance(db, pact, '2026-10-28', [
+      [u[0], 'success'],
+      [u[1], 'failed'],
+    ]);
+    await settle(db, '2026-11-02T20:00:00Z');
+    const [o1] = await obligations(db, fx.groupId, 'pending');
+    await asUser(db, u[1], (d) => d.query(`select public.mark_obligation_paid($1)`, [o1.id]));
+    await asUser(db, u[0], (d) => d.query(`select public.dispute_obligation($1)`, [o1.id]));
+    expect(await scalar(db, `select status::text from public.obligations where id = $1`, [o1.id])).toBe('pending');
+    expect(await scalar(db, `select marked_paid_at from public.obligations where id = $1`, [o1.id])).toBeNull();
+    await settle(db, '2026-11-09T20:00:00Z');
+    expect(await scalar(db, `select status::text from public.obligations where id = $1`, [o1.id])).toBe('superseded');
     expect((await obligations(db, fx.groupId, 'pending')).map((o) => [o.from_user, o.to_user, Number(o.amount_cents)])).toEqual([
       [u[1], u[0], 500],
     ]);
@@ -362,12 +439,43 @@ describe('settle-up RPCs', () => {
     expect(await balances(db, fx.groupId)).toMatchObject({ [u[0]]: 0, [u[1]]: 0 });
   });
 
-  it('superseded obligations cannot be paid or confirmed', async () => {
+  it('superseded obligations cannot be paid, confirmed or disputed', async () => {
     await settle(db, '2026-11-09T20:00:00Z');
     expect(await status(ob.id)).toBe('superseded');
     expect((await expectError(mark(u[1], ob.id), /superseded/)).code).toBe('23514');
     expect((await expectError(confirm(u[0], ob.id), /superseded/)).code).toBe('23514');
+    expect(
+      (await expectError(asUser(db, u[0], (d) => d.query(`select public.dispute_obligation($1)`, [ob.id])), /superseded/)).code,
+    ).toBe('23514');
     expect(await scalar<number>(db, `select count(*)::int from public.ledger_entries where kind = 'settlement_payment'`)).toBe(0);
+  });
+
+  it('dispute_obligation: payee only; marked_paid -> pending; pending is a no-op; confirmed/superseded are final', async () => {
+    const dispute = (uid: string, id: string) => asUser(db, uid, (d) => d.query(`select public.dispute_obligation($1)`, [id]));
+    await mark(u[1], ob.id);
+    expect((await expectError(dispute(u[1], ob.id))).code).toBe('42501'); // payer can't
+    expect((await expectError(dispute(u[2], ob.id))).code).toBe('42501'); // nor another member
+    expect((await expectError(asAnon(db, (d) => d.query(`select public.dispute_obligation($1)`, [ob.id])))).code).toBe('42501');
+    expect((await expectError(dispute(u[0], '00000000-0000-0000-0000-000000000000'))).code).toBe('P0002');
+    await dispute(u[0], ob.id);
+    expect(await status(ob.id)).toBe('pending');
+    await dispute(u[0], ob.id); // no-op
+    expect(await status(ob.id)).toBe('pending');
+    await mark(u[1], ob.id);
+    await confirm(u[0], ob.id);
+    expect((await expectError(dispute(u[0], ob.id), /confirmed/)).code).toBe('23514');
+    expect(await status(ob.id)).toBe('confirmed');
+    expect(await scalar<number>(db, `select count(*)::int from public.ledger_entries where kind = 'settlement_payment'`)).toBe(1);
+  });
+
+  it('marked_paid obligations survive the next settlement and can still be confirmed', async () => {
+    await mark(u[1], ob.id);
+    await settle(db, '2026-11-09T20:00:00Z');
+    expect(await status(ob.id)).toBe('marked_paid');
+    expect(await obligations(db, fx.groupId, 'pending')).toEqual([]);
+    await confirm(u[0], ob.id);
+    expect(await status(ob.id)).toBe('confirmed');
+    expect(await balances(db, fx.groupId)).toMatchObject({ [u[0]]: 0, [u[1]]: 0 });
   });
 
   it('rejects anon, unknown obligations, and outsiders', async () => {

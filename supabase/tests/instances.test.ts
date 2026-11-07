@@ -445,7 +445,11 @@ describe('check_in', () => {
       const e = await asUser(db, u, (d) => expectError(rpc(d, inst, 47.6, -122.3, 10, now)));
       expect(e.code).toBe('42501');
     }
-    await asUser(db, fx.participantIds[2], (d) => d.query(`select public.leave_group($1)`, [fx.groupId]));
+    // left before the window opened: not on this instance's roster
+    await db.query(`update public.pact_participants set left_at = now() - interval '1 hour' where pact_id = $1 and user_id = $2`, [
+      fx.pactId,
+      fx.participantIds[2],
+    ]);
     expect((await asUser(db, fx.participantIds[2], (d) => expectError(rpc(d, inst, 47.6, -122.3, 10, now)))).code).toBe('42501');
     await asAnon(db, (d) => expectError(rpc(d, inst, 47.6, -122.3, 10, now), /permission denied/));
     await asUser(db, fx.participantIds[0], (d) =>
@@ -468,7 +472,10 @@ describe('check_in', () => {
     expect((await expectError(checkInAt(db, a, mon, inFence(0), at(MON_OPEN, -1)))).code).toBe('23514');
     await tick(db, MON_OPEN);
     const t = at(MON_OPEN, 10);
-    expect((await expectError(checkInAt(db, a, mon, { ...inFence(0), captured: at(t, 2.01) }, t))).code).toBe('22023');
+    // on time: the phone clock is stored but not judged (a fast clock must not turn a real tap into an error)
+    const fast = await checkInAt(db, a, mon, { ...inFence(0), captured: at(t, 30) }, t);
+    expect(fast.verdict).toBe('in_fence');
+    expect(new Date(fast.client_captured_at).toISOString()).toBe(at(t, 30));
     expect((await checkInAt(db, a, mon, { ...inFence(0), captured: at(t, 2) }, t)).verdict).toBe('in_fence');
     // after the deadline: the fix must have been captured inside the window
     expect((await expectError(checkInAt(db, a, mon, { ...inFence(0), captured: at(MON_DEADLINE, 1) }, at(MON_DEADLINE, 2)))).code).toBe('23514');
@@ -497,9 +504,46 @@ describe('check_in', () => {
     await checkInAt(db, a, mon, { ...outFence(0), captured: at(MON_DEADLINE, -1) }, at(MON_DEADLINE, 21));
     expect((await resultsOf(db, mon))[a]).toEqual({ status: 'success', first: at(MON_OPEN, 5) });
     expect(await spyCalls(db, 'correction', mon)).toBe(1);
-    // settled instances accept nothing
+    // settled instances still take late offline taps for 24 hours after the deadline (fail-open), then nothing
     await db.query(`update public.pact_instances set status = 'settled' where id = $1`, [mon]);
-    expect((await expectError(checkInAt(db, d, mon, { ...inFence(3), captured: at(MON_DEADLINE, -1) }, at(MON_DEADLINE, 30)))).code).toBe('23514');
+    await checkInAt(db, d, mon, { ...inFence(3), captured: at(MON_DEADLINE, -1) }, at(MON_DEADLINE, 24 * 60));
+    expect((await resultsOf(db, mon))[d]).toEqual({ status: 'unverified', first: null });
+    expect(await spyCalls(db, 'correction', mon)).toBe(2);
+    expect((await expectError(checkInAt(db, d, mon, { ...inFence(3), captured: at(MON_DEADLINE, -1) }, at(MON_DEADLINE, 24 * 60 + 1)))).code).toBe('22023');
+    expect((await expectError(checkInAt(db, c, mon, { ...inFence(2), captured: at(MON_DEADLINE, -1) }, at(MON_DEADLINE, 25 * 60)))).code).toBe('22023');
+  });
+
+  it('late out_of_fence / simulated taps stay failed; only a late in_fence tap makes the result unverified', async () => {
+    const fx = await setup(db, { members: 5 });
+    const [a, b, c, d, e] = fx.participantIds;
+    await gen(db);
+    const mon = await instanceId(db, fx.pactId, MON);
+    await tick(db, MON_OPEN);
+    await checkInAt(db, a, mon, inFence(0), at(MON_OPEN, 5));
+    await checkInAt(db, b, mon, inFence(1), at(MON_OPEN, 5));
+    const late = (u: string, fix: Fix) =>
+      checkInAt(db, u, mon, { ...fix, captured: at(MON_DEADLINE, -5) }, at(MON_DEADLINE, 0.5));
+    await late(c, outFence(2));
+    await late(d, { ...inFence(3), sim: true });
+    await late(e, inFence(4));
+    await tick(db, at(MON_DEADLINE, 1));
+    const r = await resultsOf(db, mon);
+    expect([r[c].status, r[d].status, r[e].status]).toEqual(['failed', 'failed', 'unverified']);
+  });
+
+  it('at most 20 check-ins per user per instance; retries with the same attempt id do not count', async () => {
+    const fx = await setup(db);
+    const [a, b] = fx.participantIds;
+    await gen(db);
+    const mon = await instanceId(db, fx.pactId, MON);
+    await tick(db, MON_OPEN);
+    const attempt = (i: number) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
+    for (let i = 0; i < 20; i++) await checkInAt(db, a, mon, { ...outFence(0), attempt: attempt(i) }, at(MON_OPEN, 1 + i));
+    expect((await checkInAt(db, a, mon, { ...inFence(0), attempt: attempt(0) }, at(MON_OPEN, 30))).verdict).toBe('out_of_fence');
+    expect((await expectError(checkInAt(db, a, mon, { ...inFence(0), attempt: attempt(20) }, at(MON_OPEN, 31)))).code).toBe('23514');
+    expect((await expectError(checkInAt(db, a, mon, inFence(0), at(MON_OPEN, 32)))).code).toBe('23514');
+    expect(await scalar(db, `select count(*)::int from public.checkins where user_id = $1`, [a])).toBe(20);
+    expect((await checkInAt(db, b, mon, inFence(1), at(MON_OPEN, 33))).verdict).toBe('in_fence');
   });
 
   it('late check-in arriving before the close tick is counted as unverified when the instance closes', async () => {
@@ -514,6 +558,193 @@ describe('check_in', () => {
     await tick(db, at(MON_DEADLINE, 1));
     const r = await resultsOf(db, mon);
     expect([r[a].status, r[b].status, r[c].status]).toEqual(['success', 'failed', 'unverified']);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+describe('roster, leaving and places', () => {
+  /** Instance with a window relative to real now() (minutes), so the client RPCs (which use now()) see it. */
+  const realInstance = (pactId: string, openMin: number, deadlineMin: number, status = 'open', localDate = '2099-01-01') =>
+    scalar<string>(
+      db,
+      `insert into public.pact_instances (pact_id, local_date, window_open_at, deadline_at, status)
+       values ($1, $2::date, now() + $3::float8 * interval '1 minute', now() + $4::float8 * interval '1 minute', $5::instance_status)
+       returning id`,
+      [pactId, localDate, openMin, deadlineMin, status],
+    );
+  const leave = (u: string, g: string) => asUser(db, u, (d) => d.query(`select public.leave_group($1)`, [g]));
+  const join = (u: string, pact: string, lat: number, lng: number, r = 100, label = 'x') =>
+    asUser(db, u, (d) => d.query(`select public.join_pact($1, $2, $3, $4, $5)`, [pact, lat, lng, r, label]));
+  const codeOf = async (p: Promise<unknown>) => (await expectError(p)).code;
+  /** check_in_at with server time = window_open_at + 5 minutes */
+  const verdictAtOpen = (u: string, inst: string, lat: number, lng: number) =>
+    scalar<string>(
+      db,
+      `select (public.check_in_at($1, $2, $3, $4, 10, x.t, false, null, x.t)).verdict::text
+         from (select window_open_at + interval '5 minutes' t from public.pact_instances where id = $2) x`,
+      [u, inst, lat, lng],
+    );
+
+  it('roster = joined at/before the window and not left before it: a mid-window leaver still counts and may check in', async () => {
+    const fx = await setup(db, { members: 4 });
+    const [a, b, c, d] = fx.participantIds;
+    await gen(db);
+    const mon = await instanceId(db, fx.pactId, MON);
+    await tick(db, MON_OPEN);
+    // superuser fixture: leave_group itself refuses to leave mid-window
+    await db.query(`update public.pact_participants set left_at = $3 where pact_id = $1 and user_id = $2`, [fx.pactId, c, at(MON_OPEN, 10)]);
+    await db.query(`update public.pact_participants set left_at = $3 where pact_id = $1 and user_id = $2`, [fx.pactId, d, at(MON_OPEN, -1)]);
+    await checkInAt(db, a, mon, inFence(0), at(MON_OPEN, 5));
+    expect((await checkInAt(db, c, mon, outFence(2), at(MON_OPEN, 20))).verdict).toBe('out_of_fence');
+    expect((await expectError(checkInAt(db, d, mon, inFence(3), at(MON_OPEN, 20)))).code).toBe('42501');
+    await tick(db, MON_DEADLINE);
+    const r = await resultsOf(db, mon);
+    expect(Object.keys(r).sort()).toEqual([a, b, c].sort());
+    expect(r[c].status).toBe('failed');
+  });
+
+  it('leave_group is refused while you are on the roster of an instance in its window or awaiting close', async () => {
+    const fx = await setup(db, { members: 5, participants: 4 });
+    const [a, b, , d] = fx.participantIds;
+    const notInPact = fx.userIds[4];
+    const inst = await realInstance(fx.pactId, -10, 50);
+    expect(await codeOf(leave(a, fx.groupId))).toBe('23514');
+    await leave(notInPact, fx.groupId); // on no roster
+    // joined after this window opened: not on its roster, free to go
+    await db.query(`update public.pact_participants set joined_at = now() where pact_id = $1 and user_id = $2`, [fx.pactId, d]);
+    await leave(d, fx.groupId);
+    // cron lag: window passed but still 'scheduled'
+    await db.query(`update public.pact_instances set status = 'scheduled', window_open_at = now() - interval '1 minute' where id = $1`, [inst]);
+    expect(await codeOf(leave(b, fx.groupId))).toBe('23514');
+    // awaiting close: past the deadline, still 'open'
+    await db.query(`update public.pact_instances set status = 'open', deadline_at = now() - interval '1 second' where id = $1`, [inst]);
+    expect(await codeOf(leave(b, fx.groupId))).toBe('23514');
+    await db.query(`select public.tick_instances(now())`);
+    await leave(b, fx.groupId); // closed: free to go
+    expect(Object.keys(await resultsOf(db, inst)).sort()).toEqual([fx.participantIds[0], b, fx.participantIds[2]].sort());
+    // a future window does not hold anyone, and someone who leaves before it is not counted
+    const fut = await realInstance(fx.pactId, 60, 120, 'scheduled', '2099-01-02');
+    await leave(fx.participantIds[2], fx.groupId);
+    expect(await rows(db, `select u::text from public._instance_participants($1) u`, [fut])).toEqual([{ u: a }]);
+  });
+
+  it('rejoining after a close does not rewrite the closed instance roster', async () => {
+    const fx = await setup(db, { members: 3 });
+    const [a, b, c] = fx.participantIds;
+    const inst = await realInstance(fx.pactId, -120, -60);
+    for (const [i, u] of [a, b].entries()) {
+      await db.query(
+        `select public.check_in_at($1, $2, $3, $4, 10, now() - interval '90 minutes', false, null, now() - interval '90 minutes')`,
+        [u, inst, placeOf(i).lat, placeOf(i).lng],
+      );
+    }
+    await db.query(`select public.tick_instances(now())`);
+    expect((await resultsOf(db, inst))[c].status).toBe('failed');
+    await leave(c, fx.groupId);
+    await asUser(db, c, (d) => d.query(`select public.join_group($1)`, [fx.inviteCode]));
+    await join(c, fx.pactId, placeOf(2).lat, placeOf(2).lng);
+    expect(
+      await scalar(
+        db,
+        `select pp.joined_at > i.window_open_at from public.pact_participants pp, public.pact_instances i
+          where pp.pact_id = $1 and pp.user_id = $2 and i.id = $3`,
+        [fx.pactId, c, inst],
+      ),
+    ).toBe(true);
+    // still on the closed instance's roster: may appeal; eligible voters are a and b
+    const r = await asUser(db, c, (d) => scalar<string>(d, `select public.open_review($1, $2, 'appeal', 'x', null)`, [inst, c]));
+    await asUser(db, a, (d) => d.query(`select public.cast_vote($1, true)`, [r]));
+    expect(await scalar(db, `select status::text from public.reviews where id = $1`, [r])).toBe('open');
+    await asUser(db, b, (d) => d.query(`select public.cast_vote($1, true)`, [r]));
+    expect(await scalar(db, `select status::text from public.reviews where id = $1`, [r])).toBe('accepted');
+    expect(await scalar(db, `select count(*)::int from public.results where instance_id = $1`, [inst])).toBe(3);
+  });
+
+  it('join_pact: joins, rejoins and place changes are refused once window_open_at has passed (even before the tick); label edits are fine', async () => {
+    const fx = await setup(db, { members: 4, participants: 3 });
+    const [a] = fx.participantIds;
+    const late = fx.userIds[3];
+    const inst = await realInstance(fx.pactId, -1, 59, 'scheduled');
+    expect(await codeOf(join(a, fx.pactId, 47.7, -122.4))).toBe('23514');
+    expect(await codeOf(join(late, fx.pactId, 47.7, -122.4))).toBe('23514');
+    await join(a, fx.pactId, placeOf(0).lat, placeOf(0).lng, 100, 'renamed');
+    expect(await scalar(db, `select place_label from public.pact_participants where pact_id = $1 and user_id = $2`, [fx.pactId, a])).toBe('renamed');
+    // awaiting close (past the deadline, not closed) still blocks
+    await db.query(`update public.pact_instances set status = 'open', deadline_at = now() - interval '1 second' where id = $1`, [inst]);
+    expect(await codeOf(join(late, fx.pactId, 47.7, -122.4))).toBe('23514');
+    await db.query(`select public.tick_instances(now())`);
+    await join(late, fx.pactId, 47.7, -122.4);
+  });
+
+  it('place history: the first place applies at once, later changes 12 hours after the request; check-ins use the place in effect at window open', async () => {
+    const fx = await setup(db, { members: 4, participants: 3 });
+    const [a] = fx.participantIds;
+    const p0 = placeOf(0);
+    const HOME = { lat: 47.7, lng: -122.4 };
+    const hist = () =>
+      rows<{ lat: number; lng: number; radius_m: number; label: string; delay_s: number }>(
+        db,
+        `select lat, lng, radius_m, label, extract(epoch from effective_from - created_at)::int delay_s
+           from public.pact_participant_places where pact_id = $1 and user_id = $2 order by effective_from`,
+        [fx.pactId, a],
+      );
+    expect(await hist()).toEqual([{ lat: p0.lat, lng: p0.lng, radius_m: 100, label: 'place 0', delay_s: 0 }]);
+    // backdate the first place so it is in effect for every window below
+    await db.query(`update public.pact_participant_places set effective_from = '2020-01-01Z', created_at = '2020-01-01Z' where pact_id = $1`, [fx.pactId]);
+    const soon = await realInstance(fx.pactId, 60, 120, 'scheduled', '2099-01-01');
+    const later = await realInstance(fx.pactId, 13 * 60, 14 * 60, 'scheduled', '2099-01-02');
+
+    await join(a, fx.pactId, HOME.lat, HOME.lng, 150, 'new gym');
+    expect((await hist()).map((h) => [h.lat, h.radius_m, h.delay_s])).toEqual([
+      [p0.lat, 100, 0],
+      [HOME.lat, 150, 12 * 3600],
+    ]);
+    // the app keeps reading the requested place from pact_participants
+    expect(await rows(db, `select place_lat, place_lng, place_radius_m, place_label from public.pact_participants where pact_id = $1 and user_id = $2`, [fx.pactId, a])).toEqual([
+      { place_lat: HOME.lat, place_lng: HOME.lng, place_radius_m: 150, place_label: 'new gym' },
+    ]);
+    expect(await verdictAtOpen(a, soon, HOME.lat, HOME.lng)).toBe('out_of_fence');
+    expect(await verdictAtOpen(a, soon, p0.lat, p0.lng)).toBe('in_fence');
+    expect(await verdictAtOpen(a, later, HOME.lat, HOME.lng)).toBe('in_fence');
+    expect(await verdictAtOpen(a, later, p0.lat, p0.lng)).toBe('out_of_fence');
+
+    // switching back before the pending change takes effect cancels it
+    await join(a, fx.pactId, p0.lat, p0.lng, 100, 'place 0');
+    expect((await hist()).map((h) => h.lat)).toEqual([p0.lat]);
+    expect(await verdictAtOpen(a, later, p0.lat, p0.lng)).toBe('in_fence');
+
+    // visible to group members, not outsiders; no client writes
+    expect(await asUser(db, fx.userIds[3], (d) => scalar<number>(d, `select count(*)::int from public.pact_participant_places`))).toBe(3);
+    const outsider = await createUser(db);
+    expect(await asUser(db, outsider, (d) => scalar<number>(d, `select count(*)::int from public.pact_participant_places`))).toBe(0);
+    await asAnon(db, (d) => expectError(d.query(`select 1 from public.pact_participant_places`), /permission denied/));
+    await asUser(db, a, async (d) => {
+      await expectError(
+        d.query(`insert into public.pact_participant_places (pact_id, user_id, lat, lng, radius_m, effective_from) values ($1, $2, 0, 0, 100, now())`, [fx.pactId, a]),
+        /permission denied/,
+      );
+      await expectError(d.query(`update public.pact_participant_places set lat = 0`), /permission denied/);
+      await expectError(d.query(`delete from public.pact_participant_places`), /permission denied/);
+    });
+  });
+
+  it('rejoining with a different place is a place change (12 hours), not a first join', async () => {
+    const fx = await setup(db, { members: 3 });
+    const [, b] = fx.participantIds;
+    await leave(b, fx.groupId);
+    await asUser(db, b, (d) => d.query(`select public.join_group($1)`, [fx.inviteCode]));
+    await join(b, fx.pactId, 47.7, -122.4);
+    expect(
+      await rows(
+        db,
+        `select lat, extract(epoch from effective_from - created_at)::int delay_s from public.pact_participant_places
+          where pact_id = $1 and user_id = $2 order by effective_from`,
+        [fx.pactId, b],
+      ),
+    ).toEqual([
+      { lat: placeOf(1).lat, delay_s: 0 },
+      { lat: 47.7, delay_s: 12 * 3600 },
+    ]);
   });
 });
 

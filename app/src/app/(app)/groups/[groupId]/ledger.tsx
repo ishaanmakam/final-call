@@ -1,31 +1,36 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
-import { Text } from 'react-native';
-import { displayName, useLedger, type Ledger } from '@/api/queries';
-import { confirmObligation, markObligationPaid } from '@/api/rpc';
+import { Alert, Text } from 'react-native';
+import { displayName, queryKeys, useLedger, type Ledger } from '@/api/queries';
+import { confirmObligation, disputeObligation, markObligationPaid } from '@/api/rpc';
 import type { ObligationRow } from '@/api/types';
 import { obligationLabel } from '@/components/status';
 import { colors } from '@/components/theme';
 import { Badge, Body, Button, Card, ErrorText, Heading, Loading, QueryState, Row, Screen } from '@/components/ui';
 import { useUserId } from '@/lib/auth';
 import { formatCents } from '@/lib/money';
+import { groupOpenObligations, type ObligationGroup } from '@/lib/obligations';
 import { openVenmoPayment } from '@/lib/openVenmo';
 import { formatLocalDateShort } from '@/lib/time';
 import { normalizeVenmoUsername } from '@/lib/venmo';
 
+type Busy = 'paid' | 'confirm' | 'dispute' | 'venmo';
+
 function ObligationCard({
   ob,
+  weekStart,
   ledger,
   userId,
   onChanged,
 }: {
   ob: ObligationRow;
+  weekStart: string | null;
   ledger: Ledger;
   userId: string;
   onChanged: () => void;
 }) {
-  const [busy, setBusy] = useState<'paid' | 'confirm' | 'venmo' | null>(null);
+  const [busy, setBusy] = useState<Busy | null>(null);
   const [error, setError] = useState<unknown>(null);
   const iPay = ob.from_user === userId;
   const iReceive = ob.to_user === userId;
@@ -33,9 +38,9 @@ function ObligationCard({
   const to = iReceive ? 'you' : displayName(ledger.profiles, ob.to_user);
   const payeeVenmo = normalizeVenmoUsername(ledger.profiles.get(ob.to_user)?.venmo_username);
   const status = obligationLabel[ob.status];
-  const weekOf = ledger.settlement ? formatLocalDateShort(ledger.settlement.week_start) : '';
+  const weekOf = weekStart ? formatLocalDateShort(weekStart) : '';
 
-  const run = async (kind: 'paid' | 'confirm' | 'venmo', fn: () => Promise<unknown>) => {
+  const run = async (kind: Busy, fn: () => Promise<unknown>) => {
     setBusy(kind);
     setError(null);
     try {
@@ -47,6 +52,20 @@ function ObligationCard({
       setBusy(null);
     }
   };
+
+  const confirmDispute = () =>
+    Alert.alert(
+      "Didn't receive it?",
+      `This moves the ${formatCents(ob.amount_cents)} from ${from} back to unpaid so they can pay again.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: "Didn't receive it",
+          style: 'destructive',
+          onPress: () => void run('dispute', () => disputeObligation(ob.id)),
+        },
+      ],
+    );
 
   return (
     <Card>
@@ -67,7 +86,7 @@ function ObligationCard({
                   openVenmoPayment({
                     recipient: payeeVenmo,
                     amountCents: ob.amount_cents,
-                    note: `Show Up pool, week of ${weekOf}`,
+                    note: weekOf ? `Show Up pool, week of ${weekOf}` : 'Show Up pool',
                   }),
                 )
               }
@@ -84,15 +103,61 @@ function ObligationCard({
         </>
       ) : null}
       {iReceive && (ob.status === 'pending' || ob.status === 'marked_paid') ? (
-        <Button
-          title="Confirm received"
-          variant={ob.status === 'marked_paid' ? 'primary' : 'secondary'}
-          loading={busy === 'confirm'}
-          onPress={() => void run('confirm', () => confirmObligation(ob.id))}
-        />
+        <Row>
+          <Button
+            title="Confirm received"
+            variant={ob.status === 'marked_paid' ? 'primary' : 'secondary'}
+            loading={busy === 'confirm'}
+            disabled={busy !== null && busy !== 'confirm'}
+            onPress={() => void run('confirm', () => confirmObligation(ob.id))}
+            style={{ flex: 1 }}
+          />
+          {ob.status === 'marked_paid' ? (
+            <Button
+              title="Didn't receive it"
+              variant="ghost"
+              loading={busy === 'dispute'}
+              disabled={busy !== null && busy !== 'dispute'}
+              onPress={confirmDispute}
+              style={{ flex: 1 }}
+            />
+          ) : null}
+        </Row>
       ) : null}
       <ErrorText error={error} />
     </Card>
+  );
+}
+
+function WeekGroups({
+  groups,
+  ledger,
+  userId,
+  onChanged,
+}: {
+  groups: ObligationGroup[];
+  ledger: Ledger;
+  userId: string;
+  onChanged: () => void;
+}) {
+  return (
+    <>
+      {groups.map((g) => (
+        <Card key={g.settlementId}>
+          <Body muted>{g.weekStart ? `Week of ${formatLocalDateShort(g.weekStart)}` : 'Earlier week'}</Body>
+          {g.obligations.map((ob) => (
+            <ObligationCard
+              key={ob.id}
+              ob={ob}
+              weekStart={g.weekStart}
+              ledger={ledger}
+              userId={userId}
+              onChanged={onChanged}
+            />
+          ))}
+        </Card>
+      ))}
+    </>
   );
 }
 
@@ -104,15 +169,17 @@ export default function LedgerScreen() {
 
   if (ledger.isPending) return <Loading />;
   if (ledger.isError) return <QueryState error={ledger.error} onRetry={() => void ledger.refetch()} />;
-  const { balances, settlement, obligations, profiles } = ledger.data;
-  const onChanged = () => void qc.invalidateQueries({ queryKey: ['group', groupId, 'ledger'] });
-  const mine = obligations.filter((o) => o.from_user === userId || o.to_user === userId);
-  const others = obligations.filter((o) => o.from_user !== userId && o.to_user !== userId);
+  const { balances, latestSettlement, settlements, obligations, profiles } = ledger.data;
+  const onChanged = () => void qc.invalidateQueries({ queryKey: queryKeys.ledger(groupId) });
+  const { mine, others } = groupOpenObligations(obligations, settlements, userId);
 
   return (
     <Screen refreshing={ledger.isRefetching} onRefresh={() => void ledger.refetch()}>
-      <Heading>Balances</Heading>
-      <Body muted>Plus means the group owes you; minus means you owe. Money still in a pact's pool isn't owed yet.</Body>
+      <Heading>Running balance (includes this week, not settled yet)</Heading>
+      <Body muted>
+        Plus means the group owes you; minus means you owe. Money still in a pact's pool isn't owed yet, and days
+        since the last settle-up aren't in "To settle now" until Monday's run.
+      </Body>
       <Card>
         {balances.length === 0 ? <Body muted>No activity yet.</Body> : null}
         {balances.map((b) => (
@@ -130,16 +197,12 @@ export default function LedgerScreen() {
         ))}
       </Card>
 
-      <Heading>{settlement ? `Settle-up, week of ${formatLocalDateShort(settlement.week_start)}` : 'Settle-up'}</Heading>
-      {!settlement ? <Body muted>The first settle-up runs Monday at noon.</Body> : null}
-      {settlement && obligations.length === 0 ? <Body muted>Everyone is square this week.</Body> : null}
-      {mine.map((ob) => (
-        <ObligationCard key={ob.id} ob={ob} ledger={ledger.data} userId={userId} onChanged={onChanged} />
-      ))}
+      <Heading>To settle now</Heading>
+      {!latestSettlement && obligations.length === 0 ? <Body muted>The first settle-up runs Monday at noon.</Body> : null}
+      {latestSettlement && mine.length === 0 ? <Body muted>Nothing for you to settle.</Body> : null}
+      <WeekGroups groups={mine} ledger={ledger.data} userId={userId} onChanged={onChanged} />
       {others.length > 0 ? <Heading>Between others</Heading> : null}
-      {others.map((ob) => (
-        <ObligationCard key={ob.id} ob={ob} ledger={ledger.data} userId={userId} onChanged={onChanged} />
-      ))}
+      <WeekGroups groups={others} ledger={ledger.data} userId={userId} onChanged={onChanged} />
     </Screen>
   );
 }

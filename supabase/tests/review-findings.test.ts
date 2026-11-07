@@ -162,7 +162,8 @@ describe('review findings', () => {
     await checkInAt(db, p0, mon, inFence(0), at(MON_OPEN, 5));
     await checkInAt(db, p1, mon, inFence(1), at(MON_OPEN, 6));
     // p2 is nowhere near the place; at 08:58 they leave the group (they can rejoin after 09:00)
-    await asUser(db, p2, (d) => d.query(`select public.leave_group($1)`, [fx.groupId]));
+    // refusing the leave (23514) is a valid fix too
+    await asUser(db, p2, (d) => d.query(`select public.leave_group($1)`, [fx.groupId])).catch((e) => expect(e.code).toBe('23514'));
     await tick(db, MON_DEADLINE);
     expect(await resultOf(db, mon, p2)).toBe('failed');
     expect(await balanceOf(db, fx.groupId, p2)).toBe(-500);

@@ -902,6 +902,23 @@ begin
     raise exception 'not a member of this group' using errcode = '42501';
   end if;
 
+  -- No dodging a stake: refuse while on the roster of an instance (of this group's pacts) that is
+  -- open, or due but not yet opened by the tick. Same roster rule as _instance_participants.
+  if exists (
+    select 1
+      from public.pact_instances i
+      join public.pacts p on p.id = i.pact_id
+      join public.pact_participants pp on pp.pact_id = i.pact_id and pp.user_id = v_uid
+     where p.group_id = p_group
+       and pp.joined_at <= i.window_open_at
+       and (pp.left_at is null or pp.left_at > i.window_open_at)
+       and (i.status = 'open'
+            or (i.status = 'scheduled' and not p.paused and i.window_open_at <= now() and now() < i.deadline_at))
+  ) then
+    raise exception 'cannot leave while a check-in window you are part of is open or awaiting its result'
+      using errcode = '23514';
+  end if;
+
   update public.group_members set left_at = now(), role = 'member'
    where group_id = p_group and user_id = v_uid;
 
@@ -982,9 +999,13 @@ begin
 end;
 $$;
 
--- Join a pact or update your place. While an instance of the pact is open,
--- only an unchanged place (label edits allowed) is accepted, so nobody can
--- move their fence to wherever they happen to be, or (re)join mid-window.
+-- Join a pact or update your place. Once any instance of the pact has reached window_open_at
+-- (and until it is closed), only an unchanged place (label edits allowed) is accepted, so nobody
+-- can move their fence to wherever they happen to be, or (re)join mid-window.
+-- Place history (pact_participant_places, created in 20261107000200): the first place is in
+-- effect at once; any later change takes effect 12 hours after the request (replacing a change
+-- still pending), so a fence cannot be moved right before a window either. pact_participants'
+-- place columns hold the requested place (the one the app shows).
 create function public.join_pact(
   p_pact uuid,
   p_lat float8,
@@ -1000,6 +1021,8 @@ declare
   v_group uuid;
   v_label text := nullif(btrim(p_label), '');
   v_cur public.pact_participants%rowtype;
+  v_same boolean;
+  v_eff record;
 begin
   if v_uid is null then
     raise exception 'not authenticated' using errcode = '28000';
@@ -1025,25 +1048,54 @@ begin
   end if;
 
   perform 1 from public.pacts where id = p_pact for update;
-  select * into v_cur from public.pact_participants where pact_id = p_pact and user_id = v_uid;
+  select * into v_cur from public.pact_participants where pact_id = p_pact and user_id = v_uid for update;
+  v_same := v_cur.user_id is not null
+            and v_cur.place_lat = p_lat and v_cur.place_lng = p_lng and v_cur.place_radius_m = p_radius_m;
 
-  if exists (select 1 from public.pact_instances where pact_id = p_pact and status = 'open')
-     and not (
-       v_cur.user_id is not null and v_cur.left_at is null
-       and v_cur.place_lat = p_lat and v_cur.place_lng = p_lng and v_cur.place_radius_m = p_radius_m
-     ) then
-    raise exception 'cannot join or change your place while a check-in window is open' using errcode = '23514';
+  if not (v_same and v_cur.left_at is null) and exists (
+    select 1 from public.pact_instances
+     where pact_id = p_pact
+       and (status = 'open' or (window_open_at <= now() and status not in ('closed', 'settled', 'voided')))
+  ) then
+    raise exception 'cannot join, rejoin or change your place once a check-in window has opened (until it closes)'
+      using errcode = '23514';
   end if;
 
-  insert into public.pact_participants (pact_id, user_id, place_lat, place_lng, place_radius_m, place_label)
-  values (p_pact, v_uid, p_lat, p_lng, p_radius_m, v_label)
-  on conflict (pact_id, user_id) do update
-     set place_lat = excluded.place_lat,
-         place_lng = excluded.place_lng,
-         place_radius_m = excluded.place_radius_m,
-         place_label = excluded.place_label,
-         joined_at = case when public.pact_participants.left_at is null then public.pact_participants.joined_at else now() end,
-         left_at = null;
+  if v_cur.user_id is null then
+    insert into public.pact_participants (pact_id, user_id, place_lat, place_lng, place_radius_m, place_label)
+    values (p_pact, v_uid, p_lat, p_lng, p_radius_m, v_label);
+    insert into public.pact_participant_places (pact_id, user_id, lat, lng, radius_m, label, effective_from)
+    values (p_pact, v_uid, p_lat, p_lng, p_radius_m, v_label, now());
+    return;
+  end if;
+
+  -- rows without history (inserted outside join_pact): their place has applied since they joined
+  insert into public.pact_participant_places (pact_id, user_id, lat, lng, radius_m, label, effective_from)
+  select v_cur.pact_id, v_cur.user_id, v_cur.place_lat, v_cur.place_lng, v_cur.place_radius_m, v_cur.place_label,
+         least(v_cur.joined_at, now())
+   where not exists (select 1 from public.pact_participant_places where pact_id = p_pact and user_id = v_uid);
+
+  if not v_same then
+    -- a new request replaces any change that has not taken effect yet
+    delete from public.pact_participant_places
+     where pact_id = p_pact and user_id = v_uid and effective_from > now();
+    select lat, lng, radius_m into v_eff from public.pact_participant_places
+     where pact_id = p_pact and user_id = v_uid and effective_from <= now()
+     order by effective_from desc limit 1;
+    if v_eff.lat is null or not (v_eff.lat = p_lat and v_eff.lng = p_lng and v_eff.radius_m = p_radius_m) then
+      insert into public.pact_participant_places (pact_id, user_id, lat, lng, radius_m, label, effective_from)
+      values (p_pact, v_uid, p_lat, p_lng, p_radius_m, v_label, now() + interval '12 hours');
+    end if;
+  end if;
+
+  update public.pact_participants
+     set place_lat = p_lat,
+         place_lng = p_lng,
+         place_radius_m = p_radius_m,
+         place_label = v_label,
+         joined_at = case when left_at is null then joined_at else now() end,
+         left_at = null
+   where pact_id = p_pact and user_id = v_uid;
 end;
 $$;
 

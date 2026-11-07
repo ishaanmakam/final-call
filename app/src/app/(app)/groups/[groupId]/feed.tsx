@@ -11,6 +11,7 @@ import { resultLabel, reviewStatusLabel } from '@/components/status';
 import { Badge, Body, Button, Card, ErrorText, Field, Heading, Loading, QueryState, Row, Screen } from '@/components/ui';
 import { useUserId } from '@/lib/auth';
 import { pickEvidencePhoto, uploadEvidencePhoto } from '@/lib/reviewPhoto';
+import { reviewActions } from '@/lib/reviews';
 import { formatDateInZone } from '@/lib/time';
 
 const itemKey = (i: FeedItem) => `${i.result.instance_id}:${i.result.user_id}`;
@@ -111,15 +112,13 @@ function FeedCard({
   const who = isMine ? 'You' : displayName(feed.profiles, result.user_id);
   const label = resultLabel[result.status];
   const participants = feed.participantsByPact.get(pact.id) ?? [];
-  const hasOpenReview = reviews.some((r) => r.review.status === 'open');
-  const settled = instance.status === 'settled';
-  const canAppeal = isMine && result.status === 'failed' && !hasOpenReview && !settled;
-  const canChallenge =
-    !isMine &&
-    participants.includes(userId) &&
-    (result.status === 'success' || result.status === 'unverified') &&
-    !hasOpenReview &&
-    !settled;
+  const { canAppeal, canChallenge } = reviewActions({
+    isMine,
+    isParticipant: participants.includes(userId),
+    resultStatus: result.status,
+    settled: instance.status === 'settled',
+    reviews: reviews.map((r) => r.review),
+  });
   const key = itemKey(item);
   const formOpen = expanded?.key === key;
 

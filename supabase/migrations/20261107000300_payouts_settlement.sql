@@ -19,26 +19,35 @@
 -- with the plan from current results and the stored carry_in_cents; the difference is posted as
 -- one 'correction' entry keyed correction:<instance_id>:<n>, n = 1 + existing corrections.
 --
--- CARRY RULE FOR CORRECTIONS (the carry balance never goes negative; money is never created):
+-- CARRY RULE FOR CORRECTIONS (D21: the carry balance never goes negative; money is never created):
 --   A correction can lower what instance A puts into the carry (or make A newly draw its stored
---   carry_in) after a later instance already drew that money out. Example: Mon all-fail adds
+--   carry_in) after later instances already captured that money. Example: Mon all-fail adds
 --   1500, Tue's winner draws 1500, then Mon's appeal is accepted. Posting Mon's difference as-is
 --   would pay the same 1500 twice (carry -1500). Rule: when A's correction takes X out of the
---   carry, X is first taken back from LATER DRAWS on the carry, oldest first: unsettled
---   instances B of the same pact whose posted carry effect is negative and whose draw came after
---   A's first ledger line (if A never posted a line: deadline after A's). For each B,
---   carry_in_cents is lowered by r = min(remaining X, B's draw) and B is re-corrected (its
---   winners give back r under the normal floor/leftover split, notified as a 'result'
---   correction), which returns r to the carry. Only what no later draw took comes from the
---   carry balance itself. This is what would have happened had A's result been right from the
---   start: every draw empties the carry, so the first draw after A is the one that received
---   A's money; draws before A, and carry added after the draw, are never touched.
---   Corrections that ADD to the carry just leave it there for the next winning instance
---   (later instances' carry_in is never raised).
---   Fallback (unreachable in normal operation, because settlement settles weeks in order and
---   later draws are therefore unsettled whenever A is): if the balance would still go
---   negative, the remainder is cut from A's own correction (largest positive member lines
---   first, then user_id asc), so A's winners get less instead of the carry going negative.
+--   carry, walk the LATER CAPTURES of the carry in capture order: instances B of the same pact
+--   (closed or settled) with carry_in_cents > 0 and (deadline_at, id) after A's. Capture order is
+--   deadline order: tick closes and posts in deadline order, and _post_initial first posts any
+--   earlier closed, never-posted instance. Each such B's carry_in was taken from a carry that
+--   still held A's money, until the first draw after A emptied it.
+--     * B drew its carry_in (posted carry effect < 0): carry_in is lowered by
+--       r = min(remaining X, carry_in, draw) and B is re-corrected (its winners give back r under
+--       the normal floor/leftover split, notified as a 'result' correction), which returns r to
+--       the carry; X decreases by r. Settled draws are clawed back too: their correction lines
+--       are billed at the next settlement like any correction of a settled instance.
+--     * B did not draw it (all-fail rollover, or fewer than 2 active): carry_in is lowered by
+--       min(remaining X, carry_in) so that a later correction of B can never draw money that is
+--       gone; X is unchanged (the money is still in the carry or in a later draw).
+--   Only what no later draw took comes from the carry balance itself. This is what would have
+--   happened had A's result been right from the start: every draw empties the carry, so the
+--   first draw after A is the one that received A's money; draws before A, and carry added
+--   after the draw, are never touched. Corrections that ADD to the carry just leave it there for
+--   the next winning instance (later instances' carry_in is never raised).
+--   Fallback (only reachable if money left the carry outside any instance): if the balance would
+--   still go negative, A's own carry_in_cents is lowered by the shortfall (when A draws it), so
+--   A's target is recomputed with the smaller pot and split exactly like the oracle (floor, then
+--   leftover cents by first_success_at asc, user_id asc); A's stored target then equals what is
+--   posted and re-running the correction is a no-op. Any remainder beyond A's carry_in is cut from
+--   A's correction (largest positive member lines first, then user_id asc).
 --
 -- Settlement: settle_due_groups(p_now) settles, per group and in order, every Mon-Sun week
 -- (settlement_tz) whose Monday 12:00 local (next week) is <= p_now and that has no settlements
@@ -48,12 +57,39 @@
 -- Monday 00:00) -- the other agent's version defaults open reviews on instances with
 -- deadline_at < p_until, so passing p_now (Monday noon) would wrongly default reviews of
 -- Monday-morning instances of the new week; apply_instance_correction on every 'closed'
--- instance of the week (posts never-posted ones, reconciles changed ones), in deadline order; mark them 'settled'; supersede 'pending'/'marked_paid' obligations;
--- insert the settlements row; create obligations from all-time member_balances with the same
--- greedy as simplifyDebts (largest debtor <-> largest creditor, ties by user_id asc).
+-- instance of the week (posts never-posted ones, reconciles changed ones), in deadline order;
+-- mark them 'settled'; supersede 'pending' obligations ('marked_paid' ones stay confirmable and
+-- disputable); insert the settlements row; create obligations from billable_member_balances
+-- (lines of settled instances + settlement payments; closed-but-unsettled instances are not
+-- billed yet), with every still-'marked_paid' obligation treated as provisionally paid (payer
+-- +amount, payee -amount), using the same greedy as simplifyDebts (largest debtor <-> largest
+-- creditor, ties by user_id asc). Corrections of settled instances (late offline check-ins,
+-- claw-backs) are billed at the next settlement.
 -- 'settlement' outbox rows go out only for the latest week settled in a run (catch-up weeks
--- are superseded immediately) to current members and anyone with a non-zero balance.
+-- are superseded immediately) to current members and anyone with a non-zero billable balance.
 -- =====================================================================
+
+-- ---------------------------------------------------------------------
+-- Billable balances: what settlement bills. Lines of entries whose instance is 'settled'
+-- (stake/payout/rollover/correction member lines) plus all settlement_payment entries.
+-- Closed-but-unsettled instances (e.g. Monday-morning instances of the new week, still open to
+-- review) are billed at their own week's settlement. member_balances stays the full live view.
+-- security_invoker: clients see only rows RLS lets them see, like member_balances.
+-- ---------------------------------------------------------------------
+create or replace view public.billable_member_balances with (security_invoker = true) as
+select a.group_id,
+       a.user_id,
+       coalesce(sum(l.amount_cents) filter (where e.kind = 'settlement_payment' or i.status = 'settled'), 0)::bigint
+         as balance_cents
+  from public.ledger_accounts a
+  left join public.ledger_lines l on l.account_id = a.id
+  left join public.ledger_entries e on e.id = l.entry_id
+  left join public.pact_instances i on i.id = e.instance_id
+ where a.kind = 'member'
+ group by a.id, a.group_id, a.user_id;
+
+revoke all on public.billable_member_balances from anon, authenticated;
+grant select on public.billable_member_balances to authenticated;
 
 -- ---------------------------------------------------------------------
 -- Internal helpers (not SECURITY DEFINER; callable only by the owner, i.e. from the
@@ -165,6 +201,10 @@ end;
 $$;
 
 -- First posting. Caller holds the carry lock and the instance row lock; carry_in_cents is null.
+-- Earlier-deadline instances of the pact that are closed but were never posted (tick lag; settlement
+-- catch-up) are posted first, in deadline order, so an instance never captures carry deposited by a
+-- later instance. Otherwise a settled instance could draw money whose depositors belong to a later,
+-- not yet billed week.
 create or replace function public._post_initial(p_instance uuid, p_group uuid, p_carry uuid)
 returns void
 language plpgsql volatile
@@ -178,7 +218,21 @@ declare
   v_total bigint;
   v_rollover boolean;
   v_plan jsonb;
+  v_prev uuid;
 begin
+  for v_prev in
+    select e.id from public.pact_instances e join public.pact_instances x on x.id = p_instance
+     where e.pact_id = x.pact_id and e.id <> x.id
+       and e.status in ('closed', 'settled') and e.carry_in_cents is null
+       and (e.deadline_at, e.id) < (x.deadline_at, x.id)
+     order by e.deadline_at, e.id
+  loop
+    perform 1 from public.pact_instances where id = v_prev and carry_in_cents is null for update;
+    if found then
+      perform public._post_initial(v_prev, p_group, p_carry);
+    end if;
+  end loop;
+
   v_carry_in := public._account_balance(p_carry);
   if v_carry_in < 0 then
     raise exception 'carry account % is negative (%)', p_carry, v_carry_in using errcode = '23514';
@@ -227,33 +281,21 @@ begin
 end;
 $$;
 
--- Reconcile a posted instance with its plan. Caller holds the carry lock; instance is posted
--- (carry_in_cents not null) and not settled. Applies the carry safety rule (see header).
-create or replace function public._correct_instance(p_instance uuid, p_group uuid, p_pact uuid, p_carry uuid)
-returns void
+-- Difference between an instance's plan (for p_carry_in) and what is posted for it, as
+-- [{account_id, user_id (null = carry), target, amount_cents}], non-zero amounts only, by account_id.
+create or replace function public._instance_diff(p_instance uuid, p_group uuid, p_carry uuid, p_carry_in bigint)
+returns jsonb
 language plpgsql volatile
 set search_path = pg_catalog, public, pg_temp
 as $$
 declare
-  v_carry_in bigint;
   v_diff jsonb;
-  v_carry_diff bigint;
-  v_short bigint;
-  v_need bigint;
-  v_pos bigint;
-  v_cand record;
-  v_r bigint;
-  v_n int;
-  v_line record;
-  v_cut bigint;
 begin
-  select carry_in_cents into v_carry_in from public.pact_instances where id = p_instance for update;
-
   with t as (
     select case when x.user_id is null then p_carry
                 else public.ensure_account(p_group, 'member', x.user_id, null, null) end as account_id,
            x.user_id, x.amount_cents
-      from public._payout_plan(p_instance, v_carry_in) x
+      from public._payout_plan(p_instance, p_carry_in) x
   ), p as (
     select account_id, user_id, amount_cents from public._instance_posted(p_instance)
   ), d as (
@@ -268,56 +310,93 @@ begin
                             order by account_id) filter (where amount_cents <> 0), '[]'::jsonb)
     into v_diff
     from d;
+  return v_diff;
+end;
+$$;
 
+-- Reconcile a posted instance (carry_in_cents not null; closed or settled) with its plan.
+-- Caller holds the carry lock. Applies the carry rule (see header).
+create or replace function public._correct_instance(p_instance uuid, p_group uuid, p_pact uuid, p_carry uuid)
+returns void
+language plpgsql volatile
+set search_path = pg_catalog, public, pg_temp
+as $$
+declare
+  v_carry_in bigint;
+  v_deadline timestamptz;
+  v_diff jsonb;
+  v_carry_diff bigint;
+  v_carry_target bigint;
+  v_short bigint;
+  v_need bigint;
+  v_cand record;
+  v_r bigint;
+  v_n int;
+  v_line record;
+  v_cut bigint;
+begin
+  select carry_in_cents, deadline_at into v_carry_in, v_deadline
+    from public.pact_instances where id = p_instance for update;
+
+  v_diff := public._instance_diff(p_instance, p_group, p_carry, v_carry_in);
   if v_diff = '[]'::jsonb then
     return;
   end if;
 
-  select coalesce(sum((e ->> 'amount_cents')::bigint), 0) into v_carry_diff
+  select coalesce(sum((e ->> 'amount_cents')::bigint), 0), coalesce(sum((e ->> 'target')::bigint), 0)
+    into v_carry_diff, v_carry_target
     from jsonb_array_elements(v_diff) e where (e ->> 'account_id')::uuid = p_carry;
 
   if v_carry_diff < 0 then
-    -- The carry must give up -v_carry_diff. Whatever of it a later instance already drew out is
-    -- taken back from that instance (oldest draw first); only the rest comes from the balance.
+    -- The carry must give up -v_carry_diff. Later captures of the carry give back what they took
+    -- of it (draws) or forget it (non-draws), in capture order; only the rest comes from the balance.
     v_need := -v_carry_diff;
-    select min(l.id) into v_pos
-      from public.ledger_entries e join public.ledger_lines l on l.entry_id = e.id
-     where e.instance_id = p_instance;
     for v_cand in
-      select i.id, i.carry_in_cents, -pc.amount_cents as drawn, dl.pos
+      select i.id, coalesce(-pc.amount_cents, 0) as drawn
         from public.pact_instances i
-        join lateral (
+        left join lateral (
           select sum(l.amount_cents)::bigint as amount_cents
             from public.ledger_entries e join public.ledger_lines l on l.entry_id = e.id
            where e.instance_id = i.id and l.account_id = p_carry
         ) pc on true
-        join lateral (
-          select min(l.id) as pos
-            from public.ledger_entries e join public.ledger_lines l on l.entry_id = e.id
-           where e.instance_id = i.id and l.account_id = p_carry and l.amount_cents < 0
-        ) dl on true
        where i.pact_id = p_pact
-         and i.id <> p_instance
-         and i.status = 'closed'
+         and i.status in ('closed', 'settled')
          and i.carry_in_cents > 0
-         and pc.amount_cents < 0
-         and case when v_pos is not null then dl.pos > v_pos
-                  -- A never posted a line: place it by deadline instead
-                  else (i.deadline_at, i.id) > (select a.deadline_at, a.id from public.pact_instances a where a.id = p_instance)
-             end
-       order by dl.pos
+         and (i.deadline_at, i.id) > (v_deadline, p_instance)
+       order by i.deadline_at, i.id
     loop
       exit when v_need <= 0;
-      v_r := least(v_need, v_cand.carry_in_cents, v_cand.drawn);
-      update public.pact_instances set carry_in_cents = carry_in_cents - v_r where id = v_cand.id;
-      perform public._correct_instance(v_cand.id, p_group, p_pact, p_carry);
-      v_need := v_need - v_r;
+      -- re-read: a recursive correction above may have lowered it already
+      select least(v_need, i.carry_in_cents) into v_r from public.pact_instances i where i.id = v_cand.id for update;
+      continue when v_r <= 0;
+      if v_cand.drawn > 0 then
+        v_r := least(v_r, v_cand.drawn);
+        update public.pact_instances set carry_in_cents = carry_in_cents - v_r where id = v_cand.id;
+        perform public._correct_instance(v_cand.id, p_group, p_pact, p_carry);
+        v_need := v_need - v_r;
+      else
+        update public.pact_instances set carry_in_cents = carry_in_cents - v_r where id = v_cand.id;
+      end if;
     end loop;
 
     v_short := -(public._account_balance(p_carry) + v_carry_diff);
+    if v_short > 0 and v_carry_target < 0 and v_carry_in > 0 then
+      -- Fallback 1: A draws its carry_in; draw only what the carry can still give. The plan is
+      -- recomputed with the smaller pot, so winners lose it under the oracle's split order.
+      v_cut := least(v_short, v_carry_in);
+      update public.pact_instances set carry_in_cents = carry_in_cents - v_cut where id = p_instance;
+      v_carry_in := v_carry_in - v_cut;
+      v_short := v_short - v_cut;
+      v_diff := public._instance_diff(p_instance, p_group, p_carry, v_carry_in);
+      if v_diff = '[]'::jsonb then
+        return;
+      end if;
+      select coalesce(sum((e ->> 'amount_cents')::bigint), 0) into v_carry_diff
+        from jsonb_array_elements(v_diff) e where (e ->> 'account_id')::uuid = p_carry;
+    end if;
     if v_short > 0 then
-      -- Fallback (later draws already settled): this correction absorbs what could not be
-      -- recovered, cutting its largest positive member lines first (then user_id asc).
+      -- Fallback 2 (remainder beyond A's own carry_in): cut A's correction, largest positive
+      -- member lines first (then user_id asc).
       for v_line in
         select x.ord - 1 as idx, (x.val ->> 'amount_cents')::bigint as amt
           from jsonb_array_elements(v_diff) with ordinality as x(val, ord)
@@ -332,6 +411,10 @@ begin
         v_short := v_short - v_cut;
         v_carry_diff := v_carry_diff + v_cut;
       end loop;
+      if not exists (select 1 from jsonb_array_elements(v_diff) e where (e ->> 'account_id')::uuid = p_carry) then
+        v_diff := v_diff || jsonb_build_array(jsonb_build_object('account_id', p_carry, 'user_id', null,
+                                                                 'target', 0, 'amount_cents', 0));
+      end if;
       select coalesce(jsonb_agg(case when (e ->> 'account_id')::uuid = p_carry
                                      then jsonb_set(e, '{amount_cents}', to_jsonb(v_carry_diff)) else e end), '[]'::jsonb)
         into v_diff
@@ -406,7 +489,9 @@ end;
 $$;
 
 -- Reconcile the ledger with the instance's current results (see header for the carry rule).
--- A never-posted closed instance is posted normally. Settled instances raise 23514.
+-- A never-posted closed instance is posted normally. Settled instances are corrected too (a late
+-- offline check-in can arrive after settlement); their correction lines are billed at the next
+-- settlement (billable_member_balances).
 create or replace function public.apply_instance_correction(p_instance uuid)
 returns void
 language plpgsql volatile security definer
@@ -429,14 +514,11 @@ begin
 
   select i.status, i.carry_in_cents into v_status, v_carry_in
     from public.pact_instances i where i.id = p_instance for update;
-  if v_status = 'settled' then
-    raise exception 'instance % is settled; its results are final', p_instance using errcode = '23514';
-  end if;
-  if v_status not in ('closed', 'voided') then
+  if v_status not in ('closed', 'settled', 'voided') then
     raise exception 'instance % is not closed (status %)', p_instance, v_status using errcode = '23514';
   end if;
   if v_carry_in is null then
-    if v_status = 'closed' then
+    if v_status in ('closed', 'settled') then
       perform public._post_initial(p_instance, v_group, v_carry);
     end if;
     return;
@@ -483,24 +565,38 @@ begin
   end loop;
   update public.pact_instances set status = 'settled' where id = any (v_ids) and status = 'closed';
 
+  -- Unpaid IOUs are recomputed (D7). Ones the payer marked paid stay open for the payee to
+  -- confirm (or dispute back to pending) and count as paid below.
   update public.obligations set status = 'superseded'
-   where group_id = p_group and status in ('pending', 'marked_paid');
+   where group_id = p_group and status = 'pending';
 
   insert into public.settlements (group_id, week_start) values (p_group, p_week)
   returning id into v_settlement;
 
-  select sum(balance_cents) into v_total from public.member_balances where group_id = p_group;
+  select sum(balance_cents) into v_total from public.billable_member_balances where group_id = p_group;
   if coalesce(v_total, 0) > 0 then
-    raise exception 'group % member balances sum to % > 0: money cannot appear from nowhere', p_group, v_total
+    raise exception 'group % billable balances sum to % > 0: money cannot appear from nowhere', p_group, v_total
       using errcode = '23514';
   end if;
 
-  select coalesce(array_agg(user_id order by user_id), '{}'), coalesce(array_agg(balance_cents order by user_id), '{}')
-    into v_c_ids, v_c_amt
-    from public.member_balances where group_id = p_group and balance_cents > 0;
-  select coalesce(array_agg(user_id order by user_id), '{}'), coalesce(array_agg(-balance_cents order by user_id), '{}')
-    into v_d_ids, v_d_amt
-    from public.member_balances where group_id = p_group and balance_cents < 0;
+  with b as (
+    select bb.user_id, bb.balance_cents::bigint as amt
+      from public.billable_member_balances bb where bb.group_id = p_group
+    union all
+    select o.from_user, o.amount_cents from public.obligations o
+     where o.group_id = p_group and o.status = 'marked_paid'
+    union all
+    select o.to_user, -o.amount_cents from public.obligations o
+     where o.group_id = p_group and o.status = 'marked_paid'
+  ), n as (
+    select user_id, sum(amt)::bigint as amt from b group by user_id
+  )
+  select coalesce(array_agg(user_id order by user_id) filter (where amt > 0), '{}'),
+         coalesce(array_agg(amt order by user_id) filter (where amt > 0), '{}'),
+         coalesce(array_agg(user_id order by user_id) filter (where amt < 0), '{}'),
+         coalesce(array_agg(-amt order by user_id) filter (where amt < 0), '{}')
+    into v_c_ids, v_c_amt, v_d_ids, v_d_amt
+    from n;
 
   -- Greedy, identical to simplifyDebts: largest creditor <-> largest debtor, ties by user_id asc
   -- (arrays are in user_id order and only a strictly larger amount replaces the pick).
@@ -528,6 +624,17 @@ begin
 end;
 $$;
 
+-- Failures of scheduled jobs, one row per group that failed. Server-only (RLS on, no client grants).
+create table if not exists public.job_failures (
+  id bigserial primary key,
+  job text not null,
+  group_id uuid null references public.groups (id),
+  error text not null,
+  failed_at timestamptz not null default now()
+);
+alter table public.job_failures enable row level security;
+revoke all on public.job_failures from public, anon, authenticated;
+
 create or replace function public.settle_due_groups(p_now timestamptz default now())
 returns int
 language plpgsql volatile security definer
@@ -542,11 +649,16 @@ declare
   v_settlement uuid;
   v_last_week date;
   v_count int := 0;
+  v_group_count int;
 begin
   if p_now is null then
     raise exception 'settle_due_groups: p_now is required' using errcode = '22023';
   end if;
   for v_gid in select g.id from public.groups g order by g.id loop
+  -- Each group settles in its own subtransaction: one group's failure is recorded in job_failures
+  -- and rolled back without blocking every other group's settlement.
+  begin
+    v_group_count := 0;
     select g.id, g.name, g.settlement_tz, g.created_at into v_group
       from public.groups g where g.id = v_gid for update;
     select max(week_start) into v_last from public.settlements where group_id = v_group.id;
@@ -558,7 +670,7 @@ begin
       v_settlement := public._settle_group_week(v_group.id, v_week,
                                                 ((v_week + 7)::timestamp) at time zone v_group.settlement_tz);
       v_last_week := v_week;
-      v_count := v_count + 1;
+      v_group_count := v_group_count + 1;
       v_week := v_week + 7;
     end loop;
 
@@ -570,10 +682,15 @@ begin
         from (
           select m.user_id from public.group_members m where m.group_id = v_group.id and m.left_at is null
           union
-          select mb.user_id from public.member_balances mb where mb.group_id = v_group.id and mb.balance_cents <> 0
+          select mb.user_id from public.billable_member_balances mb where mb.group_id = v_group.id and mb.balance_cents <> 0
         ) u
-        left join public.member_balances b on b.group_id = v_group.id and b.user_id = u.user_id;
+        left join public.billable_member_balances b on b.group_id = v_group.id and b.user_id = u.user_id;
     end if;
+    v_count := v_count + v_group_count;
+  exception when others then
+    insert into public.job_failures (job, group_id, error)
+    values ('settle_due_groups', v_gid, sqlstate || ': ' || sqlerrm);
+  end;
   end loop;
   return v_count;
 end;
@@ -652,6 +769,40 @@ begin
 end;
 $$;
 
+-- Payee says the payment marked paid never arrived. marked_paid -> pending (the next settlement
+-- supersedes it and bills the debt again); pending is a no-op; confirmed/superseded raise 23514.
+create or replace function public.dispute_obligation(p_obligation uuid)
+returns void
+language plpgsql volatile security definer
+set search_path = pg_catalog, public, pg_temp
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_ob public.obligations%rowtype;
+begin
+  if v_uid is null then
+    raise exception 'not authenticated' using errcode = '28000';
+  end if;
+  select * into v_ob from public.obligations where id = p_obligation for update;
+  if not found then
+    raise exception 'obligation not found' using errcode = 'P0002';
+  end if;
+  if v_ob.to_user <> v_uid then
+    raise exception 'only the payee can dispute an obligation' using errcode = '42501';
+  end if;
+  if v_ob.status = 'superseded' then
+    raise exception 'obligation is superseded by a later settlement' using errcode = '23514';
+  end if;
+  if v_ob.status = 'confirmed' then
+    raise exception 'obligation is already confirmed' using errcode = '23514';
+  end if;
+  if v_ob.status = 'pending' then
+    return;
+  end if;
+  update public.obligations set status = 'pending', marked_paid_at = null where id = p_obligation;
+end;
+$$;
+
 -- ---------------------------------------------------------------------
 -- Privileges
 -- ---------------------------------------------------------------------
@@ -660,6 +811,7 @@ revoke all on function public._instance_posted(uuid) from public, anon, authenti
 revoke all on function public._account_balance(uuid) from public, anon, authenticated, service_role;
 revoke all on function public._lock_pact_carry(uuid, uuid) from public, anon, authenticated, service_role;
 revoke all on function public._post_initial(uuid, uuid, uuid) from public, anon, authenticated, service_role;
+revoke all on function public._instance_diff(uuid, uuid, uuid, bigint) from public, anon, authenticated, service_role;
 revoke all on function public._correct_instance(uuid, uuid, uuid, uuid) from public, anon, authenticated, service_role;
 revoke all on function public._settle_group_week(uuid, date, timestamptz) from public, anon, authenticated, service_role;
 
@@ -674,3 +826,5 @@ revoke all on function public.mark_obligation_paid(uuid) from public, anon;
 revoke all on function public.confirm_obligation(uuid) from public, anon;
 grant execute on function public.mark_obligation_paid(uuid) to authenticated;
 grant execute on function public.confirm_obligation(uuid) to authenticated;
+revoke all on function public.dispute_obligation(uuid) from public, anon;
+grant execute on function public.dispute_obligation(uuid) to authenticated;

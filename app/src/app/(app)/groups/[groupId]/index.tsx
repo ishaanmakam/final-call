@@ -3,6 +3,7 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { Alert, Pressable, Share } from 'react-native';
 import { displayName, useGroupHome, type TodayItem } from '@/api/queries';
 import { leaveGroup } from '@/api/rpc';
+import { userMessage } from '@/lib/errors';
 import { dayStateLabel } from '@/components/status';
 import { Badge, Body, Button, Card, Heading, Loading, QueryState, Row, Screen } from '@/components/ui';
 import { useUserId } from '@/lib/auth';
@@ -85,7 +86,7 @@ export default function GroupHome() {
           void leaveGroup(groupId)
             .then(() => qc.invalidateQueries({ queryKey: ['groups'] }))
             .then(() => router.replace('/groups'))
-            .catch((e: unknown) => Alert.alert('Could not leave', e instanceof Error ? e.message : String(e))),
+            .catch((e: unknown) => Alert.alert('Could not leave', userMessage(e))),
       },
     ]);
 

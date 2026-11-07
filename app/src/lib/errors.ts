@@ -20,6 +20,26 @@ export function classifyRpcError(error: unknown): RpcErrorKind {
   return 'rejected';
 }
 
+export const CHECKIN_CAP_MESSAGE = "You've already checked in enough times for today.";
+const GENERIC_MESSAGE = 'Something went wrong.';
+
+/** Server says the per-instance check-in cap (20) is reached. Matches wording, not the window rules. */
+const CHECKIN_CAP = /check-?ins?\b.*\b(limit|cap|at most|maximum|max)\b|\b(at most|max(imum)?|too many|limit of)\b.*check-?ins?/i;
+
+/**
+ * Copy for an error shown to the user. Rule violations (23514, P0001, ...) carry a readable server
+ * message, which is shown as is (e.g. "can't leave during an active window"); known ones get friendlier copy.
+ */
+export function userMessage(error: unknown): string {
+  if (error === null || error === undefined) return GENERIC_MESSAGE;
+  const message = (
+    typeof error === 'object' && 'message' in error ? String((error as { message: unknown }).message ?? '') : errorMessage(error)
+  ).trim();
+  if (message.length === 0) return GENERIC_MESSAGE;
+  if (CHECKIN_CAP.test(message)) return CHECKIN_CAP_MESSAGE;
+  return message;
+}
+
 export function errorMessage(error: unknown): string {
   if (typeof error === 'object' && error !== null && 'message' in error) {
     const m = (error as { message: unknown }).message;

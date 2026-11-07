@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { computeInstancePayout, simplifyDebts, type ParticipantResult } from '../../packages/rules/src/index';
-import { asService, createDb, createGroupFixture, rows, scalar, type DB } from './helpers/db';
+import { asService, asUser, createDb, createGroupFixture, rows, scalar, type DB } from './helpers/db';
 
 // Differential tests: the SQL money layer must agree exactly with the TypeScript oracle in packages/rules.
 // Seeded PRNG so failures are reproducible; override with DIFF_SEED=<n>.
@@ -243,7 +243,8 @@ describe('differential: settlement obligations vs simplifyDebts', () => {
       const lines = users.map((uid) => ({ account_id: memberAcct[uid], amount_cents: target[uid] - (current[uid] ?? 0) }));
       const sum = lines.reduce((a, l) => a + l.amount_cents, 0);
       lines.push({ account_id: carryAcct, amount_cents: -sum });
-      await db.query(`select public.post_entry($1, 'correction', $2, null, 'differential', $3::jsonb)`, [
+      // settlement_payment entries (no instance) are billable at once, like confirmed settle-ups
+      await db.query(`select public.post_entry($1, 'settlement_payment', $2, null, 'differential', $3::jsonb)`, [
         fx.groupId,
         `diff-adjust:${r}`,
         JSON.stringify(lines),
@@ -275,4 +276,178 @@ describe('differential: settlement obligations vs simplifyDebts', () => {
     expect(checked).toBe(ROUNDS);
     expect(Number(await scalar(db, `select count(*)::int from public.settlements where group_id = $1`, [fx.groupId]))).toBe(ROUNDS);
   }, 600_000);
+});
+
+describe('property: random post / correct / settle / settle-up sequences', () => {
+  it('keep the ledger balanced and carries >= 0; re-running settlement and corrections is a no-op (210 scenarios)', async () => {
+    const rnd = mulberry32(SEED ^ 0x0b11ca7e);
+    const int = (lo: number, hi: number) => lo + Math.floor(rnd() * (hi - lo + 1));
+    const pick = <T>(xs: T[]) => xs[Math.floor(rnd() * xs.length)];
+    const SCENARIOS = 210;
+    const PER_DB = 15;
+    const START = Date.UTC(2026, 8, 7); // Mon 2026-09-07
+    const statuses: Status[] = ['success', 'success', 'failed', 'failed', 'failed', 'unverified', 'excluded', 'frozen'];
+    const stats = { instances: 0, corrections: 0, settledCorrections: 0, settles: 0, marks: 0, confirms: 0, disputes: 0, claws: 0 };
+    let db!: DB;
+
+    const post = (id: string) => asService(db, (d) => d.query(`select public.post_instance_payout($1)`, [id]));
+    const correct = (id: string) => asService(db, (d) => d.query(`select public.apply_instance_correction($1)`, [id]));
+    const settle = (now: string) => asService(db, (d) => scalar<number>(d, `select public.settle_due_groups($1::timestamptz)`, [now]));
+    const setResult = (id: string, uid: string, st: Status, fsa: string | null) =>
+      db.query(
+        `insert into public.results (instance_id, user_id, status, first_success_at) values ($1, $2, $3, $4)
+         on conflict (instance_id, user_id) do update set status = excluded.status, first_success_at = excluded.first_success_at`,
+        [id, uid, st, fsa],
+      );
+
+    for (let s = 0; s < SCENARIOS; s++) {
+      if (s % PER_DB === 0) db = await createDb();
+      const fx = await createGroupFixture(db, { members: int(2, 4), pact: { stakeCents: pick([1, 3, 100, 500, 777, 10000]) } });
+      await db.query(`update public.groups set created_at = '2026-09-07T07:00:00Z' where id = $1`, [fx.groupId]);
+      const pact = fx.pactId!;
+      const users = fx.userIds;
+      const insts: { id: string; date: string }[] = [];
+      let day = 0;
+      let now = '2026-09-07T07:00:00Z';
+      const randomFsa = (date: string, st: Status) =>
+        st === 'success' && rnd() < 0.95 ? `${date}T15:${String(pick([0, 0, 5, 30, 59])).padStart(2, '0')}:00Z` : null;
+
+      const snapshot = async () => ({
+        lines: await scalar<number>(db, `select count(*)::int from public.ledger_lines`),
+        obligations: await rows(
+          db,
+          `select id, from_user, to_user, amount_cents::bigint a, status::text from public.obligations where group_id = $1 order by id`,
+          [fx.groupId],
+        ),
+        carryIns: await rows(db, `select id, carry_in_cents::bigint c, status::text from public.pact_instances where pact_id = $1 order by id`, [pact]),
+        settlements: await scalar<number>(db, `select count(*)::int from public.settlements where group_id = $1`, [fx.groupId]),
+      });
+      const invariants = async (ctx: string) => {
+        const [r] = await rows<{ total: string; min_carry: string; pots: number; min_ci: string; billable: string }>(
+          db,
+          `select (select coalesce(sum(amount_cents), 0) from public.ledger_lines)::bigint total,
+                  (select coalesce(min(balance_cents), 0) from public.account_balances where kind = 'carry' and group_id = $1)::bigint min_carry,
+                  (select count(*) from public.account_balances where kind = 'pot' and group_id = $1 and balance_cents <> 0)::int pots,
+                  (select coalesce(min(carry_in_cents), 0) from public.pact_instances where pact_id = $2)::bigint min_ci,
+                  (select coalesce(sum(balance_cents), 0) from public.billable_member_balances where group_id = $1)::bigint billable`,
+          [fx.groupId, pact],
+        );
+        expect(Number(r.total), ctx).toBe(0);
+        expect(Number(r.min_carry), ctx).toBeGreaterThanOrEqual(0);
+        expect(r.pots, ctx).toBe(0);
+        expect(Number(r.min_ci), ctx).toBeGreaterThanOrEqual(0);
+        expect(Number(r.billable), ctx).toBeLessThanOrEqual(0);
+      };
+      const rerunIsNoop = async (ctx: string) => {
+        const before = await snapshot();
+        expect(await settle(now), ctx).toBe(0);
+        for (const i of before.carryIns as { id: string; c: string | null }[]) if (i.c !== null) await correct(i.id);
+        expect(await snapshot(), ctx).toEqual(before);
+      };
+
+      const steps = int(12, 30);
+      const log: string[] = [];
+      try {
+        for (let k = 0; k < steps; k++) {
+          const ctx = JSON.stringify({ seed: SEED, scenario: s, step: k });
+          const r = rnd();
+          if (r < 0.4 || insts.length === 0) {
+            const date = new Date(START + day * 86_400_000).toISOString().slice(0, 10);
+            day += int(1, 2);
+            const id = await scalar<string>(
+              db,
+              `insert into public.pact_instances (pact_id, local_date, window_open_at, deadline_at, status, closed_at)
+               select $1, $2::date, t - interval '1 hour', t, 'closed', t
+                 from (select ($2::date + time '09:00') at time zone 'America/Los_Angeles' t) x returning id`,
+              [pact, date],
+            );
+            for (const uid of users) {
+              if (rnd() < 0.15) continue;
+              const st = pick(statuses);
+              await setResult(id, uid, st, randomFsa(date, st));
+            }
+            insts.push({ id, date });
+            stats.instances++;
+            now = `${date}T18:00:00Z`;
+            const posted = rnd() < 0.75;
+            log.push(`new ${insts.length - 1} ${date}${posted ? ' posted' : ''}`);
+            if (posted) await post(id);
+          } else if (r < 0.65) {
+            const inst = pick(insts);
+            const changes = int(1, 2);
+            const what: string[] = [];
+            for (let c = 0; c < changes; c++) {
+              const st = pick(statuses);
+              const who = pick(users);
+              const fsa = randomFsa(inst.date, st);
+              await setResult(inst.id, who, st, fsa);
+              what.push(`${who.slice(0, 4)}=${st}${fsa ? '@' + fsa.slice(11, 16) : ''}`);
+            }
+            log.push(`correct ${insts.indexOf(inst)} ${what.join(',')}`);
+            const clawsBefore = await scalar<number>(
+              db,
+              `select count(*)::int from public.ledger_entries e where e.kind = 'correction' and e.instance_id <> $1
+                  and e.instance_id in (select id from public.pact_instances where pact_id = $2)`,
+              [inst.id, pact],
+            );
+            if ((await scalar(db, `select status::text from public.pact_instances where id = $1`, [inst.id])) === 'settled')
+              stats.settledCorrections++;
+            await correct(inst.id);
+            stats.corrections++;
+            const clawsAfter = await scalar<number>(
+              db,
+              `select count(*)::int from public.ledger_entries e where e.kind = 'correction' and e.instance_id <> $1
+                  and e.instance_id in (select id from public.pact_instances where pact_id = $2)`,
+              [inst.id, pact],
+            );
+            if (clawsAfter > clawsBefore) stats.claws++;
+          } else if (r < 0.77) {
+            now = new Date(START + day * 86_400_000 + 20 * 3_600_000).toISOString();
+            log.push(`settle ${now}`);
+            await settle(now);
+            stats.settles++;
+            await invariants(ctx);
+            await rerunIsNoop(ctx);
+          } else {
+            const obs = await rows<{ id: string; from_user: string; to_user: string; status: string }>(
+              db,
+              `select id, from_user::text, to_user::text, status::text from public.obligations
+                where group_id = $1 and status in ('pending', 'marked_paid') order by id`,
+              [fx.groupId],
+            );
+            if (obs.length === 0) continue;
+            const o = pick(obs);
+            const a = rnd();
+            log.push(`settle-up ${o.status} ${o.from_user.slice(0, 4)}>${o.to_user.slice(0, 4)} a=${a.toFixed(2)}`);
+            if (o.status === 'pending' && a < 0.6) {
+              await asUser(db, o.from_user, (d) => d.query(`select public.mark_obligation_paid($1)`, [o.id]));
+              stats.marks++;
+            } else if (o.status === 'marked_paid' && a < 0.5) {
+              await asUser(db, o.to_user, (d) => d.query(`select public.dispute_obligation($1)`, [o.id]));
+              stats.disputes++;
+            } else {
+              await asUser(db, o.to_user, (d) => d.query(`select public.confirm_obligation($1)`, [o.id]));
+              stats.confirms++;
+            }
+          }
+          await invariants(ctx);
+        }
+        // settle whatever is due, then everything must be stable
+        const end = JSON.stringify({ seed: SEED, scenario: s, step: 'end' });
+        await settle(now);
+        await invariants(end);
+        await rerunIsNoop(end);
+      } catch (e: any) {
+        e.message += ` ops: ${JSON.stringify(log)}`; // the failing op is the last one
+        throw e;
+      }
+    }
+    // the random walk must actually reach the interesting paths
+    expect(stats.settledCorrections, JSON.stringify(stats)).toBeGreaterThan(100);
+    expect(stats.claws, JSON.stringify(stats)).toBeGreaterThan(20);
+    expect(stats.settles, JSON.stringify(stats)).toBeGreaterThan(200);
+    expect(stats.confirms, JSON.stringify(stats)).toBeGreaterThan(30);
+    expect(stats.marks, JSON.stringify(stats)).toBeGreaterThan(30);
+    expect(stats.disputes, JSON.stringify(stats)).toBeGreaterThan(3);
+  }, 900_000);
 });

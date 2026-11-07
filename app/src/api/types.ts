@@ -71,6 +71,21 @@ export type PactParticipantRow = {
   left_at: string | null;
 };
 
+/**
+ * Place history: a change takes effect for windows opening 12+ hours after it is saved.
+ * The place that applies to an instance is the row with the latest effective_from <= window_open_at.
+ */
+export type PactParticipantPlaceRow = {
+  pact_id: string;
+  user_id: string;
+  lat: number;
+  lng: number;
+  radius_m: number;
+  label: string;
+  effective_from: string;
+  created_at: string;
+};
+
 export type PactInstanceRow = {
   id: string;
   pact_id: string;
@@ -267,6 +282,8 @@ export type RpcFunctions = {
   cast_vote: Fn<{ p_review: string; p_supports: boolean }, undefined>;
   mark_obligation_paid: Fn<{ p_obligation: string }, undefined>;
   confirm_obligation: Fn<{ p_obligation: string }, undefined>;
+  /** payee only: moves a marked_paid obligation back to pending ("I didn't receive this") */
+  dispute_obligation: Fn<{ p_obligation: string }, undefined>;
   register_push_token: Fn<{ p_token: string; p_platform: string }, undefined>;
 };
 
@@ -282,6 +299,7 @@ export type Database = {
       group_members: Table<GroupMemberRow>;
       pacts: Table<PactRow>;
       pact_participants: Table<PactParticipantRow>;
+      pact_participant_places: Table<PactParticipantPlaceRow>;
       pact_instances: Table<PactInstanceRow>;
       checkins: Table<CheckinRow>;
       freezes: Table<FreezeRow>;

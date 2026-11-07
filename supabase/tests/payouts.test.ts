@@ -316,20 +316,52 @@ describe('post_instance_payout', () => {
   });
 
   it('carry_in_cents is fixed at the first posting', async () => {
-    const seed = await closedInstance(db, pact, [
-      [u[0], 'failed'],
-      [u[1], 'failed'],
-    ]);
     const i = await closedInstance(db, pact, [
       [u[0], 'success', T('15:10')],
       [u[1], 'failed'],
     ]);
     await payout(db, i);
-    await payout(db, seed); // carry now 1000, but i already posted with carry_in 0
+    const later = await closedInstance(db, pact, [
+      [u[0], 'failed'],
+      [u[1], 'failed'],
+    ]);
+    await payout(db, later); // carry now 1000, but i already posted with carry_in 0
     await payout(db, i);
     expect(await carryIn(db, i)).toBe(0);
     expect(await effect(db, i)).toEqual({ [u[0]]: 500, [u[1]]: -500 });
     expect(await carryBalance(db, pact)).toBe(1000);
+  });
+
+  it('posting an instance first posts earlier closed, never-posted instances of the pact (deadline order)', async () => {
+    // tick lag: Mon (all fail) and Tue (winner) closed unposted; Wed (all fail) is posted first.
+    const mon = await closedInstance(db, pact, [
+      [u[0], 'failed'],
+      [u[1], 'failed'],
+    ]);
+    const tue = await closedInstance(db, pact, [
+      [u[0], 'success', T('15:10')],
+      [u[1], 'failed'],
+    ]);
+    const voided = await closedInstance(db, pact, [[u[0], 'void']], 'voided');
+    const wed = await closedInstance(db, pact, [
+      [u[2], 'failed'],
+      [u[3], 'failed'],
+    ]);
+    await payout(db, wed);
+    // Tue drew Mon's rollover, not Wed's (which stays in the carry for the next winner)
+    expect(await carryIn(db, mon)).toBe(0);
+    expect(await carryIn(db, tue)).toBe(1000);
+    expect(await carryIn(db, voided)).toBeNull();
+    expect(await carryIn(db, wed)).toBe(0);
+    expect(await effect(db, tue)).toEqual({ [u[0]]: 1500, [u[1]]: -500, carry: -1000 });
+    expect(await carryBalance(db, pact)).toBe(1000);
+    // later instances are not posted early
+    const thu = await closedInstance(db, pact, [
+      [u[0], 'success', T('15:10')],
+      [u[1], 'failed'],
+    ]);
+    await payout(db, tue);
+    expect(await carryIn(db, thu)).toBeNull();
   });
 
   it('rejects instances that are not closed, and unknown instances', async () => {
@@ -507,20 +539,32 @@ describe('apply_instance_correction', () => {
     expect(await correctionKeys(i)).toEqual([`correction:${i}:1`]);
   });
 
-  it('settled instances reject corrections', async () => {
+  it('settled instances accept corrections (late offline check-ins); the instance stays settled', async () => {
     const i = await closedInstance(db, pact, [
       [u[0], 'success', T('15:10')],
       [u[1], 'failed'],
+      [u[2], 'failed'],
     ]);
     await payout(db, i);
     await db.query(`update public.pact_instances set status = 'settled' where id = $1`, [i]);
-    await setResult(db, i, u[1], 'success', T('16:00'));
-    const e = await expectError(correct(db, i), /settled/);
-    expect(e.code).toBe('23514');
+    await setResult(db, i, u[2], 'unverified');
+    await correct(db, i);
     expect(await effect(db, i)).toEqual({ [u[0]]: 500, [u[1]]: -500 });
-    // post_instance_payout on a settled, posted instance is a no-op (not a correction)
+    expect(await correctionKeys(i)).toEqual([`correction:${i}:1`]);
+    expect(await scalar(db, `select status::text from public.pact_instances where id = $1`, [i])).toBe('settled');
+    await correct(db, i); // no-op
+    expect(await correctionKeys(i)).toEqual([`correction:${i}:1`]);
+    // post_instance_payout on a settled, posted instance stays a no-op (tick never calls it on one)
+    await setResult(db, i, u[1], 'success', T('16:00'));
     await payout(db, i);
     expect(await effect(db, i)).toEqual({ [u[0]]: 500, [u[1]]: -500 });
+  });
+
+  it('scheduled and open instances still reject corrections', async () => {
+    for (const st of ['scheduled', 'open']) {
+      const i = await closedInstance(db, pact, [[u[0], 'pending']], st);
+      expect((await expectError(correct(db, i), /not closed/)).code).toBe('23514');
+    }
   });
 
   describe('carry safety: corrections never let the carry go negative', () => {
@@ -692,7 +736,7 @@ describe('apply_instance_correction', () => {
       expect(await memberSum(db, fx.groupId)).toBe(0);
     });
 
-    it('fallback when the later draw is already settled: the corrected instance absorbs the shortfall', async () => {
+    it('a later draw that is already settled is clawed back too (its correction is billed at the next settlement)', async () => {
       const a = await closedInstance(db, pact, [
         [u[0], 'failed'],
         [u[1], 'failed'],
@@ -704,14 +748,124 @@ describe('apply_instance_correction', () => {
         [u[2], 'failed'],
       ]);
       await payout(db, b);
-      await db.query(`update public.pact_instances set status = 'settled' where id = $1`, [b]);
+      await db.query(`update public.pact_instances set status = 'settled' where id in ($1, $2)`, [a, b]);
       await setResult(db, a, u[0], 'success', T('17:00'));
       await correct(db, a);
-      // Target was u0 +1000 (diff +1500), carry diff -1500; the carry holds 0, so u0's diff is cut by 1500.
-      expect(await effect(db, a)).toEqual({ [u[0]]: -500, [u[1]]: -500, [u[2]]: -500, carry: 1500 });
+      expect(await effect(db, a)).toEqual({ [u[0]]: 1000, [u[1]]: -500, [u[2]]: -500 });
+      expect(await carryIn(db, b)).toBe(0);
+      expect(await effect(db, b)).toEqual({ [u[3]]: 500, [u[2]]: -500 });
       expect(await carryBalance(db, pact)).toBe(0);
-      expect(await effect(db, b)).toEqual({ [u[3]]: 2000, [u[2]]: -500, carry: -1500 });
       expect(await memberSum(db, fx.groupId)).toBe(0);
+    });
+
+    it('instances that captured the money without drawing it lose it from carry_in; every re-run is a no-op', async () => {
+      // A all-fail +1000 -> N all-fail (carry_in 1000) +1000 -> B draws 2000 -> A, then N, turn out to have a winner.
+      const a = await closedInstance(db, pact, [
+        [u[0], 'failed'],
+        [u[1], 'failed'],
+      ]);
+      await payout(db, a);
+      const n = await closedInstance(db, pact, [
+        [u[0], 'failed'],
+        [u[1], 'failed'],
+      ]);
+      await payout(db, n);
+      const b = await closedInstance(db, pact, [
+        [u[0], 'success', T('15:00')],
+        [u[1], 'failed'],
+      ]);
+      await payout(db, b);
+      await setResult(db, a, u[0], 'success', T('15:00'));
+      await correct(db, a);
+      expect(await carryIn(db, n)).toBe(0);
+      expect(await carryIn(db, b)).toBe(1000);
+      await setResult(db, n, u[0], 'success', T('15:00'));
+      await correct(db, n);
+      expect(await carryIn(db, n)).toBe(0);
+      expect(await carryIn(db, b)).toBe(0);
+      for (const i of [a, n, b]) expect(await effect(db, i)).toEqual({ [u[0]]: 500, [u[1]]: -500 });
+      const later = await closedInstance(db, pact, [
+        [u[2], 'failed'],
+        [u[3], 'failed'],
+      ]);
+      await payout(db, later);
+      const lines = await scalar<number>(db, `select count(*)::int from public.ledger_lines`);
+      for (const i of [a, n, b, later]) await correct(db, i);
+      expect(await scalar<number>(db, `select count(*)::int from public.ledger_lines`)).toBe(lines);
+      expect(await carryBalance(db, pact)).toBe(1000);
+    });
+
+    it('a capture that posted no lines (fewer than 2 active) also loses the clawed money, so it cannot draw a later deposit', async () => {
+      const a = await closedInstance(db, pact, [
+        [u[0], 'failed'],
+        [u[1], 'failed'],
+      ]);
+      await payout(db, a); // +1000
+      const n = await closedInstance(db, pact, [
+        [u[0], 'success', T('15:00')],
+        [u[1], 'unverified'],
+      ]);
+      await payout(db, n); // carry_in 1000, no lines
+      const b = await closedInstance(db, pact, [
+        [u[2], 'success', T('15:00')],
+        [u[3], 'failed'],
+      ]);
+      await payout(db, b); // draws 1000
+      await setResult(db, a, u[0], 'excluded');
+      await correct(db, a); // a refunds both: b gives back 1000, n forgets it
+      expect(await carryIn(db, b)).toBe(0);
+      expect(await carryIn(db, n)).toBe(0);
+      const later = await closedInstance(db, pact, [
+        [u[2], 'failed'],
+        [u[3], 'failed'],
+      ]);
+      await payout(db, later); // +1000 for the next winner
+      await setResult(db, n, u[1], 'failed');
+      await correct(db, n);
+      expect(await effect(db, n)).toEqual({ [u[0]]: 500, [u[1]]: -500 });
+      expect(await carryBalance(db, pact)).toBe(1000);
+      expect(await effect(db, later)).toEqual({ [u[2]]: -500, [u[3]]: -500, carry: 1000 });
+    });
+
+    it('fallback (money left the carry where no claw-back can reach): own carry_in drops, winners split like the oracle; re-runs are no-ops', async () => {
+      // Z all-fail +1000 -> A posts with 1 active (carry_in 1000, nothing moves) -> 999 leaves the carry
+      // outside any instance -> A turns out to have 2 winners and a loser.
+      const z = await closedInstance(db, pact, [
+        [u[0], 'failed'],
+        [u[1], 'failed'],
+      ]);
+      await payout(db, z);
+      const a = await closedInstance(db, pact, [
+        [u[3], 'success', T('15:00')],
+        [u[1], 'unverified'],
+      ]);
+      await payout(db, a);
+      expect(await carryIn(db, a)).toBe(1000);
+      const carryAcct = await scalar<string>(db, `select public.ensure_account($1, 'carry', null, null, $2)`, [fx.groupId, pact]);
+      const memberAcct = await scalar<string>(db, `select public.ensure_account($1, 'member', $2, null, null)`, [fx.groupId, u[2]]);
+      await db.query(`select public.post_entry($1, 'correction', 'drain', null, 'test drain', $2::jsonb)`, [
+        fx.groupId,
+        JSON.stringify([
+          { account_id: carryAcct, amount_cents: -999 },
+          { account_id: memberAcct, amount_cents: 999 },
+        ]),
+      ]);
+      await setResult(db, a, u[1], 'failed');
+      await setResult(db, a, u[0], 'success', T('15:10'));
+      await correct(db, a);
+      // only 1 cent is left to draw: carry_in 1, pot 501 -> u3 (earliest success, larger id) gets the odd cent
+      expect(await carryIn(db, a)).toBe(1);
+      expect(await effect(db, a)).toEqual({ [u[3]]: 251, [u[0]]: 250, [u[1]]: -500, carry: -1 });
+      expect(await carryBalance(db, pact)).toBe(0);
+      const c = await closedInstance(db, pact, [
+        [u[0], 'failed'],
+        [u[1], 'failed'],
+      ]);
+      await payout(db, c);
+      const lines = await scalar<number>(db, `select count(*)::int from public.ledger_lines`);
+      await correct(db, a);
+      expect(await scalar<number>(db, `select count(*)::int from public.ledger_lines`)).toBe(lines);
+      expect(await carryBalance(db, pact)).toBe(1000);
     });
   });
 });

@@ -2,17 +2,42 @@ import { useQueryClient } from '@tanstack/react-query';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Linking } from 'react-native';
-import { usePactDetail } from '@/api/queries';
+import { usePactDetail, usePlaceSchedule, type PlaceSchedule } from '@/api/queries';
 import { joinPact } from '@/api/rpc';
 import { RadiusSlider } from '@/components/RadiusSlider';
 import { Body, Button, Card, ErrorText, Field, Heading, Loading, QueryState, Screen } from '@/components/ui';
 import { useUserId } from '@/lib/auth';
 import { ensureForegroundPermission, takeHighAccuracyFix } from '@/lib/location';
+import { PLACE_CHANGE_LEAD_HOURS } from '@/lib/places';
+import { formatDateInZone, formatTimeInZone } from '@/lib/time';
 
 interface Spot {
   lat: number;
   lng: number;
   accuracy: number | null;
+}
+
+function NextWindowPlace({ schedule, tz }: { schedule: PlaceSchedule; tz: string }) {
+  const { nextInstance, nextPlace, latestSaved } = schedule;
+  const at = (iso: string) => `${formatDateInZone(iso, tz)} at ${formatTimeInZone(iso, tz)}`;
+  return (
+    <Card>
+      <Heading>Saved</Heading>
+      {nextInstance ? (
+        <Body>
+          Next window ({at(nextInstance.window_open_at)}) uses{' '}
+          {nextPlace ? `${nextPlace.label} (${nextPlace.radius_m} m)` : 'no place yet'}.
+        </Body>
+      ) : (
+        <Body>No upcoming window is scheduled yet.</Body>
+      )}
+      {latestSaved && nextPlace && latestSaved !== nextPlace ? (
+        <Body muted>
+          {latestSaved.label} applies to windows opening from {at(latestSaved.effective_from)}.
+        </Body>
+      ) : null}
+    </Card>
+  );
 }
 
 /** Per-person place picker: current location + radius. No map SDK (address search is v1.1). */
@@ -29,8 +54,15 @@ export default function PlacePicker() {
   const [saving, setSaving] = useState(false);
   const [blocked, setBlocked] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  const [saved, setSaved] = useState(false);
+  const schedule = usePlaceSchedule(pactId, userId, saved);
 
   const mine = detail.data?.participants.find((p) => p.user_id === userId);
+  // remember whether a place existed before this save, so the copy doesn't flip after joining
+  const [hadPlace, setHadPlace] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (detail.data && hadPlace === null) setHadPlace(mine !== undefined);
+  }, [detail.data, mine, hadPlace]);
   useEffect(() => {
     if (mine && !spot) {
       setSpot({ lat: mine.place_lat, lng: mine.place_lng, accuracy: null });
@@ -75,7 +107,8 @@ export default function PlacePicker() {
         qc.invalidateQueries({ queryKey: ['pact', pactId] }),
         qc.invalidateQueries({ queryKey: ['group', detail.data.pact.group_id] }),
       ]);
-      router.replace(`/pacts/${pactId}`);
+      setSaved(true);
+      await schedule.refetch();
     } catch (e) {
       setError(e);
     } finally {
@@ -90,6 +123,9 @@ export default function PlacePicker() {
         Stand at the place you need to be (your classroom, the gym) and capture it. You check in successfully when
         your GPS fix lands inside this circle.
       </Body>
+      {hadPlace ?? mine ? (
+        <Body muted>New places apply to check-in windows that open {PLACE_CHANGE_LEAD_HOURS}+ hours from now.</Body>
+      ) : null}
       <Button
         title={spot ? 'Re-capture current location' : 'Use my current location'}
         onPress={() => void captureLocation()}
@@ -111,7 +147,18 @@ export default function PlacePicker() {
       ) : null}
       <Field label="Label" value={label} onChangeText={setLabel} placeholder="Kane Hall 120" maxLength={60} />
       <ErrorText error={error} />
-      <Button title={mine ? 'Update my place' : 'Join pact with this place'} onPress={() => void save()} disabled={!spot} loading={saving} />
+      {saved && schedule.data ? <NextWindowPlace schedule={schedule.data} tz={detail.data.pact.tz} /> : null}
+      {saved && schedule.isError ? <ErrorText error={schedule.error} /> : null}
+      {saved ? (
+        <Button title="Done" onPress={() => router.replace(`/pacts/${pactId}`)} />
+      ) : (
+        <Button
+          title={mine ? 'Update my place' : 'Join pact with this place'}
+          onPress={() => void save()}
+          disabled={!spot}
+          loading={saving}
+        />
+      )}
     </Screen>
   );
 }

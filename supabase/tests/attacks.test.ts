@@ -183,9 +183,9 @@ describe('place / participation attacks', () => {
     const late = fx.userIds[3];
     const open = await mkInstance(fx.pactId, -10, 50);
     expect(await code(joinPact(late, fx.pactId, latOf(3), LNG))).toBe('23514');
-    // cron lag: join succeeds but the instance does not count the late joiner
+    // cron lag: the join is refused (23514) or succeeds, but the instance never counts the late joiner
     await db.query(`update public.pact_instances set status = 'scheduled' where id = $1`, [open]);
-    await joinPact(late, fx.pactId, latOf(3), LNG);
+    await joinPact(late, fx.pactId, latOf(3), LNG).catch((e) => expect(e.code).toBe('23514'));
     expect(await code(checkIn(late, open, latOf(3), LNG, 10))).toBe('42501');
     await db.query(`update public.pact_instances set deadline_at = now() - interval '1 second', status = 'open' where id = $1`, [open]);
     await db.query(`select public.tick_instances(now())`);
@@ -197,8 +197,8 @@ describe('place / participation attacks', () => {
     const [a, b] = fx.participantIds;
     const inst = await mkInstance(fx.pactId, -30, 30);
     await checkIn(a, inst, latOf(0), LNG, 10);
-    // b knows they will miss: leave before the deadline
-    await asUser(db, b, (d) => d.query(`select public.leave_group($1)`, [fx.groupId]));
+    // b knows they will miss: leave before the deadline (refused with 23514, or allowed but b still counts)
+    await asUser(db, b, (d) => d.query(`select public.leave_group($1)`, [fx.groupId])).catch((e) => expect(e.code).toBe('23514'));
     await db.query(`update public.pact_instances set deadline_at = now() - interval '1 second' where id = $1`, [inst]);
     await db.query(`select public.tick_instances(now())`);
     // ...and come straight back
@@ -525,7 +525,8 @@ const CLIENT_RPCS: [string, string[]][] = [
   ['join_pact', ['uuid', 'float8', 'float8', 'int', 'text']], ['set_pact_paused', ['uuid', 'boolean']],
   ['check_in', ['uuid', 'float8', 'float8', 'float8', 'timestamptz', 'boolean', 'uuid']], ['declare_freeze', ['uuid']],
   ['open_review', ['uuid', 'uuid', 'public.review_kind', 'text', 'text']], ['cast_vote', ['uuid', 'boolean']],
-  ['mark_obligation_paid', ['uuid']], ['confirm_obligation', ['uuid']], ['register_push_token', ['text', 'text']],
+  ['mark_obligation_paid', ['uuid']], ['confirm_obligation', ['uuid']], ['dispute_obligation', ['uuid']],
+  ['register_push_token', ['text', 'text']],
 ];
 const callSql = (fn: string, types: string[]) => `select public.${fn}(${types.map((t) => `null::${t}`).join(', ')})`;
 

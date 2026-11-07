@@ -1,4 +1,6 @@
 import { useMutation, useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
+import { OPEN_OBLIGATION_STATUSES } from '../lib/obligations';
+import { effectivePlaceAt, nextWindow } from '../lib/places';
 import { summarizeInstance, type InstanceSummary, type MemberDayState } from '../lib/instanceStatus';
 import { localDateInZone, windowState } from '../lib/time';
 import { supabase } from './supabase';
@@ -10,6 +12,7 @@ import type {
   MemberBalanceRow,
   ObligationRow,
   PactInstanceRow,
+  PactParticipantPlaceRow,
   PactParticipantRow,
   PactRow,
   ProfileRow,
@@ -225,6 +228,58 @@ export function usePactDetail(pactId: string, userId: string) {
   });
 }
 
+// ---------- place schedule (place picker) ----------
+
+export interface PlaceSchedule {
+  /** my place history for this pact */
+  places: PactParticipantPlaceRow[];
+  nextInstance: PactInstanceRow | null;
+  /** the place that applies to nextInstance's window */
+  nextPlace: PactParticipantPlaceRow | null;
+  /** most recently saved place (may not apply yet) */
+  latestSaved: PactParticipantPlaceRow | null;
+}
+
+export function usePlaceSchedule(pactId: string, userId: string, enabled = true) {
+  return useQuery({
+    queryKey: [...queryKeys.pact(pactId), 'places', userId] as const,
+    enabled,
+    queryFn: async (): Promise<PlaceSchedule> => {
+      const now = Date.now();
+      const [places, upcoming] = await Promise.all([
+        supabase
+          .from('pact_participant_places')
+          .select('*')
+          .eq('pact_id', pactId)
+          .eq('user_id', userId)
+          .order('effective_from')
+          .then(must),
+        supabase
+          .from('pact_instances')
+          .select('*')
+          .eq('pact_id', pactId)
+          .gt('window_open_at', new Date(now).toISOString())
+          .neq('status', 'voided')
+          .order('window_open_at')
+          .limit(5)
+          .then(must),
+      ]);
+      const nextInstance = nextWindow(upcoming, now);
+      const latestSaved =
+        places.reduce<PactParticipantPlaceRow | null>(
+          (a, p) => (a === null || Date.parse(p.created_at) > Date.parse(a.created_at) ? p : a),
+          null,
+        );
+      return {
+        places,
+        nextInstance,
+        nextPlace: nextInstance ? effectivePlaceAt(places, nextInstance.window_open_at) : null,
+        latestSaved,
+      };
+    },
+  });
+}
+
 // ---------- single instance (check-in screen) ----------
 
 export interface InstanceDetail {
@@ -369,8 +424,16 @@ export function useFeed(groupId: string) {
 // ---------- ledger ----------
 
 export interface Ledger {
+  /** live member_balances: includes closed-but-unsettled days, so it can differ from what's owed now */
   balances: MemberBalanceRow[];
-  settlement: SettlementRow | null;
+  /** most recent settlement run, if any */
+  latestSettlement: SettlementRow | null;
+  /** settlements referenced by `obligations` plus the latest one */
+  settlements: SettlementRow[];
+  /**
+   * Open obligations (pending or marked_paid) from every settlement, not just the latest:
+   * settlement supersedes only pending ones, so marked_paid ones persist until confirmed or disputed.
+   */
   obligations: ObligationRow[];
   profiles: Map<string, ProfileRow>;
 }
@@ -379,7 +442,7 @@ export function useLedger(groupId: string) {
   return useQuery({
     queryKey: queryKeys.ledger(groupId),
     queryFn: async (): Promise<Ledger> => {
-      const [balances, settlements, members] = await Promise.all([
+      const [balances, latest, obligations, members] = await Promise.all([
         supabase.from('member_balances').select('*').eq('group_id', groupId).then(must),
         supabase
           .from('settlements')
@@ -388,26 +451,28 @@ export function useLedger(groupId: string) {
           .order('week_start', { ascending: false })
           .limit(1)
           .then(must),
+        supabase
+          .from('obligations')
+          .select('*')
+          .eq('group_id', groupId)
+          .in('status', [...OPEN_OBLIGATION_STATUSES])
+          .order('amount_cents', { ascending: false })
+          .then(must),
         supabase.from('group_members').select('user_id').eq('group_id', groupId).then(must),
       ]);
-      const settlement = settlements[0] ?? null;
-      const obligations = settlement
-        ? must(
-            await supabase
-              .from('obligations')
-              .select('*')
-              .eq('settlement_id', settlement.id)
-              .neq('status', 'superseded')
-              .order('amount_cents', { ascending: false }),
-          )
-        : [];
+      const latestSettlement = latest[0] ?? null;
+      const missing = uniq(obligations.map((o) => o.settlement_id)).filter((id) => id !== latestSettlement?.id);
+      const older =
+        missing.length === 0 ? [] : must(await supabase.from('settlements').select('*').in('id', missing));
       const profiles = await fetchProfiles([
         ...members.map((m) => m.user_id),
         ...balances.map((b) => b.user_id),
+        ...obligations.flatMap((o) => [o.from_user, o.to_user]),
       ]);
       return {
         balances: [...balances].sort((a, b) => b.balance_cents - a.balance_cents),
-        settlement,
+        latestSettlement,
+        settlements: latestSettlement ? [latestSettlement, ...older] : older,
         obligations,
         profiles,
       };

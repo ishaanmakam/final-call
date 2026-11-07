@@ -103,7 +103,10 @@ src/lib/                 pure logic (unit tested) + small RN adapters
   time.ts                window state, countdown, display in pact tz, DST-correct local->UTC
   money.ts / venmo.ts    integer-cents formatting, Venmo deep links
   instanceStatus.ts      live "2 of 4 checked in" summary
-  errors.ts              network vs rejected classification for RPC errors
+  errors.ts              network vs rejected classification, user-facing error copy (check-in cap, rule violations)
+  obligations.ts         open obligations (pending + marked_paid, any settlement) grouped by week
+  places.ts              which saved place applies to a window (12 h lead time), next window
+  reviews.ts             Appeal/Challenge availability (one of each per person per instance)
 ```
 
 UI copy says pledge, forfeit and pool; code says stake and pot.

@@ -52,6 +52,8 @@ notification_outbox(id bigserial pk, user_id, kind text, payload jsonb, created_
 push_tokens(user_id, token text, platform text, updated_at, pk(user_id, token))
 ```
 
+Also: `billable_member_balances(group_id, user_id, balance_cents)` (what settlement bills), `job_failures` (server-only log; a failing group never blocks other groups' settlement).
+
 Views: `account_balances(account_id, group_id, kind, user_id, pact_id, instance_id, balance_cents)` and `member_balances(group_id, user_id, balance_cents)`; both derived by summing `ledger_lines`. No stored balances anywhere.
 
 ## Ledger invariants (enforced in the database)
@@ -81,13 +83,19 @@ Reviews then override: appeal accepted → success (first_success_at = deadline_
 - Idempotency keys: `stake:<instance_id>`, `payout:<instance_id>`, `rollover:<instance_id>`.
 - Corrections: when a result changes after posting (review or late check-in), recompute the instance's target net per member account using the same rules and the stored `carry_in_cents`, compare with what is posted for that instance, post the difference as one `correction` entry keyed `correction:<instance_id>:<n>` (n increments). Never mutate past entries.
 
+**Roster**: an instance counts participants with `joined_at <= window_open_at` and (`left_at` null or `left_at > window_open_at`); once closed, the roster is fixed as the users with a result row. `leave_group` is refused (23514) while you're on the roster of an instance in its window.
+
+**Places**: `pact_participant_places(pact_id, user_id, lat, lng, radius_m, label, effective_from, created_at)` is the place history. First join is effective immediately; later changes take effect 12 hours after they're made. A check-in is judged against the latest place with `effective_from <= window_open_at`. `join_pact` is refused once any instance's window has opened and it isn't closed.
+
+**Check-in limits**: at most 20 per user per instance (retries with the same `p_client_attempt_id` don't count). Client time is only validated on the late path. Late check-ins are accepted until `deadline_at + 24h`, even on settled instances; they post a correction billed at the next settlement.
+
 **Freeze**: `declared_at < window_open_at`; one per (pact, user, ISO week of the instance's local_date).
 
-**Review**: subject appeals their own `failed`; any other participant challenges `success` or `unverified`. Voters = current participants of the pact except subject (and except the opener for challenges? No: opener may vote). Majority of votes cast decides (`supports` = true means agree with the opener); ties → rejected. Reviews still open at settlement time → `defaulted`.
+**Review**: subject appeals their own `failed`; any other roster member challenges `success` or `unverified`. At most one appeal and one challenge per (instance, subject), ever. Voters = the instance roster except the subject; the opener of a challenge may vote. Majority of votes cast decides (`supports` = true means agree with the opener); ties → rejected. Reviews still open at settlement time → `defaulted`.
 
-**Settlement**: weekly per group, Mondays 12:00 in `settlement_tz`, for the week Mon–Sun just ended (plus a 12h review grace is implied by noon). Steps: default open reviews for instances in the week, apply corrections, mark previous `pending`/`marked_paid` obligations `superseded`, compute obligations from current `member_balances` by greedy largest-debtor-to-largest-creditor (ties by user_id), insert `settlements` row (idempotent per group+week). Money still in carry is not owed to anyone yet.
+**Settlement**: weekly per group, Mondays 12:00 in `settlement_tz`, for the week Mon–Sun just ended (plus a 12h review grace is implied by noon). Steps: default open reviews for instances in the week, apply corrections, mark previous `pending` obligations `superseded` (`marked_paid` ones survive and count as provisionally paid), compute obligations from `billable_member_balances` (lines of settled instances plus settlement payments only) by greedy largest-debtor-to-largest-creditor (ties by user_id), insert `settlements` row (idempotent per group+week). Money still in carry is not owed to anyone yet.
 
-**Settle-up**: payer calls `mark_obligation_paid`; payee calls `confirm_obligation`, which posts a `settlement_payment` entry (payee member −amount, payer member +amount) keyed `payment:<obligation_id>`.
+**Settle-up**: payer calls `mark_obligation_paid`; payee calls `confirm_obligation`, or `dispute_obligation` to send a `marked_paid` one back to `pending`. `confirm_obligation` posts a `settlement_payment` entry (payee member −amount, payer member +amount) keyed `payment:<obligation_id>`.
 
 ## RPCs (client-callable; SECURITY DEFINER; must verify `auth.uid()` membership)
 
@@ -105,6 +113,7 @@ cast_vote(p_review uuid, p_supports bool) returns void
 mark_obligation_paid(p_obligation uuid) returns void
 confirm_obligation(p_obligation uuid) returns void
 register_push_token(p_token text, p_platform text) returns void
+dispute_obligation(p_obligation uuid) returns void
 ```
 
 ## Server jobs (service role / pg_cron only; revoke from anon, authenticated)

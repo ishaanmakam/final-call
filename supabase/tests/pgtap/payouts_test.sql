@@ -137,8 +137,8 @@ select is((select array_agg(from_user::text || '>' || to_user::text || ':' || am
           array['00000000-0000-0000-0000-0000000000c1>00000000-0000-0000-0000-0000000000b1:500'],
           'obligations simplify the balances');
 -- 17
-select throws_ok($$ select public.apply_instance_correction('30000000-0000-0000-0000-000000000003') $$,
-                 '23514', null, 'settled instances reject corrections');
+select lives_ok($$ select public.apply_instance_correction('30000000-0000-0000-0000-000000000003') $$,
+                 'settled instances accept corrections (unchanged results: a no-op)');
 
 -- ---------------------------------------------------------------------
 -- Settle-up
