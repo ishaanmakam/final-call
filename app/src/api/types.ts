@@ -255,6 +255,7 @@ export type RpcFunctions = {
       p_accuracy_m: number | null;
       p_client_captured_at: string;
       p_is_simulated: boolean;
+      p_client_attempt_id?: string | null;
     },
     CheckinRow
   >;

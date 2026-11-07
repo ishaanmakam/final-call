@@ -1,4 +1,4 @@
-import type { CheckinAttempt, SendOutcome } from '../lib/checkinQueue';
+import { attemptId, type CheckinAttempt, type SendOutcome } from '../lib/checkinQueue';
 import { classifyRpcError, type RpcErrorKind } from '../lib/errors';
 import { supabase } from './supabase';
 import type { CheckinRow, ReviewKind, RpcArgs, RpcName, RpcReturn } from './types';
@@ -109,6 +109,7 @@ export const checkIn = (a: CheckinAttempt): Promise<CheckinRow> =>
       p_accuracy_m: a.accuracyM,
       p_client_captured_at: a.clientCapturedAt,
       p_is_simulated: a.isSimulated,
+      p_client_attempt_id: attemptId(a),
     },
     CHECK_IN_TIMEOUT_MS,
   );

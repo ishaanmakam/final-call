@@ -57,6 +57,25 @@ export function attemptKey(a: Pick<CheckinAttempt, 'instanceId' | 'clientCapture
   return `${a.instanceId}@${canonicalInstant(a.clientCapturedAt)}`;
 }
 
+/**
+ * Deterministic UUID-shaped id for an attempt, sent as check_in's p_client_attempt_id so the
+ * server returns the existing row when a retry follows a request that actually landed.
+ * Not cryptographic: it only has to be stable per (user, attempt) and unlikely to collide.
+ */
+export function attemptId(a: Pick<CheckinAttempt, 'instanceId' | 'clientCapturedAt'>): string {
+  const key = attemptKey(a);
+  const fnv = (seed: number) => {
+    let h = seed >>> 0;
+    for (let i = 0; i < key.length; i++) {
+      h ^= key.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(16).padStart(8, '0');
+  };
+  const hex = fnv(0x811c9dc5) + fnv(0x050c5d1f) + fnv(0x1b873593) + fnv(0x2f1a6b3c);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
 export function backoffDelay(attempts: number): number {
   const exp = Math.min(attempts, 30);
   return Math.min(BACKOFF_BASE_MS * 2 ** exp, BACKOFF_MAX_MS);

@@ -5,6 +5,7 @@ import {
   CheckinQueue,
   MAX_AGE_MS,
   MAX_PER_INSTANCE,
+  attemptId,
   attemptKey,
   backoffDelay,
   deserializeQueue,
@@ -247,5 +248,25 @@ describe('CheckinQueue', () => {
     await t.queue.enqueue(attempt());
     await t.queue.flush();
     expect(await t.queue.nextWakeAt()).toBe(T0 + BACKOFF_BASE_MS);
+  });
+});
+
+describe('attemptId', () => {
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+  it('is a valid uuid', () => {
+    expect(attemptId({ instanceId: 'inst-1', clientCapturedAt: '2026-11-09T16:59:28Z' })).toMatch(UUID);
+  });
+
+  it('is the same for retries of the same attempt, so the server can dedupe them', () => {
+    expect(attemptId({ instanceId: 'inst-1', clientCapturedAt: '2026-11-09T16:59:28Z' })).toBe(
+      attemptId({ instanceId: 'inst-1', clientCapturedAt: '2026-11-09T16:59:28.000Z' }),
+    );
+  });
+
+  it('differs for different instances or capture times', () => {
+    const base = attemptId({ instanceId: 'inst-1', clientCapturedAt: '2026-11-09T16:59:28Z' });
+    expect(attemptId({ instanceId: 'inst-2', clientCapturedAt: '2026-11-09T16:59:28Z' })).not.toBe(base);
+    expect(attemptId({ instanceId: 'inst-1', clientCapturedAt: '2026-11-09T16:59:29Z' })).not.toBe(base);
   });
 });
