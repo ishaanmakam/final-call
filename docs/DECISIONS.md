@@ -28,6 +28,19 @@ Decisions are either **founder** (Ishaan chose) or **default** (made overnight b
 | D9 | Venmo username | Stored on the profile, optional. | Needed for deep links. |
 | D10 | How the database is tested here | Vitest + PGlite (real Postgres in WASM) in `supabase/tests/`; pgTAP mirrors in `supabase/tests/pgtap/` for `supabase test db` once Docker works on your machine. | The design's Docker-on-Windows-ARM risk; this avoids it entirely. |
 
+| D11 | Changing your place while a window is open | Blocked. `join_pact` refuses joins, rejoins and place changes while any instance of that pact is open. | Otherwise you could move your fence to wherever you're standing. |
+| D12 | Leaving a group | Also leaves its pacts; ownership passes to the longest-standing member; you can still see obligations you're party to. | Keeps settle-ups possible after someone leaves. |
+| D13 | Valid time zones | Must be a real IANA name from `pg_timezone_names`. Abbreviations like `PST` are rejected. | Abbreviations ignore daylight saving. |
+| D14 | Check-in retries | `check_in` takes an optional `p_client_attempt_id`; the app sends a stable id per attempt so a retry after a timed-out-but-delivered request doesn't record a second tap. | Found by the app agent. |
+| D15 | A phone that can't get any GPS fix | The app still submits the attempt with no coordinates; it's judged Unverified. | Fail-open. |
+| D16 | Push delivery | A 5-minute lease on each outbox row (`claimed_until`) prevents overlapping runs from double-sending. | Found by the notifications agent. |
+
+## Open questions for you
+
+1. Should someone be able to leave a group while they owe money? Right now they can (their obligations stay visible to them).
+2. Is $100 the right maximum pledge per instance?
+3. Should challenges be anonymous? Right now the opener is visible.
+
 ## Why fail-open matters
 
 Pact (formerly GymPact) settled with the FTC in 2017 after charging users who met their goals when the app failed to recognize their activity. Any path where our tracking fails must end in Unverified, never Failed.
