@@ -66,3 +66,11 @@ Pact (formerly GymPact) settled with the FTC in 2017 after charging users who me
 ## Before real money (not MVP)
 
 Stripe prohibits peer-to-peer money transmission and restricts prize-promising entry fees; Apple guideline 5.3.4 requires licensing and geo-restriction for real-money gaming; Washington is strict on paid skill contests. Run `/security-review` and get a gaming-law opinion first.
+
+## UI overhaul defaults (2026-11-07)
+
+Made during the UI/UX overhaul on branch `ui-overhaul` without the founder. Same reversal rule as above.
+
+| # | Question | Default | Why |
+|---|----------|---------|-----|
+| U1 | The brief named `impeccable` as an installed skill, but it was not on this machine (only the Emil Kowalski skills under `~/.agents/skills`). | Fetched the public `pbakaus/impeccable` repo and installed its markdown (SKILL.md + `reference/`) to `~/.agents/skills/impeccable`; the CLI launcher was not installed, so agents follow its documented "launcher unavailable" path. | The brief made it the design authority; the references are plain markdown. |
