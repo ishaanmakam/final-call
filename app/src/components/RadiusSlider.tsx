@@ -3,6 +3,7 @@ import { StyleSheet, View, type LayoutChangeEvent } from 'react-native';
 import { GestureDetector, usePanGesture } from 'react-native-gesture-handler';
 import Animated, { useAnimatedReaction, useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
+import { RADIUS_DETENTS, RADIUS_MAX, RADIUS_MIN, RADIUS_STEP, radiusLine } from '../features/place/radius';
 import { haptic } from '../theme/haptics';
 import { useTheme } from '../theme/ThemeProvider';
 import { TOUCH_TARGET, radius, space } from '../theme/tokens';
@@ -15,21 +16,28 @@ interface Props {
   min?: number;
   max?: number;
   step?: number;
+  /** metres per −/+ button tap and per VoiceOver increment */
+  nudge?: number;
 }
 
 const THUMB = 28;
+const TRACK = 6;
 
 const clamp = (v: number, lo: number, hi: number) => {
   'worklet';
   return Math.min(hi, Math.max(lo, v));
 };
 
+const DETENT_SET = new Set(RADIUS_DETENTS);
+const isDetent = (m: number) => DETENT_SET.has(m);
+
 /**
- * Radius slider on gesture-handler + Reanimated: the thumb and fill follow the finger on the UI
- * thread; React hears about the value only when it crosses a step (never per frame). Keyboard and
- * VoiceOver users get the +/- buttons and the adjustable actions.
+ * Radius slider on gesture-handler + Reanimated. The thumb and fill follow the finger on the UI
+ * thread; React hears about the value only when it crosses a 5 m step, never per frame. A
+ * selection tick fires at the detents (25, 50, 75, 100, 150, 200, 300, 500 m). The whole 44 pt
+ * strip is the hit area; VoiceOver gets an adjustable control plus the −/+ buttons.
  */
-export function RadiusSlider({ value, onChange, min = 25, max = 500, step = 5 }: Props) {
+export function RadiusSlider({ value, onChange, min = RADIUS_MIN, max = RADIUS_MAX, step = RADIUS_STEP, nudge = 25 }: Props) {
   const { colors } = useTheme();
   const [width, setWidth] = useState(0);
   const ratio = useSharedValue((clamp(value, min, max) - min) / (max - min));
@@ -55,7 +63,7 @@ export function RadiusSlider({ value, onChange, min = 25, max = 500, step = 5 }:
       if (prev !== null && next !== prev && dragging.get()) {
         stepped.set(next);
         scheduleOnRN(onChange, next);
-        if (next % 25 === 0) scheduleOnRN(haptic, 'selection');
+        if (isDetent(next)) scheduleOnRN(haptic, 'selection');
       }
     },
     [min, max, step, onChange],
@@ -65,8 +73,8 @@ export function RadiusSlider({ value, onChange, min = 25, max = 500, step = 5 }:
     activeOffsetX: [-4, 4],
     onBegin: (e) => {
       'worklet';
-      const w = trackWidth.get();
-      if (w > 0) ratio.set(clamp(e.x / w, 0, 1));
+      const w = trackWidth.get() - THUMB;
+      if (w > 0) ratio.set(clamp((e.x - THUMB / 2) / w, 0, 1));
     },
     onActivate: () => {
       'worklet';
@@ -75,20 +83,20 @@ export function RadiusSlider({ value, onChange, min = 25, max = 500, step = 5 }:
     },
     onUpdate: (e) => {
       'worklet';
-      const w = trackWidth.get();
+      const w = trackWidth.get() - THUMB;
       if (w > 0) ratio.set(clamp(startRatio.get() + e.translationX / w, 0, 1));
     },
     onFinalize: () => {
       'worklet';
       dragging.set(false);
-      // snap the thumb to the committed step
+      // settle the thumb on the committed step
       ratio.set((stepped.get() - min) / (max - min));
     },
   });
 
   const fillStyle = useAnimatedStyle(() => ({ width: `${ratio.get() * 100}%` }));
   const thumbStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: Math.max(0, ratio.get() * trackWidth.get() - THUMB / 2) }, { scale: dragging.get() ? 1.1 : 1 }],
+    transform: [{ translateX: ratio.get() * Math.max(0, trackWidth.get() - THUMB) }, { scale: dragging.get() ? 1.1 : 1 }],
   }));
 
   const onLayout = (e: LayoutChangeEvent) => {
@@ -96,12 +104,17 @@ export function RadiusSlider({ value, onChange, min = 25, max = 500, step = 5 }:
     trackWidth.set(e.nativeEvent.layout.width);
   };
 
-  const bump = (delta: number) => onChange(Math.min(max, Math.max(min, value + delta)));
+  const bump = (delta: number) => {
+    const next = Math.min(max, Math.max(min, value + delta));
+    if (next === value) return;
+    haptic('selection');
+    onChange(next);
+  };
 
   return (
     <View style={styles.wrap}>
-      <Text variant="headline" tabular>
-        {value} m radius
+      <Text variant="headline" tabular accessibilityLiveRegion="polite">
+        {radiusLine(value)}
       </Text>
       <GestureDetector gesture={pan}>
         <View
@@ -109,26 +122,43 @@ export function RadiusSlider({ value, onChange, min = 25, max = 500, step = 5 }:
           style={styles.hit}
           accessible
           accessibilityRole="adjustable"
-          accessibilityLabel="Place radius"
-          accessibilityValue={{ min, max, now: value, text: `${value} meters` }}
+          accessibilityLabel="Circle size"
+          accessibilityValue={{ min, max, now: value, text: radiusLine(value) }}
           accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
-          onAccessibilityAction={(e) => bump(e.nativeEvent.actionName === 'increment' ? 25 : -25)}
+          onAccessibilityAction={(e) => bump(e.nativeEvent.actionName === 'increment' ? nudge : -nudge)}
         >
           <View pointerEvents="none" style={[styles.track, { backgroundColor: colors.fillStrong }]}>
             <Animated.View style={[styles.fill, { backgroundColor: colors.tint }, fillStyle]} />
           </View>
+          {width > 0
+            ? RADIUS_DETENTS.filter((d) => d > min && d < max).map((d) => (
+                <View
+                  key={d}
+                  pointerEvents="none"
+                  style={[
+                    styles.tick,
+                    { left: THUMB / 2 + ((d - min) / (max - min)) * (width - THUMB) - 1, backgroundColor: colors.tertiary },
+                  ]}
+                />
+              ))
+            : null}
           <Animated.View
             pointerEvents="none"
-            style={[styles.thumb, { backgroundColor: colors.surfaceElevated, borderColor: colors.tint, shadowColor: colors.shadow }, width === 0 && styles.hidden, thumbStyle]}
+            style={[
+              styles.thumb,
+              { backgroundColor: colors.surfaceElevated, borderColor: colors.tint, shadowColor: colors.shadow },
+              width === 0 && styles.hidden,
+              thumbStyle,
+            ]}
           />
         </View>
       </GestureDetector>
       <View style={styles.buttons}>
-        <Button title={`-${step * 5}`} variant="secondary" size="small" onPress={() => bump(-step * 5)} accessibilityLabel={`Shrink by ${step * 5} meters`} />
-        <Text variant="footnote" color="secondary">
+        <Button title={`−${nudge} m`} variant="secondary" size="small" onPress={() => bump(-nudge)} accessibilityLabel={`Shrink circle by ${nudge} metres`} />
+        <Text variant="footnote" color="secondary" tabular>
           {min}–{max} m
         </Text>
-        <Button title={`+${step * 5}`} variant="secondary" size="small" onPress={() => bump(step * 5)} accessibilityLabel={`Grow by ${step * 5} meters`} />
+        <Button title={`+${nudge} m`} variant="secondary" size="small" onPress={() => bump(nudge)} accessibilityLabel={`Grow circle by ${nudge} metres`} />
       </View>
     </View>
   );
@@ -137,8 +167,9 @@ export function RadiusSlider({ value, onChange, min = 25, max = 500, step = 5 }:
 const styles = StyleSheet.create({
   wrap: { gap: space.sm },
   hit: { height: TOUCH_TARGET, justifyContent: 'center' },
-  track: { height: 6, borderRadius: radius.pill, overflow: 'hidden' },
+  track: { height: TRACK, borderRadius: radius.pill, overflow: 'hidden', marginHorizontal: THUMB / 2 },
   fill: { position: 'absolute', left: 0, top: 0, bottom: 0 },
+  tick: { position: 'absolute', top: TOUCH_TARGET / 2 + TRACK + 2, width: 2, height: 4, borderRadius: 1, opacity: 0.6 },
   thumb: {
     position: 'absolute',
     left: 0,

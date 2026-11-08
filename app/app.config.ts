@@ -43,6 +43,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     'expo-router',
     'expo-secure-store',
     'expo-apple-authentication',
+    '@react-native-community/datetimepicker',
     [
       'expo-location',
       {

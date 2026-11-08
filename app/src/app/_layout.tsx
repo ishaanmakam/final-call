@@ -7,8 +7,8 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { DEMO, DemoParamsSync } from '@/api/demo';
 import { isSupabaseConfigured } from '@/api/supabase';
+import { Screen, Text } from '@/components';
 import { ToastProvider } from '@/components/Toast';
-import { Body, Screen, Title } from '@/components/ui';
 import { AuthProvider } from '@/lib/auth';
 import { ThemeProvider, useTheme } from '@/theme';
 
@@ -27,15 +27,18 @@ function useAppFocus() {
   }, []);
 }
 
+/** Developer-only: the app has no backend to talk to. Blunt on purpose, labelled so a tester knows. */
 function MissingConfig() {
   return (
     <Screen>
-      <Title>Setup needed</Title>
-      <Body>
-        EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY are not set. Copy .env.example to .env (local) or
-        add them as EAS environment variables, then rebuild or restart Metro. Or run with EXPO_PUBLIC_DEMO=1 for
-        fixture data.
-      </Body>
+      <Text variant="title2" accessibilityRole="header">
+        Setup needed (developer)
+      </Text>
+      <Text variant="body" color="secondary">
+        EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY are not set. Copy .env.example to .env (local) or add
+        them as EAS environment variables, then rebuild or restart Metro. Or run with EXPO_PUBLIC_DEMO=1 for fixture
+        data.
+      </Text>
     </Screen>
   );
 }
@@ -57,7 +60,7 @@ function ThemedStack() {
       >
         <Stack.Screen name="(app)" options={{ headerShown: false }} />
         <Stack.Screen name="sign-in" options={{ headerShown: false }} />
-        <Stack.Screen name="auth-callback" options={{ title: 'Signing in' }} />
+        <Stack.Screen name="auth-callback" options={{ headerShown: false }} />
       </Stack>
     </>
   );

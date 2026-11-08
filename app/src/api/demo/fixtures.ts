@@ -290,6 +290,24 @@ void yesterday;
 
 export { historyCheckins, historyInstances, historyResults };
 
+// ---------- extra check-in states (pushed after the history loop so the feed and settle-up are unchanged) ----------
+
+/** A pact you have not joined: group home shows "Set your place"; /checkin/i-notin is the not-a-participant state. */
+export const PACT_NOT_JOINED = 'p5';
+pacts.push({ id: PACT_NOT_JOINED, group_id: GROUP_ID, title: 'Chem lab by 2', days_of_week: [2, 4], window_open_local: '13:00:00', deadline_local: '14:00:00', stake_cents: 400, tz: TZ, paused: false, created_by: USERS.maya, created_at: ago(3 * DAY) });
+participants.push(
+  place(PACT_NOT_JOINED, USERS.maya, 47.6532, -122.3086, 80, 'Bagley Hall', 3 * DAY),
+  place(PACT_NOT_JOINED, USERS.diego, 47.6532, -122.3086, 80, 'Bagley Hall', 2 * DAY),
+);
+export const EXTRA_INSTANCES = { notJoined: 'i-notin', frozen: 'i-frozen' } as const;
+todayInstances.push(
+  { id: EXTRA_INSTANCES.notJoined, pact_id: PACT_NOT_JOINED, local_date: TODAY, window_open_at: ago(10 * MIN), deadline_at: ahead(50 * MIN), status: 'open', carry_in_cents: null, closed_at: null, deadline_soon_sent_at: null },
+  // a second run day you froze in advance (window not open yet): /checkin/i-frozen
+  { id: EXTRA_INSTANCES.frozen, pact_id: PACTS.run, local_date: TODAY, window_open_at: ahead(HOUR + 50 * MIN), deadline_at: ahead(2 * HOUR + 50 * MIN), status: 'scheduled', carry_in_cents: null, closed_at: null, deadline_soon_sent_at: null },
+);
+todayCheckins.push(checkin('c5', EXTRA_INSTANCES.notJoined, USERS.maya, DEMO_T0 - 6 * MIN, 'in_fence', 15, 9));
+freezes.push({ id: 'f2', pact_id: PACTS.run, user_id: USERS.you, instance_id: EXTRA_INSTANCES.frozen, declared_at: ago(5 * HOUR), iso_week: '2026-W45' });
+
 // ---------- ledger ----------
 
 export const balances: MemberBalanceRow[] = [
@@ -310,7 +328,25 @@ export const obligations: ObligationRow[] = [
   { id: 'o3', settlement_id: SETTLEMENT_IDS.latest, group_id: GROUP_ID, from_user: USERS.priya, to_user: USERS.maya, amount_cents: 375, status: 'pending', marked_paid_at: null, confirmed_at: null },
   { id: 'o4', settlement_id: SETTLEMENT_IDS.previous, group_id: GROUP_ID, from_user: USERS.you, to_user: USERS.maya, amount_cents: 200, status: 'pending', marked_paid_at: null, confirmed_at: null },
   { id: 'o5', settlement_id: SETTLEMENT_IDS.previous, group_id: GROUP_ID, from_user: USERS.diego, to_user: USERS.maya, amount_cents: 300, status: 'confirmed', marked_paid_at: ago(8 * DAY), confirmed_at: ago(7 * DAY) },
+  // `?settle=owe` only: a week where you missed and owe two friends (ov- rows are hidden otherwise).
+  { id: 'ov-owe-1', settlement_id: SETTLEMENT_IDS.latest, group_id: GROUP_ID, from_user: USERS.you, to_user: USERS.maya, amount_cents: 500, status: 'pending', marked_paid_at: null, confirmed_at: null },
+  { id: 'ov-owe-2', settlement_id: SETTLEMENT_IDS.latest, group_id: GROUP_ID, from_user: USERS.you, to_user: USERS.diego, amount_cents: 300, status: 'pending', marked_paid_at: null, confirmed_at: null },
 ];
+
+/** Which open obligations (and balances) the settle-up screen shows per `?settle=` variant. */
+export const SETTLE_VARIANTS: Record<'mixed' | 'owe' | 'owed', { obligationIds: string[]; balances: MemberBalanceRow[] }> = {
+  mixed: { obligationIds: obligations.filter((o) => !o.id.startsWith('ov-')).map((o) => o.id), balances },
+  owe: {
+    obligationIds: ['ov-owe-1', 'ov-owe-2', 'o3'],
+    balances: [
+      { group_id: GROUP_ID, user_id: USERS.you, balance_cents: -800 },
+      { group_id: GROUP_ID, user_id: USERS.maya, balance_cents: 875 },
+      { group_id: GROUP_ID, user_id: USERS.diego, balance_cents: 300 },
+      { group_id: GROUP_ID, user_id: USERS.priya, balance_cents: -375 },
+    ],
+  },
+  owed: { obligationIds: ['o1', 'o2', 'o3'], balances },
+};
 
 // ---------- the mutable store ----------
 

@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Pressable, StyleSheet, TextInput, View, type StyleProp, type TextInputProps, type ViewStyle } from 'react-native';
+import { useState, type ReactNode } from 'react';
+import { Platform, Pressable, StyleSheet, TextInput, View, type StyleProp, type TextInputProps, type ViewStyle } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { transition } from '../theme/motion';
 import { useTheme } from '../theme/ThemeProvider';
@@ -17,6 +17,8 @@ export interface TextFieldProps extends Omit<TextInputProps, 'style'> {
   helper?: string;
   /** show the clear (x) button while there is text (default true for single-line) */
   clearable?: boolean;
+  /** adornment inside the box before the input, e.g. a "$" prefix for a currency field */
+  leading?: ReactNode;
   style?: StyleProp<ViewStyle>;
 }
 
@@ -31,6 +33,7 @@ export function TextField({
   error,
   helper,
   clearable,
+  leading,
   style,
   multiline,
   editable = true,
@@ -55,6 +58,7 @@ export function TextField({
           !editable && styles.disabled,
         ]}
       >
+        {leading ? <View style={styles.leading}>{leading}</View> : null}
         <TextInput
           value={value}
           onChangeText={onChangeText}
@@ -118,7 +122,15 @@ const styles = StyleSheet.create({
     paddingLeft: space.md,
   },
   multiline: { alignItems: 'flex-start', minHeight: 96 },
-  input: { flex: 1, paddingVertical: space.sm + 2, paddingRight: space.md, minHeight: TOUCH_TARGET },
+  leading: { marginRight: space.xs, justifyContent: 'center' },
+  input: {
+    flex: 1,
+    paddingVertical: space.sm + 2,
+    paddingRight: space.md,
+    minHeight: TOUCH_TARGET,
+    // the box draws the focus ring (tint border); the browser's own outline would double it
+    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as object) : {}),
+  },
   inputMultiline: { textAlignVertical: 'top', paddingTop: space.md },
   clear: { paddingHorizontal: space.md, alignSelf: 'stretch', justifyContent: 'center' },
   disabled: { opacity: 0.5 },

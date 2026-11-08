@@ -1,22 +1,27 @@
 import * as AppleAuthentication from 'expo-apple-authentication';
 import { Redirect, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Platform, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Linking, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { colors, space } from '@/components/theme';
-import { Body, Button, Card, ErrorText, Field, Heading, Loading, Title } from '@/components/ui';
+import { DEMO } from '@/api/demo';
+import { Button, Icon, Text, TextField } from '@/components';
+import { EMAIL_INVALID, isValidEmail, safeNext } from '@/features/auth/magicLink';
 import { sendMagicLink, signInWithApple, useAuth } from '@/lib/auth';
+import { userMessage } from '@/lib/errors';
+import { gutter, radius, space, useTheme } from '@/theme';
 
-function safeNext(next: string | string[] | undefined): string {
-  const value = Array.isArray(next) ? next[0] : next;
-  return value && value.startsWith('/') && !value.startsWith('/sign-in') ? value : '/groups';
-}
+const PITCH = "Pledge a few dollars to be where you said you'd be. Show up and you split what the others forfeit. Miss, and your pledge goes to the pool.";
+const PRIVACY = 'Your location is read once, only when you tap Check In during a window. Never in the background.';
 
 export default function SignIn() {
   const { session, loading } = useAuth();
-  const params = useLocalSearchParams<{ next?: string }>();
-  const [appleAvailable, setAppleAvailable] = useState(false);
+  const { colors } = useTheme();
+  const params = useLocalSearchParams<{ next?: string; signedOut?: string }>();
+  // demo mode: ?signedOut=1 means "show this screen"; the fake session is dropped a tick later
+  const demoSignedOut = DEMO && (params.signedOut === '1' || params.signedOut === 'true');
+  const [appleAvailable, setAppleAvailable] = useState(DEMO && Platform.OS !== 'ios');
   const [email, setEmail] = useState('');
+  const [emailError, setEmailError] = useState<string | null>(null);
   const [busy, setBusy] = useState<'apple' | 'email' | null>(null);
   const [sentTo, setSentTo] = useState<string | null>(null);
   const [error, setError] = useState<unknown>(null);
@@ -25,8 +30,14 @@ export default function SignIn() {
     if (Platform.OS === 'ios') void AppleAuthentication.isAvailableAsync().then(setAppleAvailable);
   }, []);
 
-  if (loading) return <Loading />;
-  if (session) return <Redirect href={safeNext(params.next) as never} />;
+  if (loading) {
+    return (
+      <View style={[styles.gate, { backgroundColor: colors.bg }]} accessibilityLabel="Loading" accessibilityState={{ busy: true }}>
+        <ActivityIndicator color={colors.secondary} />
+      </View>
+    );
+  }
+  if (session && !demoSignedOut) return <Redirect href={safeNext(params.next) as never} />;
 
   const onApple = async () => {
     setError(null);
@@ -43,10 +54,11 @@ export default function SignIn() {
 
   const onEmail = async () => {
     setError(null);
-    if (!/^\S+@\S+\.\S+$/.test(email.trim())) {
-      setError(new Error('Enter a valid email address.'));
+    if (!isValidEmail(email)) {
+      setEmailError(EMAIL_INVALID);
       return;
     }
+    setEmailError(null);
     setBusy('email');
     try {
       await sendMagicLink(email);
@@ -58,53 +70,132 @@ export default function SignIn() {
     }
   };
 
+  const nativeApple = Platform.OS === 'ios' && !DEMO;
+
   return (
-    <SafeAreaView style={styles.safe}>
-      <View style={styles.wrap}>
-        <Title>Show Up</Title>
-        <Body muted>Make a pact with friends to be where you said you'd be. Miss it and your pledge goes to the pool.</Body>
+    <SafeAreaView style={[styles.safe, { backgroundColor: colors.bg }]}>
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <ScrollView
+          contentContainerStyle={styles.wrap}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
+          contentInsetAdjustmentBehavior="automatic"
+        >
+          <View style={styles.hero}>
+            <Text variant="largeTitle" accessibilityRole="header">
+              Show Up
+            </Text>
+            <Text variant="body" color="secondary">
+              {PITCH}
+            </Text>
+            <View style={styles.privacy}>
+              <Icon name="location" size={14} color="tertiary" />
+              <Text variant="footnote" color="secondary" style={styles.flex}>
+                {PRIVACY}
+              </Text>
+            </View>
+          </View>
 
-        {appleAvailable ? (
-          <AppleAuthentication.AppleAuthenticationButton
-            buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
-            buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
-            cornerRadius={12}
-            style={styles.apple}
-            onPress={() => void onApple()}
-          />
-        ) : null}
-
-        <Card>
-          <Heading>Or use email</Heading>
           {sentTo ? (
-            <Body>Check {sentTo} on this phone and tap the link to finish signing in.</Body>
+            <View style={styles.sent} accessibilityLiveRegion="polite">
+              <View style={[styles.iconWell, { backgroundColor: colors.fill }]}>
+                <Icon name="envelope.open" size={24} color="secondary" />
+              </View>
+              <Text variant="title3" align="center" accessibilityRole="header">
+                Check your email
+              </Text>
+              <Text variant="subheadline" color="secondary" align="center">
+                We sent a sign-in link to {sentTo}. Open it on this phone.
+              </Text>
+              <View style={styles.sentActions}>
+                {Platform.OS === 'ios' ? (
+                  <Button
+                    title="Open Mail"
+                    variant="secondary"
+                    size="small"
+                    onPress={() => void Linking.openURL('message://').catch(() => undefined)}
+                  />
+                ) : null}
+                <Button title="Use a different email" variant="tertiary" size="small" onPress={() => setSentTo(null)} />
+              </View>
+            </View>
           ) : (
-            <>
-              <Field
+            <View style={styles.form}>
+              {appleAvailable ? (
+                <>
+                  {nativeApple ? (
+                    <View pointerEvents={busy ? 'none' : 'auto'} style={busy === 'apple' && styles.dim}>
+                      <AppleAuthentication.AppleAuthenticationButton
+                        buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+                        buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.BLACK}
+                        cornerRadius={radius.md}
+                        style={styles.apple}
+                        onPress={() => void onApple()}
+                      />
+                    </View>
+                  ) : (
+                    <Button
+                      title="Sign in with Apple"
+                      variant="secondary"
+                      leading={<Icon name="apple.logo" size={18} />}
+                      loading={busy === 'apple'}
+                      onPress={() => void onApple()}
+                    />
+                  )}
+                  <View style={styles.divider} accessible={false}>
+                    <View style={[styles.rule, { backgroundColor: colors.separator }]} />
+                    <Text variant="footnote" color="secondary">
+                      or
+                    </Text>
+                    <View style={[styles.rule, { backgroundColor: colors.separator }]} />
+                  </View>
+                </>
+              ) : null}
+              <TextField
                 label="Email"
                 value={email}
-                onChangeText={setEmail}
+                onChangeText={(t) => {
+                  setEmail(t);
+                  if (emailError) setEmailError(null);
+                }}
+                error={emailError}
                 autoCapitalize="none"
                 autoComplete="email"
+                autoCorrect={false}
                 keyboardType="email-address"
                 textContentType="emailAddress"
-                placeholder="you@uw.edu"
+                placeholder="name@example.com"
                 returnKeyType="send"
                 onSubmitEditing={() => void onEmail()}
               />
               <Button title="Email me a sign-in link" onPress={() => void onEmail()} loading={busy === 'email'} />
-            </>
+            </View>
           )}
-          {sentTo ? <Button title="Use a different email" variant="ghost" onPress={() => setSentTo(null)} /> : null}
-        </Card>
-        <ErrorText error={error} />
-      </View>
+
+          {error ? (
+            <Text variant="footnote" color="forfeit" align="center" accessibilityRole="alert" accessibilityLiveRegion="assertive">
+              {userMessage(error)}
+            </Text>
+          ) : null}
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.bg },
-  wrap: { flex: 1, padding: space.xl, gap: space.lg, justifyContent: 'center' },
+  safe: { flex: 1 },
+  flex: { flex: 1 },
+  gate: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  wrap: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: gutter, paddingVertical: space.xxl, gap: space.xxl },
+  hero: { gap: space.md },
+  privacy: { flexDirection: 'row', gap: space.sm, alignItems: 'flex-start', paddingTop: space.xs },
+  form: { gap: space.lg },
   apple: { height: 50, width: '100%' },
+  dim: { opacity: 0.45 },
+  divider: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  rule: { flex: 1, height: StyleSheet.hairlineWidth },
+  sent: { alignItems: 'center', gap: space.sm, paddingVertical: space.lg },
+  iconWell: { width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center', marginBottom: space.xs },
+  sentActions: { marginTop: space.md, alignItems: 'center', gap: space.xs },
 });

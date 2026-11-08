@@ -31,6 +31,7 @@ const FIX_TIMEOUT_MS = 25_000;
 /** Kane Hall, with the accuracy the demo verdict implies, after a GPS-like pause. */
 async function fakeFix(): Promise<Location.LocationObject> {
   await new Promise<void>((r) => setTimeout(r, FAKE_FIX_DELAY_MS));
+  if (getDemoSettings().fix === 'none') throw new FixTimeoutError();
   const verdict = getDemoSettings().verdict;
   return {
     coords: {

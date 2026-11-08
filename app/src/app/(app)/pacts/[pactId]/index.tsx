@@ -1,124 +1,299 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
-import { Alert, Switch } from 'react-native';
-import { displayName, usePactDetail } from '@/api/queries';
+import { Alert, Platform, Switch, View } from 'react-native';
+import { displayName, useGroupHome, usePactDetail, usePlaceSchedule } from '@/api/queries';
 import { declareFreeze, setPactPaused } from '@/api/rpc';
 import type { PactInstanceRow } from '@/api/types';
-import { Badge, Body, Button, Card, ErrorText, Heading, Loading, QueryState, Row, Screen } from '@/components/ui';
+import {
+  Avatar,
+  AvatarStack,
+  Button,
+  EmptyState,
+  ListGroup,
+  ListRow,
+  Pill,
+  Screen,
+  SkeletonCard,
+  StatusPill,
+  Text,
+  useToast,
+  type Person,
+} from '@/components';
+import { timeZoneDisplayName } from '@/features/pact/timeZones';
 import { useUserId } from '@/lib/auth';
+import { userMessage } from '@/lib/errors';
 import { formatCents } from '@/lib/money';
-import { describeDays, displayTimeOfDay, formatDateInZone, formatTimeInZone, windowState } from '@/lib/time';
+import { describeDays, deviceTimeZone, displayTimeOfDay, formatDateInZone, formatTimeInZone, windowState } from '@/lib/time';
 import { useNow } from '@/lib/useNow';
+import { haptic, useTheme } from '@/theme';
 
 export default function PactDetail() {
   const { pactId } = useLocalSearchParams<{ pactId: string }>();
   const userId = useUserId();
   const detail = usePactDetail(pactId, userId);
   const qc = useQueryClient();
+  const toast = useToast();
+  const { colors } = useTheme();
   const now = useNow(30_000);
-  const [error, setError] = useState<unknown>(null);
   const [pausing, setPausing] = useState(false);
+  const [freezing, setFreezing] = useState<string | null>(null);
 
-  if (detail.isPending) return <Loading />;
-  if (detail.isError) return <QueryState error={detail.error} onRetry={() => void detail.refetch()} />;
+  const groupId = detail.data?.pact.group_id ?? '';
+  const home = useGroupHome(groupId, userId);
+  const amIn = detail.data?.participants.some((p) => p.user_id === userId) ?? false;
+  const schedule = usePlaceSchedule(pactId, userId, amIn);
+
+  if (detail.isPending) {
+    return (
+      <Screen>
+        <Stack.Screen options={{ title: 'Pact' }} />
+        <SkeletonCard lines={3} />
+        <SkeletonCard lines={4} />
+        <SkeletonCard lines={3} />
+      </Screen>
+    );
+  }
+  if (detail.isError) {
+    return (
+      <Screen>
+        <Stack.Screen options={{ title: 'Pact' }} />
+        <EmptyState
+          layout="screen"
+          icon="exclamationmark.triangle"
+          title="Couldn't load this pact"
+          body={userMessage(detail.error)}
+          action={{ label: 'Try again', onPress: () => void detail.refetch() }}
+        />
+      </Screen>
+    );
+  }
+
   const { pact, participants, profiles, upcoming, myFreezes } = detail.data;
-  const amIn = participants.some((p) => p.user_id === userId);
   const frozenIds = new Set(myFreezes.map((f) => f.instance_id));
+  const mine = participants.find((p) => p.user_id === userId);
+  const members = home.data?.members ?? [];
+  const memberProfiles = home.data?.profiles ?? profiles;
+  const myRole = members.find((m) => m.user_id === userId)?.role;
+  const canPause = pact.created_by === userId || myRole === 'owner';
+  const deviceZone = deviceTimeZone();
+  const nameOf = (id: string) => (id === userId ? 'You' : displayName(memberProfiles, id));
+  const people: Person[] = participants.map((p) => ({ id: p.user_id, name: nameOf(p.user_id) }));
+  const notJoined = members.filter((m) => !participants.some((p) => p.user_id === m.user_id));
+  const pending = schedule.data && schedule.data.latestSaved && schedule.data.nextPlace && schedule.data.latestSaved !== schedule.data.nextPlace ? schedule.data.latestSaved : null;
 
   const togglePause = async (paused: boolean) => {
     setPausing(true);
-    setError(null);
+    haptic('commit');
     try {
       await setPactPaused(pactId, paused);
       await qc.invalidateQueries({ queryKey: ['pact', pactId] });
       await qc.invalidateQueries({ queryKey: ['group', pact.group_id] });
+      toast.show({ message: paused ? 'Pact paused. Upcoming days are skipped until you resume.' : 'Pact resumed.', tone: 'neutral', icon: paused ? 'minus.circle' : 'checkmark' });
     } catch (e) {
-      setError(e);
+      toast.show({ message: userMessage(e), tone: 'forfeit', icon: 'exclamationmark.triangle' });
+      haptic('error');
     } finally {
       setPausing(false);
     }
   };
 
-  const freeze = (inst: PactInstanceRow) =>
-    Alert.alert(
-      'Freeze this day?',
-      `${formatDateInZone(inst.deadline_at, pact.tz)} won't count for or against you. One freeze per week per pact.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Freeze',
-          onPress: () =>
-            void declareFreeze(inst.id)
-              .then(() => qc.invalidateQueries({ queryKey: ['pact', pactId] }))
-              .catch((e: unknown) => setError(e)),
+  const freeze = (inst: PactInstanceRow) => {
+    const day = formatDateInZone(inst.deadline_at, pact.tz);
+    Alert.alert(`Freeze ${day}?`, "That day won't count for or against you. You have one freeze per week for this pact.", [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Freeze',
+        onPress: () => {
+          setFreezing(inst.id);
+          haptic('commit');
+          declareFreeze(inst.id)
+            .then(async () => {
+              await qc.invalidateQueries({ queryKey: ['pact', pactId] });
+              toast.show({ message: `${day} is frozen. It counts for nothing either way.`, tone: 'frozen', icon: 'snowflake' });
+            })
+            .catch((e: unknown) => {
+              toast.show({ message: userMessage(e), tone: 'forfeit', icon: 'exclamationmark.triangle' });
+              haptic('error');
+            })
+            .finally(() => setFreezing(null));
         },
-      ],
-    );
+      },
+    ]);
+  };
+
+  const window = `${displayTimeOfDay(pact.window_open_local)} to ${displayTimeOfDay(pact.deadline_local)}`;
 
   return (
     <Screen refreshing={detail.isRefetching} onRefresh={() => void detail.refetch()}>
       <Stack.Screen options={{ title: pact.title }} />
-      <Card>
-        <Heading>{pact.title}</Heading>
-        <Body>
-          {describeDays(pact.days_of_week)}, window {displayTimeOfDay(pact.window_open_local)} to{' '}
-          {displayTimeOfDay(pact.deadline_local)}
-        </Body>
-        <Body muted>Time zone {pact.tz}</Body>
-        <Body>Pledge {formatCents(pact.stake_cents)} per day</Body>
-        <Row style={{ justifyContent: 'space-between' }}>
-          <Body>Paused</Body>
-          <Switch
-            value={pact.paused}
-            disabled={pausing}
-            onValueChange={(v) => void togglePause(v)}
-            accessibilityLabel="Pause this pact"
+
+      <ListGroup
+        header="Schedule"
+        footer={`Check in any time from ${displayTimeOfDay(pact.window_open_local)}; ${displayTimeOfDay(pact.deadline_local)} is the deadline.${
+          pact.tz !== deviceZone ? ` Times follow ${timeZoneDisplayName(pact.tz)}.` : ''
+        }`}
+      >
+        <ListRow title="Days" trailing={<Value>{describeDays(pact.days_of_week)}</Value>} />
+        <ListRow title="Check-in window" trailing={<Value tabular>{window}</Value>} />
+        {pact.tz !== deviceZone ? <ListRow title="Time zone" trailing={<Value>{timeZoneDisplayName(pact.tz)}</Value>} /> : null}
+      </ListGroup>
+
+      <ListGroup
+        header="Pledge"
+        footer="Your pledge is what you forfeit to the pool on a day you miss. Show up and you split the pool with the others who did. Unverified days never cost anything."
+      >
+        <ListRow title="Per missed day" trailing={<Value tabular>{formatCents(pact.stake_cents)}</Value>} />
+      </ListGroup>
+
+      {canPause || pact.paused ? (
+        <ListGroup footer="Paused pacts skip their days until resumed. Days already in progress still count.">
+          {canPause ? (
+            <ListRow
+              title="Paused"
+              trailing={
+                <Switch
+                  value={pact.paused}
+                  disabled={pausing}
+                  onValueChange={(v) => void togglePause(v)}
+                  accessibilityLabel="Pause this pact"
+                  trackColor={{ true: colors.tint }}
+                  ios_backgroundColor={colors.fillStrong}
+                  // iOS keeps its white thumb; the web Switch defaults to a teal one
+                  {...(Platform.OS === 'web' ? { thumbColor: colors.surfaceElevated } : {})}
+                />
+              }
+            />
+          ) : (
+            <ListRow title="Paused" trailing={<Pill label="Paused" tone="void" size="compact" />} />
+          )}
+        </ListGroup>
+      ) : null}
+
+      {mine ? (
+        <ListGroup
+          header="Your place"
+          footer={
+            pending
+              ? `${pending.label ?? 'Your new place'} applies from ${formatDateInZone(pending.effective_from, pact.tz)} at ${formatTimeInZone(pending.effective_from, pact.tz)}. Until then you're judged against ${mine.place_label ?? 'your current place'}.`
+              : 'Changes apply to windows that open 12 or more hours from now.'
+          }
+        >
+          <ListRow
+            title={mine.place_label ?? 'Your place'}
+            subtitle={`${mine.place_radius_m} m circle`}
+            trailing={<Value>Change</Value>}
+            chevron
+            onPress={() => router.push(`/pacts/${pactId}/place`)}
+            accessibilityLabel={`Your place: ${mine.place_label ?? 'set'}, ${mine.place_radius_m} metre circle`}
+            accessibilityHint="Opens the place picker"
           />
-        </Row>
-        {pact.paused ? <Body muted>Paused pacts skip their days until resumed.</Body> : null}
-      </Card>
+        </ListGroup>
+      ) : (
+        <ListGroup footer="You're not in this pact yet. Each person sets their own place; yours can be a different building.">
+          <ListRow
+            title="Set my place and join"
+            trailing={<Value color="tint">Join</Value>}
+            chevron
+            onPress={() => router.push(`/pacts/${pactId}/place`)}
+            accessibilityHint="Opens the place picker"
+          />
+        </ListGroup>
+      )}
 
-      <Heading>Who's in</Heading>
-      {participants.length === 0 ? <Body muted>Nobody has set a place yet.</Body> : null}
-      {participants.map((p) => (
-        <Card key={p.user_id}>
-          <Body>{p.user_id === userId ? 'You' : displayName(profiles, p.user_id)}</Body>
-          <Body muted>
-            {p.place_label ?? 'Place set'} · {p.place_radius_m} m radius
-          </Body>
-        </Card>
-      ))}
-      <Button
-        title={amIn ? 'Change my place' : 'Set my place and join'}
-        variant={amIn ? 'secondary' : 'primary'}
-        onPress={() => router.push(`/pacts/${pactId}/place`)}
-      />
+      <ListGroup header={members.length > 0 ? `Who's in · ${participants.length} of ${members.length}` : "Who's in"}>
+        {participants.length > 0 ? (
+          <ListRow
+            title={participants.length === 1 ? '1 person' : `${participants.length} people`}
+            subtitle={notJoined.length > 0 ? `${notJoined.length} still to set a place` : 'Everyone has a place'}
+            trailing={<AvatarStack people={people} highlightIds={[userId]} />}
+          />
+        ) : null}
+        {participants.map((p) => (
+          <ListRow
+            key={p.user_id}
+            title={nameOf(p.user_id)}
+            subtitle={`${p.place_label ?? 'Place set'} · ${p.place_radius_m} m`}
+            leading={<Avatar person={{ id: p.user_id, name: nameOf(p.user_id) }} highlighted={p.user_id === userId} />}
+          />
+        ))}
+        {notJoined.map((m) => (
+          <ListRow
+            key={m.user_id}
+            title={nameOf(m.user_id)}
+            subtitle="No place yet"
+            leading={<Avatar person={{ id: m.user_id, name: nameOf(m.user_id) }} />}
+            disabled
+          />
+        ))}
+        {participants.length === 0 && notJoined.length === 0 ? (
+          <ListRow title="Nobody has set a place yet" subtitle="Each person joins by setting their own place." />
+        ) : null}
+      </ListGroup>
 
-      <Heading>Upcoming</Heading>
-      {upcoming.length === 0 ? <Body muted>Days appear here up to a week ahead.</Body> : null}
-      {upcoming.map((inst) => {
-        const state = windowState(now, inst.window_open_at, inst.deadline_at);
-        const frozen = frozenIds.has(inst.id);
-        return (
-          <Card key={inst.id}>
-            <Row style={{ justifyContent: 'space-between' }}>
-              <Body>
-                {formatDateInZone(inst.deadline_at, pact.tz)} · by {formatTimeInZone(inst.deadline_at, pact.tz)}
-              </Body>
-              {frozen ? <Badge label="Frozen" tone="neutral" /> : null}
-              {inst.status === 'voided' ? <Badge label="Void" tone="neutral" /> : null}
-            </Row>
-            {amIn && state === 'open' && !frozen ? (
-              <Button title="Check in" onPress={() => router.push(`/checkin/${inst.id}`)} />
-            ) : null}
-            {amIn && state === 'before' && !frozen && inst.status === 'scheduled' ? (
-              <Button title="Freeze this day" variant="ghost" onPress={() => freeze(inst)} />
-            ) : null}
-          </Card>
-        );
-      })}
-      <ErrorText error={error} />
+      <ListGroup
+        header="Upcoming"
+        footer={
+          amIn
+            ? "A freeze means a day doesn't count for or against you. One per week per pact, declared before the window opens."
+            : undefined
+        }
+      >
+        {upcoming.length === 0 ? (
+          <View style={{ backgroundColor: colors.surface }}>
+            <EmptyState icon="clock" title="Nothing scheduled yet" body="Days appear here up to a week ahead." />
+          </View>
+        ) : null}
+        {upcoming.map((inst) => {
+          const state = windowState(now, inst.window_open_at, inst.deadline_at);
+          const frozen = frozenIds.has(inst.id);
+          const voided = inst.status === 'voided';
+          const open = state === 'open' && !voided;
+          const canFreeze = amIn && state === 'before' && !frozen && inst.status === 'scheduled';
+          const day = formatDateInZone(inst.deadline_at, pact.tz);
+          return (
+            <ListRow
+              key={inst.id}
+              title={day}
+              subtitle={`by ${formatTimeInZone(inst.deadline_at, pact.tz)}`}
+              trailing={
+                frozen ? (
+                  <StatusPill state="frozen" size="compact" />
+                ) : voided ? (
+                  <StatusPill state="void" size="compact" />
+                ) : state === 'closed' ? (
+                  <Pill label="Closed" tone="pending" size="compact" />
+                ) : open ? (
+                  <Pill label="Open now" tone="tint" size="compact" />
+                ) : canFreeze ? (
+                  <Button
+                    title="Freeze"
+                    variant="tertiary"
+                    size="small"
+                    onPress={() => freeze(inst)}
+                    loading={freezing === inst.id}
+                    accessibilityLabel={`Freeze ${day}`}
+                    accessibilityHint="That day won't count for or against you"
+                  />
+                ) : undefined
+              }
+              chevron={open && amIn}
+              onPress={open && amIn ? () => router.push(`/checkin/${inst.id}`) : undefined}
+              accessibilityLabel={`${day}, by ${formatTimeInZone(inst.deadline_at, pact.tz)}${frozen ? ', frozen' : voided ? ", didn't count" : open ? ', open now' : ''}`}
+              accessibilityHint={open && amIn ? 'Opens check-in' : undefined}
+            />
+          );
+        })}
+      </ListGroup>
     </Screen>
   );
 }
+
+function Value({ children, tabular, color = 'secondary' }: { children: string; tabular?: boolean; color?: 'secondary' | 'tint' }) {
+  return (
+    <Text variant="body" color={color} tabular={tabular} numberOfLines={1}>
+      {children}
+    </Text>
+  );
+}
+

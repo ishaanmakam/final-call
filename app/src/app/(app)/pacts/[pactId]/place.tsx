@@ -1,44 +1,31 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { Linking } from 'react-native';
+import { router, Stack, useLocalSearchParams } from 'expo-router';
+import { useEffect, useRef, useState } from 'react';
+import { Linking, Platform, Pressable, StyleSheet, View } from 'react-native';
 import { usePactDetail, usePlaceSchedule, type PlaceSchedule } from '@/api/queries';
 import { joinPact } from '@/api/rpc';
+import { Button, Card, EmptyState, ListGroup, ListRow, Screen, SkeletonCard, Text, TextField } from '@/components';
 import { RadiusSlider } from '@/components/RadiusSlider';
-import { Body, Button, Card, ErrorText, Field, Heading, Loading, QueryState, Screen } from '@/components/ui';
+import { placeSaveState } from '@/features/place/placeRules';
+import { RADIUS_DEFAULT, accuracyLine, isRoughFix } from '@/features/place/radius';
 import { useUserId } from '@/lib/auth';
-import { ensureForegroundPermission, takeHighAccuracyFix } from '@/lib/location';
+import { userMessage } from '@/lib/errors';
+import { FixTimeoutError, ensureForegroundPermission, takeHighAccuracyFix, type PermissionOutcome } from '@/lib/location';
 import { PLACE_CHANGE_LEAD_HOURS } from '@/lib/places';
 import { formatDateInZone, formatTimeInZone } from '@/lib/time';
+import { useNow } from '@/lib/useNow';
+import { TOUCH_TARGET, haptic, space, useTheme } from '@/theme';
 
 interface Spot {
   lat: number;
   lng: number;
+  /** null when the spot came from a saved place rather than a fresh fix */
   accuracy: number | null;
 }
 
-function NextWindowPlace({ schedule, tz }: { schedule: PlaceSchedule; tz: string }) {
-  const { nextInstance, nextPlace, latestSaved } = schedule;
-  const at = (iso: string) => `${formatDateInZone(iso, tz)} at ${formatTimeInZone(iso, tz)}`;
-  return (
-    <Card>
-      <Heading>Saved</Heading>
-      {nextInstance ? (
-        <Body>
-          Next window ({at(nextInstance.window_open_at)}) uses{' '}
-          {nextPlace ? `${nextPlace.label ?? 'your place'} (${nextPlace.radius_m} m)` : 'no place yet'}.
-        </Body>
-      ) : (
-        <Body>No upcoming window is scheduled yet.</Body>
-      )}
-      {latestSaved && nextPlace && latestSaved !== nextPlace ? (
-        <Body muted>
-          {latestSaved.label ?? 'Your new place'} applies to windows opening from {at(latestSaved.effective_from)}.
-        </Body>
-      ) : null}
-    </Card>
-  );
-}
+type Problem = { kind: 'permission'; outcome: Exclude<PermissionOutcome, 'granted'> } | { kind: 'nofix' } | { kind: 'other'; message: string };
+
+const at = (iso: string, tz: string) => `${formatDateInZone(iso, tz)} at ${formatTimeInZone(iso, tz)}`;
 
 /** Per-person place picker: current location + radius. No map SDK (address search is v1.1). */
 export default function PlacePicker() {
@@ -46,15 +33,18 @@ export default function PlacePicker() {
   const userId = useUserId();
   const detail = usePactDetail(pactId, userId);
   const qc = useQueryClient();
+  const { colors } = useTheme();
+  const now = useNow(30_000);
 
   const [spot, setSpot] = useState<Spot | null>(null);
-  const [radius, setRadius] = useState(75);
+  const [radius, setRadius] = useState(RADIUS_DEFAULT);
   const [label, setLabel] = useState('');
+  const [labelTouched, setLabelTouched] = useState(false);
   const [locating, setLocating] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [blocked, setBlocked] = useState(false);
-  const [error, setError] = useState<unknown>(null);
+  const [problem, setProblem] = useState<Problem | null>(null);
   const [saved, setSaved] = useState(false);
+  const savingRef = useRef(false);
   const schedule = usePlaceSchedule(pactId, userId, saved);
 
   const mine = detail.data?.participants.find((p) => p.user_id === userId);
@@ -71,94 +61,287 @@ export default function PlacePicker() {
     }
   }, [mine, spot]);
 
-  if (detail.isPending) return <Loading />;
-  if (detail.isError) return <QueryState error={detail.error} onRetry={() => void detail.refetch()} />;
-
   const captureLocation = async () => {
-    setError(null);
-    setBlocked(false);
+    setProblem(null);
     setLocating(true);
     try {
       const permission = await ensureForegroundPermission();
       if (permission !== 'granted') {
-        setBlocked(permission === 'blocked');
-        throw new Error('Location permission is needed to set your place.');
+        setProblem({ kind: 'permission', outcome: permission });
+        haptic('error');
+        return;
       }
       const fix = await takeHighAccuracyFix();
       setSpot({ lat: fix.coords.latitude, lng: fix.coords.longitude, accuracy: fix.coords.accuracy ?? null });
+      haptic(isRoughFix(fix.coords.accuracy ?? null) ? 'warning' : 'snap');
     } catch (e) {
-      setError(e);
+      if (e instanceof FixTimeoutError) setProblem({ kind: 'nofix' });
+      else setProblem({ kind: 'other', message: userMessage(e) });
+      haptic('warning');
     } finally {
       setLocating(false);
     }
   };
 
+  if (detail.isPending) {
+    return (
+      <Screen>
+        <Stack.Screen options={{ title: 'Your place' }} />
+        <SkeletonCard lines={3} />
+        <SkeletonCard lines={2} />
+      </Screen>
+    );
+  }
+  if (detail.isError) {
+    return (
+      <Screen>
+        <Stack.Screen options={{ title: 'Your place' }} />
+        <EmptyState
+          layout="screen"
+          icon="exclamationmark.triangle"
+          title="Couldn't load this pact"
+          body={userMessage(detail.error)}
+          action={{ label: 'Try again', onPress: () => void detail.refetch() }}
+        />
+      </Screen>
+    );
+  }
+
+  const { pact, upcoming } = detail.data;
+  const hasPlace = hadPlace ?? mine !== undefined;
+  const rules = placeSaveState({ hasPlace, upcoming, nowMs: now });
+  const labelError = labelTouched && label.trim().length === 0 ? 'Name this place, like "Kane Hall 120".' : undefined;
+  const canSave = spot !== null && !rules.locked && !saving;
+
   const save = async () => {
-    if (!spot) return;
+    if (!spot || savingRef.current) return;
     if (label.trim().length === 0) {
-      setError(new Error('Name this place, e.g. "Kane Hall".'));
+      setLabelTouched(true);
+      haptic('error');
       return;
     }
+    savingRef.current = true;
     setSaving(true);
-    setError(null);
+    setProblem(null);
     try {
       await joinPact({ pactId, lat: spot.lat, lng: spot.lng, radiusM: radius, label: label.trim() });
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['pact', pactId] }),
-        qc.invalidateQueries({ queryKey: ['group', detail.data.pact.group_id] }),
+        qc.invalidateQueries({ queryKey: ['group', pact.group_id] }),
       ]);
       setSaved(true);
+      haptic('success');
       await schedule.refetch();
     } catch (e) {
-      setError(e);
+      setProblem({ kind: 'other', message: userMessage(e) });
+      haptic('error');
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
 
+  const done = () => router.replace(`/pacts/${pactId}`);
+
   return (
-    <Screen>
-      <Heading>{detail.data.pact.title}</Heading>
-      <Body muted>
-        Stand at the place you need to be (your classroom, the gym) and capture it. You check in successfully when
-        your GPS fix lands inside this circle.
-      </Body>
-      {hadPlace ?? mine ? (
-        <Body muted>New places apply to check-in windows that open {PLACE_CHANGE_LEAD_HOURS}+ hours from now.</Body>
-      ) : null}
-      <Button
-        title={spot ? 'Re-capture current location' : 'Use my current location'}
-        onPress={() => void captureLocation()}
-        loading={locating}
+    <Screen
+      footer={
+        saved ? (
+          <Button title="Done" onPress={done} />
+        ) : (
+          <View style={styles.footer}>
+            {rules.locked && rules.lockedUntil ? (
+              <Text variant="footnote" color="secondary" align="center" accessibilityLiveRegion="polite">
+                You can't change your place while today's check-in window is open. Try again after{' '}
+                {formatTimeInZone(rules.lockedUntil, pact.tz)}.
+              </Text>
+            ) : null}
+            <Button
+              title={rules.mode === 'join' ? 'Join with this place' : 'Save place'}
+              onPress={() => void save()}
+              disabled={!canSave}
+              loading={saving}
+              accessibilityHint={rules.locked ? 'Unavailable while a check-in window is open' : spot ? undefined : 'Capture your location first'}
+            />
+          </View>
+        )
+      }
+    >
+      <Stack.Screen
+        options={{
+          title: 'Your place',
+          headerRight: saved
+            ? () => (
+                <Pressable accessibilityRole="button" accessibilityLabel="Done" onPress={done} hitSlop={8} style={[styles.headerButton, Platform.OS === 'web' && styles.headerButtonWeb]}>
+                  <Text variant="body" emphasis color="tint">
+                    Done
+                  </Text>
+                </Pressable>
+              )
+            : undefined,
+        }}
       />
-      {blocked ? <Button title="Open Settings" variant="secondary" onPress={() => void Linking.openSettings()} /> : null}
-      {spot ? (
-        <Card>
-          <Body>
-            Center {spot.lat.toFixed(5)}, {spot.lng.toFixed(5)}
-            {spot.accuracy !== null ? ` (±${Math.round(spot.accuracy)} m)` : ''}
-          </Body>
-          {spot.accuracy !== null && spot.accuracy > 50 ? (
-            <Body muted>That fix is fuzzy. Try again near a window or outside the entrance for a better center.</Body>
-          ) : null}
-          <RadiusSlider value={radius} onChange={setRadius} />
-          <Body muted>Bigger circles forgive indoor GPS drift; smaller ones are stricter.</Body>
-        </Card>
+
+      <View style={styles.intro}>
+        <Text variant="headline">{pact.title}</Text>
+        <Text variant="subheadline" color="secondary">
+          Your place is yours alone; everyone in the pact sets their own. Stand where you need to be, like your seat in
+          Kane Hall, then capture it. You're in when your GPS fix lands inside this circle.
+        </Text>
+      </View>
+
+      {saved && schedule.data ? (
+        <SavedSummary schedule={schedule.data} tz={pact.tz} label={label.trim()} radius={radius} />
+      ) : saved && schedule.isError ? (
+        <ListGroup footer={userMessage(schedule.error)}>
+          <ListRow title="Saved" subtitle={`${label.trim()} · ${radius} m`} />
+        </ListGroup>
+      ) : saved ? (
+        <SkeletonCard lines={2} />
       ) : null}
-      <Field label="Label" value={label} onChangeText={setLabel} placeholder="Kane Hall 120" maxLength={60} />
-      <ErrorText error={error} />
-      {saved && schedule.data ? <NextWindowPlace schedule={schedule.data} tz={detail.data.pact.tz} /> : null}
-      {saved && schedule.isError ? <ErrorText error={schedule.error} /> : null}
-      {saved ? (
-        <Button title="Done" onPress={() => router.replace(`/pacts/${pactId}`)} />
-      ) : (
-        <Button
-          title={mine ? 'Update my place' : 'Join pact with this place'}
-          onPress={() => void save()}
-          disabled={!spot}
-          loading={saving}
-        />
-      )}
+
+      {!saved ? (
+        <>
+          {problem?.kind === 'permission' ? (
+            <Card>
+              <EmptyState
+                icon="location"
+                title="Location is off for Show Up"
+                body={
+                  problem.outcome === 'blocked'
+                    ? 'Location is turned off for Show Up in iOS Settings. Turn it on, then come back and capture your place.'
+                    : 'Setting a place needs your location once. Allow "While Using the App".'
+                }
+                action={
+                  problem.outcome === 'blocked'
+                    ? { label: 'Open Settings', onPress: () => void Linking.openSettings() }
+                    : { label: 'Allow location', onPress: () => void captureLocation() }
+                }
+                style={styles.inlineEmpty}
+              />
+            </Card>
+          ) : (
+            <Button
+              title={spot && spot.accuracy !== null ? 'Re-capture' : 'Use my current location'}
+              variant={spot && spot.accuracy !== null ? 'secondary' : 'primary'}
+              onPress={() => void captureLocation()}
+              loading={locating}
+              disabled={rules.locked}
+              accessibilityHint="Reads your location once, right now"
+            />
+          )}
+          {locating ? (
+            <Text variant="footnote" color="secondary" align="center" accessibilityLiveRegion="polite">
+              Finding you… Your location is read once, right now, and nowhere else.
+            </Text>
+          ) : null}
+
+          {problem?.kind === 'nofix' ? (
+            <Card>
+              <Text variant="headline">No GPS fix</Text>
+              <Text variant="subheadline" color="secondary">
+                Nothing landed in 25 seconds. Try again near a window or just outside the entrance.
+              </Text>
+              <Button title="Try again" variant="secondary" size="small" onPress={() => void captureLocation()} />
+            </Card>
+          ) : null}
+          {problem?.kind === 'other' ? (
+            <Text variant="footnote" color="forfeit" accessibilityRole="alert" accessibilityLiveRegion="assertive">
+              {problem.message}
+            </Text>
+          ) : null}
+
+          {spot ? (
+            <>
+              <ListGroup
+                header="Captured"
+                footer={isRoughFix(spot.accuracy) ? "That's a rough fix. Try again near a window or just outside the entrance." : undefined}
+              >
+                <ListRow
+                  title={spot.accuracy === null ? 'Your saved place' : 'Current location'}
+                  subtitle={accuracyLine(spot.accuracy)}
+                  trailing={
+                    spot.accuracy === null ? (
+                      <Text variant="body" color="secondary" tabular>
+                        {radius} m
+                      </Text>
+                    ) : undefined
+                  }
+                />
+              </ListGroup>
+
+              <ListGroup header="Circle" footer="Bigger circles forgive indoor GPS drift; smaller ones are stricter. Your fix counts if its uncertainty circle touches this one.">
+                <View style={[styles.sliderBlock, { backgroundColor: colors.surface }]}>
+                  <RadiusSlider value={radius} onChange={setRadius} />
+                </View>
+              </ListGroup>
+            </>
+          ) : null}
+
+          <TextField
+            label="Name"
+            value={label}
+            onChangeText={setLabel}
+            onBlur={() => setLabelTouched(true)}
+            placeholder="Kane Hall 120"
+            maxLength={60}
+            error={labelError}
+            helper="Shown to the group next to your name."
+            returnKeyType="done"
+          />
+
+          <ListGroup
+            footer={
+              rules.locked
+                ? "Today's window is open, so you're judged against the place you already saved."
+                : rules.mode === 'join'
+                  ? 'Takes effect right away.'
+                  : `New places apply to check-in windows that open ${PLACE_CHANGE_LEAD_HOURS} or more hours from now. Until then you're judged against ${mine?.place_label ?? 'your current place'}.`
+            }
+          >
+            <ListRow
+              title="Next window"
+              subtitle={rules.nextWindow ? at(rules.nextWindow.window_open_at, pact.tz) : 'Nothing scheduled in the next week'}
+            />
+          </ListGroup>
+        </>
+      ) : null}
     </Screen>
   );
 }
+
+function SavedSummary({ schedule, tz, label, radius }: { schedule: PlaceSchedule; tz: string; label: string; radius: number }) {
+  const { nextInstance, nextPlace, latestSaved } = schedule;
+  const deferred = latestSaved && nextPlace && latestSaved !== nextPlace;
+  return (
+    <ListGroup
+      header="Saved"
+      footer={
+        deferred && latestSaved
+          ? `${latestSaved.label ?? label} applies from ${at(latestSaved.effective_from, tz)}.`
+          : nextInstance
+            ? 'Your place is set for the next window.'
+            : 'Your place is saved. Days appear up to a week ahead.'
+      }
+    >
+      <ListRow title={label} subtitle={`${radius} m circle`} />
+      <ListRow
+        title="Next window"
+        subtitle={
+          nextInstance
+            ? `${at(nextInstance.window_open_at, tz)} · ${nextPlace ? `${nextPlace.label ?? 'your place'} (${nextPlace.radius_m} m)` : 'no place yet'}`
+            : 'Nothing scheduled in the next week'
+        }
+      />
+    </ListGroup>
+  );
+}
+
+const styles = StyleSheet.create({
+  intro: { gap: space.xs },
+  headerButton: { minHeight: TOUCH_TARGET, justifyContent: 'center' },
+  headerButtonWeb: { paddingHorizontal: space.lg },
+  inlineEmpty: { paddingVertical: space.sm },
+  sliderBlock: { padding: space.lg },
+  footer: { gap: space.sm },
+});

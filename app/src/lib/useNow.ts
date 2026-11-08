@@ -24,6 +24,14 @@ export function useNow(intervalMs = 1000): number {
   return now;
 }
 
+/**
+ * One reading of the time `useNow` would report, for code that needs a timestamp rather than a
+ * re-render per second (a timer to the next window boundary). Honors the demo freeze.
+ */
+export function nowMs(): number {
+  return DEMO && getDemoSettings().freeze ? demoAnchor() : Date.now();
+}
+
 let anchor: number | null = null;
 /** First frozen read wins, so every countdown on screen agrees. */
 function demoAnchor(): number {

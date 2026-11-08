@@ -18,6 +18,8 @@ export interface ListRowProps {
   chevron?: boolean;
   onPress?: () => void;
   disabled?: boolean;
+  /** a destructive action row (Sign out, Leave group): title in the forfeit tone, centered when alone */
+  destructive?: boolean;
   /** drawn by ListGroup; a lone row keeps its own corners */
   position?: 'only' | 'first' | 'middle' | 'last';
   accessibilityLabel?: string;
@@ -35,6 +37,7 @@ export function ListRow({
   chevron,
   onPress,
   disabled,
+  destructive,
   position = 'only',
   accessibilityLabel,
   accessibilityHint,
@@ -58,7 +61,12 @@ export function ListRow({
     >
       {leading ? <View style={styles.leading}>{leading}</View> : null}
       <View style={styles.text}>
-        <Text variant="body" numberOfLines={2}>
+        <Text
+          variant="body"
+          color={destructive ? 'forfeit' : 'label'}
+          align={destructive && !leading && !trailing && !chevron ? 'center' : undefined}
+          numberOfLines={2}
+        >
           {title}
         </Text>
         {subtitle ? (

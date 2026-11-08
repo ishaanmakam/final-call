@@ -1,95 +1,158 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { Stack, useLocalSearchParams } from 'expo-router';
-import { useState } from 'react';
-import { Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { router, Stack, useLocalSearchParams } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, AppState, Linking, StyleSheet, View } from 'react-native';
+import Animated, { FadeOut } from 'react-native-reanimated';
 import { useInstanceDetail } from '@/api/queries';
 import { RpcError, checkIn, declareFreeze } from '@/api/rpc';
 import type { CheckinRow } from '@/api/types';
-import { resultLabel } from '@/components/status';
-import { colors, space } from '@/components/theme';
-import { Badge, Body, Button, Card, ErrorText, Heading, Loading, QueryState, Screen } from '@/components/ui';
+import { EmptyState, Icon, ListGroup, ListRow, Screen, Skeleton, StatusPill, Text, resultLabel } from '@/components';
+import { CheckinButton, RING_SIZE, type RingTone } from '@/features/checkin/CheckinButton';
+import { VerdictPanel } from '@/features/checkin/VerdictPanel';
+import { WindowClock } from '@/features/checkin/WindowClock';
+import {
+  buttonState,
+  busyFootnote,
+  panelForError,
+  panelForPermission,
+  panelForQueued,
+  panelForRow,
+  resultFootnote,
+  tapRow,
+  type PanelAction,
+  type VerdictPanel as Panel,
+} from '@/features/checkin/copy';
+import { useWindowPhase } from '@/features/checkin/useWindowPhase';
 import { useUserId } from '@/lib/auth';
 import type { CheckinAttempt } from '@/lib/checkinQueue';
 import { enqueueCheckin, kickQueue } from '@/lib/checkinQueueRuntime';
 import { captureAttempt } from '@/lib/checkinAttempt';
+import { userMessage } from '@/lib/errors';
 import { ensureForegroundPermission, takeHighAccuracyFix } from '@/lib/location';
-import { deviceTimeZone, formatCountdown, formatDateInZone, formatTimeInZone, msUntil, windowState } from '@/lib/time';
-import { useNow } from '@/lib/useNow';
+import { formatDateInZone, formatTimeInZone } from '@/lib/time';
+import { durations, haptic, space } from '@/theme';
 
 type Phase =
   | { kind: 'idle' }
-  | { kind: 'locating' }
-  | { kind: 'sending' }
-  | { kind: 'verdict'; row: CheckinRow }
-  | { kind: 'queued' }
-  | { kind: 'permission'; blocked: boolean }
-  | { kind: 'error'; error: unknown };
+  | { kind: 'busy'; stage: 'locating' | 'sending'; tappedAt: string }
+  | { kind: 'panel'; panel: Panel; key: number; permissionBlocked?: boolean };
 
-function verdictMessage(row: CheckinRow, radiusM: number | undefined): { title: string; body: string; good: boolean } {
-  const acc = row.accuracy_m !== null ? `±${Math.round(row.accuracy_m)} m` : 'unknown accuracy';
-  switch (row.verdict) {
-    case 'in_fence':
-      return { title: "You're in", body: 'Check-in counted. Nice.', good: true };
-    case 'out_of_fence':
-      return {
-        title: 'Not at your place yet',
-        body: `About ${Math.round(row.distance_m ?? 0)} m from the center${radiusM ? ` (circle is ${radiusM} m)` : ''}, GPS ${acc}. Get closer and tap again.`,
-        good: false,
-      };
-    case 'unjudgeable':
-      return {
-        title: 'GPS too weak to judge',
-        body: `${row.accuracy_m !== null ? `Accuracy was ${acc}.` : 'No position was available.'} Try again near a window. If nothing better lands, the day counts as unverified, not missed.`,
-        good: false,
-      };
-    case 'rejected_simulated':
-      return { title: 'Location rejected', body: 'That location looked simulated, so it was not counted.', good: false };
-  }
-}
+const RING_TONE: Record<Panel['tone'], RingTone> = { success: 'success', unverified: 'unverified', forfeit: 'forfeit', neutral: 'tint' };
 
 export default function CheckInScreen() {
   const { instanceId } = useLocalSearchParams<{ instanceId: string }>();
   const userId = useUserId();
   const detail = useInstanceDetail(instanceId, userId);
-  const now = useNow(1000);
   const qc = useQueryClient();
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
-  // set when the GPS fix failed; the attempt was still sent without coordinates (fail-open)
-  const [fixError, setFixError] = useState<string | null>(null);
+  const panelCount = useRef(0);
 
-  if (detail.isPending) return <Loading />;
-  if (detail.isError) return <QueryState error={detail.error} onRetry={() => void detail.refetch()} />;
-  const { instance, pact, myPlace, judgedPlace, myCheckins, myResult, myFreeze } = detail.data;
+  // one haptic per verdict, on the same frame the panel mounts
+  const show = useCallback((panel: Panel, extra?: { permissionBlocked?: boolean }) => {
+    haptic(panel.haptic);
+    panelCount.current += 1;
+    setPhase({ kind: 'panel', panel, key: panelCount.current, ...extra });
+  }, []);
 
-  const state = windowState(now, instance.window_open_at, instance.deadline_at);
-  const finished = ['closed', 'settled', 'voided'].includes(instance.status);
-  const busy = phase.kind === 'locating' || phase.kind === 'sending';
-  const canCheckIn = state === 'open' && !finished && !!myPlace && !myFreeze && !busy;
-  const alreadyIn = myCheckins.some(
-    (c) => c.verdict === 'in_fence' && Date.parse(c.server_received_at) <= Date.parse(instance.deadline_at),
+  // a blocked permission re-checks itself when the person comes back from Settings
+  const blocked = phase.kind === 'panel' && phase.permissionBlocked === true;
+  useEffect(() => {
+    if (!blocked) return;
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s !== 'active') return;
+      void ensureForegroundPermission().then((p) => {
+        if (p === 'granted') setPhase({ kind: 'idle' });
+      });
+    });
+    return () => sub.remove();
+  }, [blocked]);
+
+  if (detail.isPending) return <CheckInSkeleton />;
+  if (detail.isError) {
+    return (
+      <Screen>
+        <Stack.Screen options={{ title: 'Check in' }} />
+        <EmptyState
+          layout="screen"
+          icon="wifi.slash"
+          title="Couldn't load this day"
+          body={userMessage(detail.error)}
+          action={{ label: 'Try again', onPress: () => void detail.refetch() }}
+        />
+      </Screen>
+    );
+  }
+  return (
+    <Loaded
+      instanceId={instanceId}
+      detail={detail.data}
+      refetching={detail.isRefetching}
+      refetch={() => void detail.refetch()}
+      phase={phase}
+      setPhase={setPhase}
+      show={show}
+      invalidate={(groupId: string) =>
+        Promise.all([
+          qc.invalidateQueries({ queryKey: ['instance', instanceId] }),
+          qc.invalidateQueries({ queryKey: ['group', groupId] }),
+        ])
+      }
+    />
   );
-  const showZone = pact.tz !== deviceTimeZone();
-  const deadlineText = `${formatTimeInZone(instance.deadline_at, pact.tz)}${showZone ? ` (${pact.tz})` : ''}`;
+}
 
-  const refresh = () =>
-    Promise.all([
-      qc.invalidateQueries({ queryKey: ['instance', instanceId] }),
-      qc.invalidateQueries({ queryKey: ['group', pact.group_id] }),
-    ]);
+type Detail = NonNullable<ReturnType<typeof useInstanceDetail>['data']>;
 
-  const submit = async (attempt: CheckinAttempt) => {
-    setPhase({ kind: 'sending' });
+function Loaded({
+  instanceId,
+  detail,
+  refetching,
+  refetch,
+  phase,
+  setPhase,
+  show,
+  invalidate,
+}: {
+  instanceId: string;
+  detail: Detail;
+  refetching: boolean;
+  refetch: () => void;
+  phase: Phase;
+  setPhase: (p: Phase) => void;
+  show: (panel: Panel, extra?: { permissionBlocked?: boolean }) => void;
+  invalidate: (groupId: string) => Promise<unknown>;
+}) {
+  const { instance, pact, myPlace, judgedPlace, myCheckins, myResult, myFreeze } = detail;
+  const windowPhase = useWindowPhase(instance.window_open_at, instance.deadline_at);
+  const finished = ['closed', 'settled', 'voided'].includes(instance.status);
+  const deadlineMs = Date.parse(instance.deadline_at);
+  const inFromServer = myCheckins.some((c) => c.verdict === 'in_fence' && Date.parse(c.server_received_at) <= deadlineMs);
+  const inFromPanel = phase.kind === 'panel' && phase.panel.pill === 'success';
+  const alreadyIn = inFromServer || inFromPanel;
+  const state = buttonState({
+    phase: windowPhase,
+    finished,
+    frozen: !!myFreeze,
+    alreadyIn,
+    busy: phase.kind === 'busy' ? phase.stage : null,
+  });
+  const ringTone: RingTone = phase.kind === 'panel' ? RING_TONE[phase.panel.tone] : 'tint';
+  const deadlineText = formatTimeInZone(instance.deadline_at, pact.tz);
+  const refresh = () => invalidate(pact.group_id);
+
+  const submit = async (attempt: CheckinAttempt, fixProblem: string | null) => {
+    setPhase({ kind: 'busy', stage: 'sending', tappedAt: attempt.clientCapturedAt });
     try {
-      const row = await checkIn(attempt);
-      setPhase({ kind: 'verdict', row });
+      const row: CheckinRow = await checkIn(attempt);
+      show(panelForRow(row, judgedPlace, instance.deadline_at, pact.tz, fixProblem));
       kickQueue(); // network is clearly up: flush anything older
       await refresh();
     } catch (e) {
       if (e instanceof RpcError && e.kind !== 'rejected') {
         await enqueueCheckin(attempt);
-        setPhase({ kind: 'queued' });
+        show(panelForQueued(attempt.clientCapturedAt, instance.deadline_at, pact.tz));
       } else {
-        setPhase({ kind: 'error', error: e });
+        show(panelForError(e));
       }
     }
   };
@@ -97,153 +160,197 @@ export default function CheckInScreen() {
   const onCheckIn = async () => {
     const permission = await ensureForegroundPermission();
     if (permission !== 'granted') {
-      setPhase({ kind: 'permission', blocked: permission === 'blocked' });
+      show(panelForPermission(permission === 'blocked'), { permissionBlocked: permission === 'blocked' });
       return;
     }
-    setPhase({ kind: 'locating' });
-    setFixError(null);
+    const tappedAt = Date.now();
+    setPhase({ kind: 'busy', stage: 'locating', tappedAt: new Date(tappedAt).toISOString() });
     // Fail-open: a failed or timed-out fix still sends the attempt with null coordinates, stamped with
     // the tap time, so the server records it as unverified instead of the day counting as missed.
-    const { attempt, fixError: problem } = await captureAttempt(instanceId, takeHighAccuracyFix, Date.now());
-    setFixError(problem);
-    await submit(attempt);
+    const { attempt, fixError } = await captureAttempt(instanceId, takeHighAccuracyFix, tappedAt);
+    await submit(attempt, fixError);
+  };
+
+  const onAction = (action: PanelAction) => {
+    if (action === 'openSettings') void Linking.openSettings();
+    else if (action === 'signIn') router.replace('/sign-in');
+    else void onCheckIn();
   };
 
   const onFreeze = () =>
-    Alert.alert('Freeze today?', "Today won't count for or against you. One freeze per week per pact.", [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Freeze',
-        onPress: () =>
-          void declareFreeze(instanceId)
-            .then(refresh)
-            .catch((e: unknown) => setPhase({ kind: 'error', error: e })),
-      },
-    ]);
+    Alert.alert(
+      `Freeze ${formatDateInZone(instance.deadline_at, pact.tz)}?`,
+      "That day won't count for or against you. You have one freeze per week for this pact.",
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Freeze',
+          style: 'destructive',
+          onPress: () => {
+            haptic('commit');
+            void declareFreeze(instanceId)
+              .then(refresh)
+              .catch((e: unknown) => show(panelForError(e)));
+          },
+        },
+      ],
+    );
 
-  let timing: string;
-  if (finished || state === 'closed') timing = `Closed. Deadline was ${deadlineText}.`;
-  else if (state === 'before')
-    timing = `Window opens in ${formatCountdown(msUntil(instance.window_open_at, now))} at ${formatTimeInZone(instance.window_open_at, pact.tz)}`;
-  else timing = `${formatCountdown(msUntil(instance.deadline_at, now))} until ${deadlineText}`;
+  const dateLine = [
+    formatDateInZone(instance.deadline_at, pact.tz),
+    judgedPlace?.label ?? (myPlace ? 'Your place' : null),
+    judgedPlace ? `${judgedPlace.radiusM} m` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
-  const buttonLabel =
-    phase.kind === 'locating' ? 'Getting GPS…' : phase.kind === 'sending' ? 'Sending…' : alreadyIn ? 'Checked in' : 'Check In';
+  // the one status line under the circle, until a verdict replaces it
+  let statusLine: string | null = null;
+  if (phase.kind === 'busy') statusLine = busyFootnote(state, phase.tappedAt, pact.tz);
+  else if (myFreeze) statusLine = 'You froze today. It counts for nothing either way.';
+  else if (state === 'closed') statusLine = myResult ? null : 'Result posts within a minute.';
+  else if (state === 'done') {
+    const first = myCheckins.find((c) => c.verdict === 'in_fence' && Date.parse(c.server_received_at) <= deadlineMs);
+    statusLine = first ? `You're in. Counted at ${formatTimeInZone(first.client_captured_at ?? first.server_received_at, pact.tz)}.` : "You're in.";
+  } else statusLine = 'Your location is read once, when you tap.';
+
+  const canFreeze = windowPhase === 'before' && !finished && !!myPlace && !myFreeze;
 
   return (
-    <Screen refreshing={detail.isRefetching} onRefresh={() => void detail.refetch()}>
+    <Screen refreshing={refetching} onRefresh={refetch}>
       <Stack.Screen options={{ title: pact.title }} />
-      <Body muted>{formatDateInZone(instance.deadline_at, pact.tz)}</Body>
-      <Text style={styles.countdown} accessibilityLiveRegion="polite">
-        {timing}
+      <Text variant="subheadline" color="secondary" align="center">
+        {dateLine}
       </Text>
+      <WindowClock phase={windowPhase} windowOpenAt={instance.window_open_at} deadlineAt={instance.deadline_at} tz={pact.tz} />
 
-      <View style={styles.center}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Check in"
-          accessibilityHint="Reads your location once and sends it"
-          accessibilityState={{ disabled: !canCheckIn, busy }}
-          disabled={!canCheckIn}
-          onPress={() => void onCheckIn()}
-          style={({ pressed }) => [
-            styles.big,
-            alreadyIn && styles.bigDone,
-            !canCheckIn && !alreadyIn && styles.bigDisabled,
-            pressed && styles.bigPressed,
-          ]}
-        >
-          <Text style={styles.bigText}>{buttonLabel}</Text>
-        </Pressable>
-      </View>
+      {!myPlace ? (
+        <EmptyState
+          icon="location"
+          title="You haven't joined this pact"
+          body="Set your place for it and you can check in from the next window. The group sees whether you made it, never where you are."
+          action={{ label: 'Set my place', onPress: () => router.push(`/pacts/${pact.id}/place`) }}
+        />
+      ) : (
+        <>
+          <View style={styles.moment}>
+            <CheckinButton
+              state={state}
+              ringTone={ringTone}
+              windowOpenAt={instance.window_open_at}
+              deadlineAt={instance.deadline_at}
+              onPress={() => void onCheckIn()}
+              accessibilityHint="Reads your location once and sends it"
+            />
+          </View>
 
-      {!myPlace ? <Body muted>You haven't joined this pact, so there's nothing to check in to.</Body> : null}
-      {myFreeze ? <Body muted>You froze this day.</Body> : null}
-      {judgedPlace && state === 'open' && !finished ? (
-        <Body muted>
-          Target: {judgedPlace.label ?? 'your place'} ({judgedPlace.radiusM} m). Your location is read once, right
-          now, and nowhere else.
-        </Body>
-      ) : null}
+          {phase.kind === 'panel' ? (
+            <View key={phase.key}>
+              <VerdictPanel
+                panel={phase.panel}
+                onAction={onAction}
+                onDismiss={() => setPhase({ kind: 'idle' })}
+                actionDisabled={phase.panel.action === 'tryAgain' && state !== 'idle' && state !== 'done'}
+              />
+              {phase.panel.secondaryLine && state === 'idle' ? (
+                <Text variant="footnote" color="secondary" align="center" style={styles.secondaryLine}>
+                  {phase.panel.secondaryLine}
+                </Text>
+              ) : null}
+            </View>
+          ) : (
+            <Animated.View key="status" exiting={FadeOut.duration(durations.press)} style={styles.status}>
+              {state === 'closed' && myResult ? (
+                <StatusPill state={myResult.status} who="Your result" style={styles.centerPill} />
+              ) : statusLine ? (
+                <Text variant="body" color="secondary" align="center" tabular>
+                  {statusLine}
+                </Text>
+              ) : null}
+            </Animated.View>
+          )}
 
-      {phase.kind === 'verdict'
-        ? (() => {
-            const v = verdictMessage(phase.row, judgedPlace?.radiusM);
+          {canFreeze ? (
+            <ListGroup style={styles.section}>
+              <ListRow
+                leading={<Icon name="snowflake" size={20} color="frozen" />}
+                title="Freeze today"
+                subtitle="Today won't count for or against you. One per week per pact, before the window opens."
+                onPress={onFreeze}
+                accessibilityHint="Asks you to confirm"
+              />
+            </ListGroup>
+          ) : null}
+        </>
+      )}
+
+      {myCheckins.length > 0 ? (
+        <ListGroup header="Today's taps" style={styles.section}>
+          {myCheckins.map((c) => {
+            const r = tapRow(c, instance.deadline_at, pact.tz);
             return (
-              <Card style={{ borderColor: v.good ? colors.success : colors.warn }}>
-                <Heading>{v.title}</Heading>
-                <Body>{v.body}</Body>
-              </Card>
+              <ListRow
+                key={c.id}
+                title={r.title}
+                subtitle={r.subtitle || undefined}
+                trailing={<StatusPill state={r.state} size="compact" />}
+                accessibilityLabel={`${r.title}, ${r.subtitle}`}
+              />
             );
-          })()
-        : null}
-      {phase.kind === 'queued' ? (
-        <Card>
-          <Heading>Saved offline</Heading>
-          <Body>
-            No connection, so your check-in is saved with the time of your GPS fix. It sends automatically when you're
-            back online. If it lands after the deadline it counts as unverified, not missed.
-          </Body>
-        </Card>
-      ) : null}
-      {fixError && !busy ? (
-        <Card>
-          <Heading>No GPS fix</Heading>
-          <Body>
-            {fixError} Your tap was still recorded without a location, so at worst today counts as unverified, which
-            never costs you. Try again for a check-in that counts.
-          </Body>
-          <Button title="Try again" onPress={() => void onCheckIn()} disabled={!canCheckIn} />
-        </Card>
-      ) : null}
-      {phase.kind === 'permission' ? (
-        <Card>
-          <Heading>Location is off for Show Up</Heading>
-          <Body>Check-ins need your location once per tap. Allow "While Using the App".</Body>
-          {phase.blocked ? <Button title="Open Settings" onPress={() => void Linking.openSettings()} /> : null}
-        </Card>
-      ) : null}
-      {phase.kind === 'error' ? <ErrorText error={phase.error} /> : null}
-
-      {state === 'before' && !finished && myPlace && !myFreeze ? (
-        <Button title="Freeze today" variant="ghost" onPress={onFreeze} />
+          })}
+        </ListGroup>
       ) : null}
 
       {myResult ? (
-        <Card>
-          <Heading>Result</Heading>
-          <Badge label={resultLabel[myResult.status].label} tone={resultLabel[myResult.status].tone} />
-        </Card>
+        <ListGroup header="Result" footer={resultFootnote(myResult.status)} style={styles.section}>
+          <ListRow
+            title={formatDateInZone(instance.deadline_at, pact.tz)}
+            subtitle={myResult.status === 'unverified' ? 'No money moved' : undefined}
+            trailing={<StatusPill state={myResult.status} who={resultLabel[myResult.status].label} />}
+          />
+        </ListGroup>
       ) : null}
 
-      {myCheckins.length > 0 ? (
-        <Card>
-          <Heading>Your taps</Heading>
-          {myCheckins.map((c) => (
-            <Body key={c.id}>
-              {formatTimeInZone(c.server_received_at, pact.tz)} · {c.verdict.replace(/_/g, ' ')}
-              {c.accuracy_m !== null ? ` · ±${Math.round(c.accuracy_m)} m` : ''}
-            </Body>
-          ))}
-        </Card>
+      {judgedPlace ? (
+        <ListGroup
+          header="Your place"
+          footer="Judged against the place in force when the window opened. Your location is read once, when you tap, and nowhere else."
+          style={styles.section}
+        >
+          <ListRow
+            leading={<Icon name="location" size={20} color="secondary" />}
+            title={judgedPlace.label ?? 'Your place'}
+            subtitle={`${judgedPlace.radiusM} m circle · by ${deadlineText}`}
+          />
+        </ListGroup>
       ) : null}
     </Screen>
   );
 }
 
+function CheckInSkeleton() {
+  return (
+    <Screen>
+      <Stack.Screen options={{ title: 'Check in' }} />
+      <View style={styles.skeletonLines}>
+        <Skeleton width="55%" height={14} />
+        <Skeleton width="40%" height={28} />
+      </View>
+      <View style={styles.moment}>
+        <Skeleton width={RING_SIZE} height={RING_SIZE} radius={RING_SIZE / 2} />
+      </View>
+      <View style={styles.skeletonLines}>
+        <Skeleton width="70%" height={16} />
+      </View>
+    </Screen>
+  );
+}
+
 const styles = StyleSheet.create({
-  countdown: { fontSize: 22, fontWeight: '700', color: colors.text, textAlign: 'center' },
-  center: { alignItems: 'center', paddingVertical: space.xl },
-  big: {
-    width: 220,
-    height: 220,
-    borderRadius: 110,
-    backgroundColor: colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  bigDone: { backgroundColor: colors.success },
-  bigDisabled: { backgroundColor: colors.muted, opacity: 0.5 },
-  bigPressed: { transform: [{ scale: 0.97 }] },
-  bigText: { color: colors.primaryText, fontSize: 28, fontWeight: '800' },
+  moment: { paddingVertical: space.xl, alignItems: 'center' },
+  status: { minHeight: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: space.lg },
+  secondaryLine: { marginTop: space.sm },
+  centerPill: { alignSelf: 'center' },
+  section: { marginTop: space.md },
+  skeletonLines: { alignItems: 'center', gap: space.sm, paddingTop: space.xs },
 });

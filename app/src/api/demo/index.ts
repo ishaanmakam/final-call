@@ -25,7 +25,7 @@ import type {
 } from '../queries';
 import type { CreatePactInput, JoinPactInput, OpenReviewInput } from '../rpc';
 import type { CheckinRow, ProfileRow } from '../types';
-import { DEMO_T0, EMPTY_GROUP_ID, GROUP_ID, INVITE_CODE, store } from './fixtures';
+import { DEMO_T0, EMPTY_GROUP_ID, GROUP_ID, INVITE_CODE, SETTLE_VARIANTS, store } from './fixtures';
 import { DEMO, DEMO_USER_ID, demoKey, demoSettingsFromParams, getDemoSettings, setDemoSettings, type DemoSettings } from './settings';
 
 export { DEMO, DEMO_USER_ID, getDemoSettings, type DemoSettings } from './settings';
@@ -47,7 +47,7 @@ const queryKeys = {
 export function useDemoSettings(): DemoSettings {
   const params = useGlobalSearchParams<Record<string, string | string[]>>();
   const settings = demoSettingsFromParams(params as Record<string, string | string[] | undefined>);
-  useEffect(() => setDemoSettings(settings), [settings.verdict, settings.empty, settings.state, settings.perm, settings.signedOut, settings.freeze]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => setDemoSettings(settings), [settings.verdict, settings.empty, settings.state, settings.perm, settings.signedOut, settings.freeze, settings.settle, settings.fix]); // eslint-disable-line react-hooks/exhaustive-deps
   return settings;
 }
 
@@ -292,11 +292,13 @@ export function useLedger(groupId: string) {
       const profiles = profileMap();
       if (isEmptyGroup(groupId, s)) return { balances: [], latestSettlement: null, settlements: [], obligations: [], profiles };
       const settlements = [...store.settlements].sort((a, b) => b.week_start.localeCompare(a.week_start));
+      // `?settle=owe|owed` shows one side of the latest settle-up; rows stay in the store so RPCs find them
+      const variant = SETTLE_VARIANTS[s.settle];
       const obligations = store.obligations
-        .filter((o) => OPEN_OBLIGATION_STATUSES.includes(o.status))
+        .filter((o) => OPEN_OBLIGATION_STATUSES.includes(o.status) && variant.obligationIds.includes(o.id))
         .sort((a, b) => b.amount_cents - a.amount_cents);
       return {
-        balances: [...store.balances].sort((a, b) => b.balance_cents - a.balance_cents),
+        balances: [...variant.balances].sort((a, b) => b.balance_cents - a.balance_cents),
         latestSettlement: settlements[0] ?? null,
         settlements,
         obligations,

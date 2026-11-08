@@ -9,7 +9,7 @@ export { ProgressRing, type ProgressRingProps } from './ProgressRing';
 export { Screen, type ScreenProps } from './Screen';
 export { SegmentedControl, type SegmentedControlProps } from './SegmentedControl';
 export { Sheet, type SheetProps } from './Sheet';
-export { Skeleton, SkeletonCard, type SkeletonProps } from './Skeleton';
+export { Skeleton, SkeletonCard, SkeletonList, type SkeletonProps } from './Skeleton';
 export { Pill, StatusPill, type PillProps, type StatusPillProps } from './StatusPill';
 export { Text, resolveTextColor, type TextColor, type TextProps } from './Text';
 export { TextField, type TextFieldProps } from './TextField';

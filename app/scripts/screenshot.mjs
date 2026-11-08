@@ -48,36 +48,68 @@ const wait = (ms) => ({ wait: ms });
  */
 const ROUTES = [
   { name: 'sign-in', path: '/sign-in?signedOut=1' },
+  { name: 'sign-in.invalid', path: '/sign-in?signedOut=1', actions: [{ fill: 'Email', value: 'sam@uw' }, tap('Email me a sign-in link'), wait(300)] },
+  { name: 'sign-in.sent', path: '/sign-in?signedOut=1', actions: [{ fill: 'Email', value: 'sam@uw.edu' }, tap('Email me a sign-in link'), wait(600)] },
   { name: 'auth-callback', path: '/auth-callback?signedOut=1' },
+  { name: 'auth-callback.expired', path: '/auth-callback?signedOut=1&error=access_denied&error_code=otp_expired' },
   { name: 'groups', path: '/groups?freeze=1' },
   { name: 'groups.empty', path: '/groups?empty=1' },
   { name: 'groups.offline', path: '/groups?state=offline' },
+  { name: 'groups.error', path: '/groups?state=error' },
   { name: 'group-home', path: `/groups/${G}?freeze=1` },
   { name: 'group-home.empty', path: `/groups/${G}?empty=1` },
+  { name: 'group-home.pacts', path: `/groups/${G}?freeze=1`, actions: [{ scrollTo: 'Weekdays' }, wait(300)] },
+  { name: 'group-home.members', path: `/groups/${G}?freeze=1`, actions: [{ scrollTo: 'Invite code' }, wait(300)] },
+  { name: 'group-home.menu', path: `/groups/${G}?freeze=1`, actions: [tap('More'), wait(600)] },
+  { name: 'group-home.offline', path: `/groups/${G}?state=offline` },
   { name: 'new-group.create', path: '/groups/new?mode=create' },
+  { name: 'new-group.create.zone', path: '/groups/new?mode=create', actions: [tap('Settles up in'), wait(700)] },
   { name: 'new-group.join', path: '/groups/new?mode=join' },
+  { name: 'new-group.join.error', path: '/groups/new?mode=join', actions: [{ fill: 'Invite link or code', value: 'NOPE123' }, tap('Join'), wait(900)] },
   { name: 'join-link', path: '/join/KANE9AM' },
+  { name: 'join-link.error', path: '/join/WRONG42', actions: [tap('Join group'), wait(900)] },
   { name: 'new-pact.step1', path: `/groups/${G}/new-pact` },
+  { name: 'new-pact.step1.error', path: `/groups/${G}/new-pact`, actions: [tap('Next'), wait(300)] },
   { name: 'new-pact.step2', path: `/groups/${G}/new-pact`, actions: [{ fill: 'Title', value: '9am class' }, tap('Next'), wait(300)] },
+  { name: 'new-pact.timezone', path: `/groups/${G}/new-pact`, actions: [{ fill: 'Title', value: '9am class' }, tap('Next'), wait(300), tap('Time zone'), wait(600)] },
   { name: 'new-pact.step3', path: `/groups/${G}/new-pact`, actions: [{ fill: 'Title', value: '9am class' }, tap('Next'), wait(200), tap('Next'), wait(300)] },
   { name: 'pact-detail', path: '/pacts/p1?freeze=1' },
-  { name: 'place-picker', path: '/pacts/p1/place' },
-  { name: 'place-picker.located', path: '/pacts/p1/place', actions: [tap('current location'), wait(1800)] },
+  { name: 'pact-detail.paused', path: '/pacts/p4?freeze=1' },
+  { name: 'pact-detail.unjoined', path: '/pacts/p1?empty=1&freeze=1' },
+  { name: 'pact-detail.error', path: '/pacts/p1?state=error' },
+  { name: 'pact-detail.upcoming', path: '/pacts/p1?freeze=1', actions: [{ scrollTo: 'Upcoming' }, wait(400)] },
+  { name: 'place-picker', path: '/pacts/p2/place?freeze=1' },
+  { name: 'place-picker.located', path: '/pacts/p2/place?freeze=1', actions: [tap('current location'), wait(1800)] },
+  { name: 'place-picker.saved', path: '/pacts/p2/place?freeze=1', actions: [tap('current location'), wait(1800), tap('Save place'), wait(1400)] },
+  { name: 'place-picker.locked', path: '/pacts/p1/place?freeze=1' },
+  { name: 'place-picker.denied', path: '/pacts/p2/place?freeze=1&perm=denied', actions: [tap('current location'), wait(500)] },
   { name: 'checkin.idle', path: CHECKIN('?freeze=1') },
   { name: 'checkin.locating', path: CHECKIN('?freeze=1'), actions: [tap('Check in'), wait(350)] },
   { name: 'checkin.in_fence', path: CHECKIN('?freeze=1&verdict=in_fence'), actions: [tap('Check in'), wait(2300)] },
   { name: 'checkin.out_of_fence', path: CHECKIN('?freeze=1&verdict=out_of_fence'), actions: [tap('Check in'), wait(2300)] },
   { name: 'checkin.unjudgeable', path: CHECKIN('?freeze=1&verdict=unjudgeable'), actions: [tap('Check in'), wait(2300)] },
   { name: 'checkin.rejected_simulated', path: CHECKIN('?freeze=1&verdict=rejected_simulated'), actions: [tap('Check in'), wait(2300)] },
-  { name: 'checkin.queued', path: CHECKIN('?freeze=1&state=queued'), actions: [tap('Check in'), wait(2300)] },
+  { name: 'checkin.no_fix', path: CHECKIN('?freeze=1&fix=none'), actions: [tap('Check in'), wait(2300)] },
   { name: 'checkin.permission', path: CHECKIN('?freeze=1&perm=blocked'), actions: [tap('Check in'), wait(500)] },
+  { name: 'checkin.permission.denied', path: CHECKIN('?freeze=1&perm=denied'), actions: [tap('Check in'), wait(500)] },
   { name: 'checkin.before', path: '/checkin/i-before?freeze=1' },
+  { name: 'checkin.frozen', path: '/checkin/i-frozen?freeze=1' },
   { name: 'checkin.closed', path: '/checkin/i-closed?freeze=1' },
+  { name: 'checkin.not_participant', path: '/checkin/i-notin?freeze=1' },
+  { name: 'checkin.offline', path: CHECKIN('?freeze=1&state=offline') },
+  // last: it leaves an attempt in the offline queue, which the next check-in route would flush
+  { name: 'checkin.queued', path: CHECKIN('?freeze=1&state=queued'), actions: [tap('Check in'), wait(2300)] },
   { name: 'feed', path: `/groups/${G}/feed` },
   { name: 'feed.empty', path: `/groups/${G}/feed?empty=1` },
-  { name: 'ledger', path: `/groups/${G}/ledger` },
-  { name: 'ledger.empty', path: `/groups/${G}/ledger?empty=1` },
+  { name: 'feed.review', path: `/groups/${G}/feed`, actions: [tap('Challenge'), wait(600)] },
+  { name: 'feed.votes', path: `/groups/${G}/feed`, actions: [{ scrollTo: 'appealed' }, wait(300)] },
+  { name: 'feed.offline', path: `/groups/${G}/feed?state=offline` },
+  { name: 'settle-up', path: `/groups/${G}/ledger` },
+  { name: 'settle-up.owe', path: `/groups/${G}/ledger?settle=owe` },
+  { name: 'settle-up.owed', path: `/groups/${G}/ledger?settle=owed` },
+  { name: 'settle-up.empty', path: `/groups/${G}/ledger?empty=1` },
   { name: 'settings', path: '/settings' },
+  { name: 'settings.offline', path: '/settings?state=offline' },
 ];
 
 function exportWeb() {
@@ -143,6 +175,10 @@ async function runActions(page, actions = []) {
       const byRole = page.getByRole('button', { name: a.click, exact: false }).first();
       if (await byRole.count()) await byRole.click();
       else await page.getByText(a.click, { exact: false }).first().click();
+    }
+    // `scrollTo` brings the first element containing the text to the top of the viewport
+    if (a.scrollTo) {
+      await page.getByText(a.scrollTo, { exact: false }).first().evaluate((el) => el.scrollIntoView({ block: 'center' }));
     }
   }
 }

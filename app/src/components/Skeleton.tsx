@@ -74,7 +74,32 @@ export function SkeletonCard({ lines = 3 }: { lines?: number }) {
   );
 }
 
+/** An inset-grouped block of placeholder rows, the shape a ListGroup will take. */
+export function SkeletonList({ rows = 3, subtitle = true }: { rows?: number; subtitle?: boolean }) {
+  const { colors } = useTheme();
+  return (
+    <Animated.View
+      accessible
+      accessibilityLabel="Loading"
+      accessibilityState={{ busy: true }}
+      style={[styles.list, { backgroundColor: colors.surface, borderColor: colors.separator }]}
+    >
+      {Array.from({ length: rows }, (_, i) => (
+        <Animated.View
+          key={i}
+          style={[styles.listRow, i < rows - 1 && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.separator }]}
+        >
+          <Skeleton width={i % 2 === 0 ? '48%' : '62%'} height={16} />
+          {subtitle ? <Skeleton width={i % 2 === 0 ? '36%' : '28%'} height={12} /> : null}
+        </Animated.View>
+      ))}
+    </Animated.View>
+  );
+}
+
 const styles = StyleSheet.create({
   base: {},
   card: { borderRadius: radii.lg, borderWidth: StyleSheet.hairlineWidth, padding: 16, gap: 10 },
+  list: { borderRadius: radii.lg, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
+  listRow: { minHeight: 44, justifyContent: 'center', gap: 6, paddingHorizontal: 16, paddingVertical: 12 },
 });

@@ -10,7 +10,7 @@ export interface EmptyStateProps {
   /** says what will appear here and how to make it appear; never just "nothing here" */
   body: string;
   icon?: IconName;
-  action?: { label: string; onPress: () => void; variant?: 'primary' | 'secondary' };
+  action?: { label: string; onPress: () => void; variant?: 'primary' | 'secondary'; loading?: boolean };
   secondaryAction?: { label: string; onPress: () => void };
   /** `inline` sits in a list; `screen` centers itself with room above */
   layout?: 'inline' | 'screen';
@@ -40,7 +40,7 @@ export function EmptyState({ title, body, icon, action, secondaryAction, layout 
       </Text>
       {action ? (
         <View style={styles.actions}>
-          <Button title={action.label} onPress={action.onPress} variant={action.variant ?? 'primary'} size="small" />
+          <Button title={action.label} onPress={action.onPress} variant={action.variant ?? 'primary'} size="small" loading={action.loading} />
           {secondaryAction ? (
             <Button title={secondaryAction.label} onPress={secondaryAction.onPress} variant="tertiary" size="small" />
           ) : null}

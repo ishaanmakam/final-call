@@ -11,6 +11,8 @@
  *   ?perm=denied|blocked   location permission outcome on the check-in tap
  *   ?signedOut=1    no session (shows the sign-in screen)
  *   ?freeze=1       the clock stops at the fixture anchor (deterministic countdowns)
+ *   ?settle=owe|owed   settle-up variants: only obligations you pay / only ones paid to you
+ *   ?fix=none       the GPS fix times out on the check-in tap (fail-open: sent without coordinates)
  */
 import type { CheckinVerdict } from '../types';
 
@@ -19,6 +21,8 @@ export const DEMO_USER_ID = 'demo-user';
 
 export type DemoNetworkState = 'ok' | 'offline' | 'error' | 'queued';
 export type DemoPermission = 'granted' | 'denied' | 'blocked';
+export type DemoSettleVariant = 'mixed' | 'owe' | 'owed';
+export type DemoFix = 'ok' | 'none';
 
 export interface DemoSettings {
   verdict: CheckinVerdict;
@@ -27,6 +31,8 @@ export interface DemoSettings {
   perm: DemoPermission;
   signedOut: boolean;
   freeze: boolean;
+  settle: DemoSettleVariant;
+  fix: DemoFix;
 }
 
 export const DEFAULT_DEMO_SETTINGS: DemoSettings = {
@@ -36,11 +42,15 @@ export const DEFAULT_DEMO_SETTINGS: DemoSettings = {
   perm: 'granted',
   signedOut: false,
   freeze: false,
+  settle: 'mixed',
+  fix: 'ok',
 };
 
 const VERDICTS: readonly CheckinVerdict[] = ['in_fence', 'out_of_fence', 'unjudgeable', 'rejected_simulated'];
 const STATES: readonly DemoNetworkState[] = ['ok', 'offline', 'error', 'queued'];
 const PERMS: readonly DemoPermission[] = ['granted', 'denied', 'blocked'];
+const SETTLES: readonly DemoSettleVariant[] = ['mixed', 'owe', 'owed'];
+const FIXES: readonly DemoFix[] = ['ok', 'none'];
 
 type Params = Record<string, string | string[] | undefined>;
 
@@ -62,6 +72,8 @@ export function demoSettingsFromParams(params: Params): DemoSettings {
     perm: pick(params.perm, PERMS, DEFAULT_DEMO_SETTINGS.perm),
     signedOut: flag(params.signedOut),
     freeze: flag(params.freeze),
+    settle: pick(params.settle, SETTLES, DEFAULT_DEMO_SETTINGS.settle),
+    fix: pick(params.fix, FIXES, DEFAULT_DEMO_SETTINGS.fix),
   };
 }
 
@@ -78,7 +90,9 @@ export function setDemoSettings(next: DemoSettings): void {
     next.state === current.state &&
     next.perm === current.perm &&
     next.signedOut === current.signedOut &&
-    next.freeze === current.freeze
+    next.freeze === current.freeze &&
+    next.settle === current.settle &&
+    next.fix === current.fix
   ) {
     return;
   }
@@ -92,4 +106,4 @@ export function subscribeDemoSettings(listener: (s: DemoSettings) => void): () =
 }
 
 /** Stable cache-key fragment so TanStack Query refetches when the demo scenario changes. */
-export const demoKey = (s: DemoSettings): string => `${s.empty ? 'empty' : 'full'}:${s.state}`;
+export const demoKey = (s: DemoSettings): string => `${s.empty ? 'empty' : 'full'}:${s.state}:${s.settle}`;

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 import { GestureDetector, usePanGesture } from 'react-native-gesture-handler';
 import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -18,6 +18,8 @@ export interface ToastOptions {
   icon?: IconName;
   /** ms before auto-dismiss (default 3500) */
   duration?: number;
+  /** tapping the toast runs this and dismisses it (e.g. open the day a notice is about) */
+  onPress?: () => void;
 }
 
 interface ToastApi {
@@ -145,10 +147,21 @@ function ToastHost({ toast, onDismiss }: { toast: (ToastOptions & { id: number }
             style,
           ]}
         >
-          {shown.icon ? <Icon name={shown.icon} size={18} color={iconColor} /> : null}
-          <Text variant="subheadline" emphasis style={styles.message} numberOfLines={3}>
-            {shown.message}
-          </Text>
+          <Pressable
+            disabled={!shown.onPress}
+            accessibilityRole={shown.onPress ? 'button' : undefined}
+            accessibilityHint={shown.onPress ? 'Opens the day this is about' : undefined}
+            onPress={() => {
+              shown.onPress?.();
+              onDismiss();
+            }}
+            style={styles.body}
+          >
+            {shown.icon ? <Icon name={shown.icon} size={18} color={iconColor} /> : null}
+            <Text variant="subheadline" emphasis style={styles.message} numberOfLines={4}>
+              {shown.message}
+            </Text>
+          </Pressable>
         </Animated.View>
       </GestureDetector>
     </View>
@@ -161,17 +174,20 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: gutter,
     right: gutter,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    paddingHorizontal: space.lg,
-    paddingVertical: space.md,
     borderRadius: radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
     shadowOpacity: 0.18,
     shadowRadius: 20,
     shadowOffset: { width: 0, height: 8 },
     elevation: 8,
+  },
+  body: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    paddingHorizontal: space.lg,
+    paddingVertical: space.md,
+    borderRadius: radius.lg,
   },
   message: { flex: 1 },
 });
