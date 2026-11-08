@@ -35,17 +35,20 @@ export function myVoteText(kind: ReviewKind, supports: boolean): string {
   return `You said ${words.charAt(0).toLowerCase()}${words.slice(1)}`;
 }
 
-/** What happens if the group stays silent; the one rule a voter needs. */
+/**
+ * What happens if the group stays silent; the one rule a voter needs. Either kind: the result
+ * stands (N3-1: an unvoted appeal no longer excludes the day, so appealing every miss gains nothing).
+ */
 export function defaultFootnote(kind: ReviewKind): string {
   return kind === 'appeal'
-    ? 'If nobody votes by Monday noon, the day is excluded: no pledge moves either way.'
+    ? 'If nobody votes by Monday noon, the miss stands and the pledge is forfeited.'
     : 'If nobody votes by Monday noon, the result stands.';
 }
 
 /** Status words from status.ts, with the defaulted case spelled out per kind. */
 export function reviewOutcomeText(review: Pick<ReviewRow, 'kind' | 'status'>): string {
   if (review.status === 'defaulted') {
-    return review.kind === 'appeal' ? 'No votes, so the day was excluded' : 'No votes, so the result stands';
+    return review.kind === 'appeal' ? 'No votes, so the miss stands' : 'No votes, so the result stands';
   }
   return reviewStatusLabel[review.status];
 }
@@ -69,8 +72,9 @@ export function tally(votes: readonly ReviewVoteRow[]): { yes: number; no: numbe
   return { yes, no: votes.length - yes };
 }
 
-/** "{Opener} appealed" / "{Opener} challenged" */
-export function openerLine(kind: ReviewKind, opener: string): string {
+/** "{Opener} appealed" / "{Opener} challenged"; the unverified-budget challenge has no opener (N2-2). */
+export function openerLine(kind: ReviewKind, opener: string, systemOpened = false): string {
+  if (systemOpened) return 'Automatic review: 3rd unverified day this month';
   return `${opener} ${kind === 'appeal' ? 'appealed' : 'challenged'}`;
 }
 

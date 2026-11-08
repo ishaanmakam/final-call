@@ -169,6 +169,98 @@ describe("renderNotification", () => {
     expect(toVoter.body).toBe("9am class: vote before settlement.");
   });
 
+  it("review_opened by the unverified budget (system_opened) names the count, not an opener", () => {
+    const payload = {
+      review_kind: "challenge",
+      subject_user_id: "u1",
+      subject_name: "Ishaan",
+      system_opened: true,
+      unverified_this_month: 3,
+      pact_title: "9am class",
+      review_id: "r9",
+    };
+    const toSubject = renderNotification(row("review_opened", payload), NOW)!;
+    expect(toSubject.title).toBe("Your 3rd unverified day this month goes to a vote");
+    expect(toSubject.body).toBe("9am class: the group votes before settlement.");
+    const toVoter = renderNotification(row("review_opened", payload, { user_id: "u3" }), NOW)!;
+    expect(toVoter.title).toBe("Ishaan's 3rd unverified day this month goes to a vote");
+    expect(toVoter.body).toBe("9am class: vote before settlement.");
+    expect(`${toSubject.title} ${toVoter.title}`).not.toMatch(/Someone/);
+    expect(renderNotification(row("review_opened", { ...payload, unverified_this_month: 4 }), NOW)!.title).toBe(
+      "Your 4th unverified day this month goes to a vote",
+    );
+    expect(renderNotification(row("review_opened", { ...payload, unverified_this_month: undefined }), NOW)!.title).toBe(
+      "Your unverified days this month go to a vote",
+    );
+  });
+
+  it("place_changed: a changed place to the other members, with distance and the 24 h gate", () => {
+    const r = renderNotification(
+      row("place_changed", {
+        event: "created",
+        place_id: "pl1",
+        pact_id: "p1",
+        group_id: "g1",
+        pact_title: "9am class",
+        user_id: "u2",
+        user_name: "Priya",
+        actor_id: "u2",
+        actor_name: "Priya",
+        label: "Lander Hall",
+        prev_label: "Kane Hall",
+        distance_from_prev_m: 1240,
+        requires_ack: true,
+        url: "/pacts/p1",
+      }),
+      NOW,
+    )!;
+    expect(r.title).toBe("Priya changed their 9am class place");
+    expect(r.body).toBe('Lander Hall, 1.2 km from Kane Hall. Confirm it or object within 24 hours.');
+    expect(r.data).toMatchObject({ kind: "place_changed", pact_id: "p1", group_id: "g1", place_id: "pl1", url: "/pacts/p1" });
+  });
+
+  it("place_changed: a first place, a change nobody needs to confirm, metres under a kilometre", () => {
+    const first = renderNotification(
+      row("place_changed", { event: "created", pact_title: "9am class", user_name: "Priya", label: "Kane Hall", requires_ack: false }),
+      NOW,
+    )!;
+    expect(first.title).toBe("Priya joined 9am class");
+    expect(first.body).toBe("Their place is Kane Hall. Object within 24 hours if that is not right.");
+    const solo = renderNotification(
+      row("place_changed", {
+        event: "created",
+        pact_title: "9am class",
+        user_name: "Priya",
+        label: "Lander Hall",
+        prev_label: "Kane Hall",
+        distance_from_prev_m: 640,
+        requires_ack: false,
+      }),
+      NOW,
+    )!;
+    expect(solo.body).toBe("Lander Hall, 640 m from Kane Hall. It counts in 12 hours.");
+  });
+
+  it("place_changed: confirmed, objected and counting go to the owner", () => {
+    const base = { pact_title: "9am class", user_name: "Priya", actor_name: "Diego", label: "Lander Hall" };
+    const acked = renderNotification(row("place_changed", { ...base, event: "acknowledged" }), NOW)!;
+    expect(acked.title).toBe("Diego confirmed your new place");
+    expect(acked.body).toBe("Lander Hall counts for 9am class from the next window at least 12 hours after you set it.");
+    const objected = renderNotification(row("place_changed", { ...base, event: "objected", reason: "That is a dorm" }), NOW)!;
+    expect(objected.title).toBe("Diego objected to your new place");
+    expect(objected.body).toBe('Lander Hall will not count for 9am class: "That is a dorm". Set a new place.');
+    const effective = renderNotification(row("place_changed", { ...base, event: "effective", actor_name: undefined }), NOW)!;
+    expect(effective.title).toBe("Your new place now counts");
+    expect(effective.body).toBe("Nobody objected within 24 hours: Lander Hall is your 9am class place.");
+    expect(renderNotification(row("place_changed", { ...base, event: "nonsense" }), NOW)).toBeNull();
+  });
+
+  it("place_changed falls back to names and labels when the payload is thin", () => {
+    const r = renderNotification(row("place_changed", { event: "created", requires_ack: true, prev_label: "x", distance_from_prev_m: 5 }), NOW)!;
+    expect(r.title).toBe("Someone changed their pact place");
+    expect(r.body).toBe("A new place, 5 m from x. Confirm it or object within 24 hours.");
+  });
+
   it("settlement owe / owed / square", () => {
     const t = (net_cents: number) =>
       renderNotification(row("settlement", { group_name: "Roommates", net_cents, settlement_id: "s1" }), NOW)!;
@@ -199,6 +291,11 @@ describe("renderNotification", () => {
       row("review_opened", { review_kind: "appeal" }),
       row("review_opened", { review_kind: "challenge", subject_user_id: "u1" }),
       row("review_opened", { review_kind: "challenge", subject_user_id: "u2" }),
+      row("review_opened", { review_kind: "challenge", subject_user_id: "u1", system_opened: true, unverified_this_month: 3 }),
+      row("review_opened", { review_kind: "challenge", subject_user_id: "u2", system_opened: true, unverified_this_month: 3 }),
+      ...["created", "acknowledged", "objected", "effective"].map((event) =>
+        row("place_changed", { event, pact_title: "A", user_name: "P", actor_name: "D", label: "L", prev_label: "K", distance_from_prev_m: 100, requires_ack: true }),
+      ),
       ...[-100, 0, 100].map((net_cents) => row("settlement", { group_name: "G", net_cents })),
     ];
     for (const r of rows) {
@@ -457,6 +554,12 @@ describe("deep-link url in push data (F1)", () => {
     expect(renderNotification(row("result", { ...base, status: "success" }), NOW)!.data.url).toBe("/groups/g1/feed");
     expect(renderNotification(row("review_opened", { ...base, review_kind: "appeal" }), NOW)!.data.url).toBe("/groups/g1/feed");
     expect(renderNotification(row("settlement", { group_id: "g1", net_cents: 0 }), NOW)!.data.url).toBe("/groups/g1/ledger");
+  });
+  it("place_changed opens the payload url, else the pact", () => {
+    const p = { event: "effective", label: "L", pact_title: "A" };
+    expect(renderNotification(row("place_changed", { ...p, pact_id: "p1", url: "/pacts/p1?place=x" }), NOW)!.data.url).toBe("/pacts/p1?place=x");
+    expect(renderNotification(row("place_changed", { ...p, pact_id: "p1" }), NOW)!.data.url).toBe("/pacts/p1");
+    expect(renderNotification(row("place_changed", p), NOW)!.data.url).toBeUndefined();
   });
   it("omits url when the ids it needs are missing", () => {
     expect(renderNotification(row("settlement", { net_cents: 0 }), NOW)!.data.url).toBeUndefined();

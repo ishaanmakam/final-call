@@ -111,7 +111,7 @@ export function formatLocalTime(p: { deadline_local?: unknown; deadline_at?: unk
 
 // ---------- rendering ----------
 
-const DATA_KEYS = ["group_id", "pact_id", "instance_id", "review_id", "settlement_id"] as const;
+const DATA_KEYS = ["group_id", "pact_id", "instance_id", "review_id", "settlement_id", "place_id"] as const;
 
 /** In-app path the client opens when the notification is tapped (app/src/lib/push.ts prefers data.url). */
 export function deepLinkUrl(kind: string, p: Record<string, unknown>): string | undefined {
@@ -126,6 +126,10 @@ export function deepLinkUrl(kind: string, p: Record<string, unknown>): string | 
       return group ? `/groups/${group}/feed` : undefined;
     case "settlement":
       return group ? `/groups/${group}/ledger` : undefined;
+    case "place_changed": {
+      const pact = str(p.pact_id);
+      return str(p.url) ?? (pact ? `/pacts/${pact}` : undefined);
+    }
     default:
       return undefined;
   }
@@ -146,6 +150,18 @@ function str(v: unknown): string | undefined {
 
 function num(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+function ordinal(n: number): string {
+  const i = Math.trunc(n);
+  const mod100 = i % 100;
+  const suffix = mod100 >= 11 && mod100 <= 13 ? "th" : i % 10 === 1 ? "st" : i % 10 === 2 ? "nd" : i % 10 === 3 ? "rd" : "th";
+  return `${i}${suffix}`;
+}
+
+function formatDistance(m: number): string {
+  const metres = Math.max(0, Math.round(m));
+  return metres < 1000 ? `${metres} m` : `${(metres / 1000).toFixed(1)} km`;
 }
 
 function minutesLeft(p: Record<string, unknown>, now: Date): number {
@@ -215,6 +231,19 @@ function renderCopy(row: OutboxRow, p: Record<string, unknown>, now: Date): { ti
       const subject = str(p.subject_name) ?? "Someone";
       const opener = str(p.opener_name) ?? "Someone";
       const vote = `${pact ?? "Your pact"}: vote before settlement.`;
+      if (p.system_opened === true) {
+        // the unverified budget: nobody opened it, so no opener is named
+        const n = num(p.unverified_this_month);
+        const toSubject = str(p.subject_user_id) === row.user_id;
+        const who = toSubject ? "Your" : `${subject}'s`;
+        const what = n !== undefined && n > 0
+          ? `${ordinal(n)} unverified day this month goes to a vote`
+          : "unverified days this month go to a vote";
+        return {
+          title: `${who} ${what}`,
+          body: toSubject ? `${pact ?? "Your pact"}: the group votes before settlement.` : vote,
+        };
+      }
       if (p.review_kind === "appeal") return { title: `${subject} appealed a miss`, body: vote };
       if (p.review_kind === "challenge") {
         if (str(p.subject_user_id) === row.user_id) {
@@ -226,6 +255,51 @@ function renderCopy(row: OutboxRow, p: Record<string, unknown>, now: Date): { ti
         return { title: `${opener} challenged ${subject}'s check-in`, body: vote };
       }
       return null;
+    }
+    case "place_changed": {
+      const user = str(p.user_name) ?? "Someone";
+      const actor = str(p.actor_name) ?? "Someone";
+      const name = pact ?? "pact";
+      const label = str(p.label);
+      const prev = str(p.prev_label);
+      const dist = num(p.distance_from_prev_m);
+      switch (p.event) {
+        case "created": {
+          const isChange = prev !== undefined || dist !== undefined || p.requires_ack === true;
+          if (!isChange) {
+            return {
+              title: `${user} joined ${name}`,
+              body: `Their place is ${label ?? "not named"}. Object within 24 hours if that is not right.`,
+            };
+          }
+          const from = prev !== undefined && dist !== undefined
+            ? `, ${formatDistance(dist)} from ${prev}`
+            : prev !== undefined
+            ? `, was ${prev}`
+            : "";
+          const gate = p.requires_ack === true ? "Confirm it or object within 24 hours." : "It counts in 12 hours.";
+          return { title: `${user} changed their ${name} place`, body: `${label ?? "A new place"}${from}. ${gate}` };
+        }
+        case "acknowledged":
+          return {
+            title: `${actor} confirmed your new place`,
+            body: `${label ?? "It"} counts for ${name} from the next window at least 12 hours after you set it.`,
+          };
+        case "objected": {
+          const reason = str(p.reason);
+          return {
+            title: `${actor} objected to your new place`,
+            body: `${label ?? "It"} will not count for ${name}${reason ? `: "${reason}"` : ""}. Set a new place.`,
+          };
+        }
+        case "effective":
+          return {
+            title: "Your new place now counts",
+            body: `Nobody objected within 24 hours: ${label ?? "it"} is your ${name} place.`,
+          };
+        default:
+          return null;
+      }
     }
     case "settlement": {
       const net = num(p.net_cents) ?? 0;

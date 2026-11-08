@@ -37,17 +37,20 @@ import {
 } from '@/components';
 import {
   carryNote,
-  excludedFootnote,
-  groupFeedByDay,
+  feedSections,
   instanceSubtitle,
   instanceSummary,
   nameOf,
   personDetail,
   shortName,
-  type DaySection,
+  type FeedDaySection,
+  type FeedEntry,
   type InstanceGroup,
   type Namer,
+  type PlaceEventEntry,
 } from '@/features/feed/groupFeed';
+import { ObjectionSheet, PlaceActions, type ObjectionTarget } from '@/features/place/PlaceGate';
+import { placeEventFootnote, placeEventLine } from '@/features/place/placeCopy';
 import {
   REASON_ERROR,
   REASON_MIN_LENGTH,
@@ -66,10 +69,11 @@ import { useUserId } from '@/lib/auth';
 import { classifyRpcError, userMessage } from '@/lib/errors';
 import { pickEvidencePhoto, uploadEvidencePhoto } from '@/lib/reviewPhoto';
 import { reviewActions } from '@/lib/reviews';
-import { formatDateInZone } from '@/lib/time';
+import { formatDateInZone, formatTimeInZone } from '@/lib/time';
 import { gutter, radius, space, useTheme } from '@/theme';
 
 const FEED_RULE = "Missed a day you actually made? Appeal it. Something look off? Challenge it. The group votes before Monday's settle-up.";
+const PLACE_RULE = 'A moved place counts once a friend confirms it, or after 24 hours if nobody objects. Until then the old place is judged.';
 const UNVERIFIED_RULE =
   "Unverified means the app couldn't judge a tap (weak GPS, no fix, or a late offline send). It never costs a pledge and never wins one.";
 const OTHER_STATES_RULE = "Frozen, Didn't count and Excluded days move no money either.";
@@ -188,7 +192,7 @@ function ReviewThread({
       <View style={styles.threadBody}>
         <View style={styles.threadHead}>
           <Text variant="subheadline" emphasis style={styles.flex}>
-            {openerLine(review.kind, nameOf(namer, review.opened_by))}
+            {openerLine(review.kind, nameOf(namer, review.opened_by), review.system_opened)}
           </Text>
           <Pill label={reviewOutcomeText(review)} tone={reviewStatusTone[review.status]} size="compact" />
         </View>
@@ -307,6 +311,57 @@ function InstanceBlock({
             {carry}
           </Text>
         ) : null}
+      </View>
+    </View>
+  );
+}
+
+// ---------- one place event: who moved where, how far, confirm / object ----------
+
+function PlaceEventBlock({
+  entry,
+  namer,
+  onObject,
+  onChanged,
+}: {
+  entry: PlaceEventEntry;
+  namer: Namer;
+  onObject: (t: ObjectionTarget) => void;
+  onChanged: () => void;
+}) {
+  const { colors } = useTheme();
+  const n = { userId: namer.userId, nameOf: (id: string) => nameOf(namer, id) };
+  const line = placeEventLine(entry.event, entry.pact.title, n);
+  const footnote = placeEventFootnote(entry.event, entry.place ?? undefined, n);
+  const waiting = entry.event.kind === 'created' && entry.place?.state === 'pending' && !entry.place.acknowledged_at;
+  return (
+    <View style={[styles.block, { backgroundColor: colors.surface, borderColor: colors.separator }]} accessibilityLabel={line}>
+      <View style={styles.placeEvent}>
+        <View style={styles.threadIcon}>
+          <Icon name="location" size={18} color={entry.event.kind === 'objected' ? 'secondary' : 'tint'} />
+        </View>
+        <View style={styles.threadBody}>
+          <View style={styles.threadHead}>
+            <Text variant="subheadline" emphasis style={styles.flex}>
+              {line}
+            </Text>
+            {waiting ? <Pill label="Waiting" tone="unverified" size="compact" /> : null}
+          </View>
+          {entry.event.kind === 'objected' && entry.event.reason ? <Text variant="callout">“{entry.event.reason}”</Text> : null}
+          <Text variant="footnote" color="secondary">
+            {formatTimeInZone(entry.event.created_at, entry.pact.tz)}
+            {footnote ? ` · ${footnote}` : ''}
+          </Text>
+          {entry.place && entry.event.kind === 'created' ? (
+            <PlaceActions
+              place={entry.place}
+              userId={namer.userId}
+              ownerName={namer.profiles.get(entry.event.user_id)?.display_name ?? 'Someone'}
+              onObject={onObject}
+              onChanged={onChanged}
+            />
+          ) : null}
+        </View>
       </View>
     </View>
   );
@@ -466,12 +521,18 @@ export default function FeedScreen() {
   const insets = useSafeAreaInsets();
   const [target, setTarget] = useState<ReviewTarget | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [objecting, setObjecting] = useState<ObjectionTarget | null>(null);
+  const [objectOpen, setObjectOpen] = useState(false);
 
   const namer = useMemo<Namer>(() => ({ userId, profiles: feed.data?.profiles ?? new Map() }), [userId, feed.data?.profiles]);
-  const sections = useMemo<DaySection[]>(() => (feed.data ? groupFeedByDay(feed.data.items, namer) : []), [feed.data, namer]);
+  const sections = useMemo<FeedDaySection[]>(
+    () => (feed.data ? feedSections(feed.data.items, feed.data.placeEvents, feed.data.pacts, feed.data.placesById, namer) : []),
+    [feed.data, namer],
+  );
 
   const onChanged = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ['group', groupId] });
+    void qc.invalidateQueries({ queryKey: ['pact'] });
   }, [qc, groupId]);
 
   const openSheet = useCallback((t: ReviewTarget) => {
@@ -479,13 +540,19 @@ export default function FeedScreen() {
     setSheetOpen(true);
   }, []);
 
-  const renderItem = useCallback(
-    ({ item }: SectionListRenderItemInfo<InstanceGroup, DaySection>) =>
-      feed.data ? <InstanceBlock group={item} feed={feed.data} namer={namer} onReview={openSheet} onChanged={onChanged} /> : null,
-    [feed.data, namer, openSheet, onChanged],
-  );
+  const openObjection = useCallback((t: ObjectionTarget) => {
+    setObjecting(t);
+    setObjectOpen(true);
+  }, []);
 
-  const excluded = feed.data ? excludedFootnote(feed.data.excludedThisMonth, namer) : null;
+  const renderItem = useCallback(
+    ({ item }: SectionListRenderItemInfo<FeedEntry, FeedDaySection>) => {
+      if (!feed.data) return null;
+      if (item.kind === 'place') return <PlaceEventBlock entry={item} namer={namer} onObject={openObjection} onChanged={onChanged} />;
+      return <InstanceBlock group={item.group} feed={feed.data} namer={namer} onReview={openSheet} onChanged={onChanged} />;
+    },
+    [feed.data, namer, openSheet, openObjection, onChanged],
+  );
 
   let content: React.ReactNode;
   if (feed.isPending) {
@@ -503,9 +570,9 @@ export default function FeedScreen() {
     );
   } else {
     content = (
-      <SectionList
+      <SectionList<FeedEntry, FeedDaySection>
         sections={sections}
-        keyExtractor={(g) => g.key}
+        keyExtractor={(e) => e.key}
         renderItem={renderItem}
         renderSectionHeader={({ section }) => <DayHeader title={section.title} />}
         stickySectionHeadersEnabled
@@ -532,11 +599,9 @@ export default function FeedScreen() {
               <Text variant="footnote" color="secondary">
                 {OTHER_STATES_RULE}
               </Text>
-              {excluded ? (
-                <Text variant="footnote" color="secondary">
-                  {excluded}
-                </Text>
-              ) : null}
+              <Text variant="footnote" color="secondary">
+                {PLACE_RULE}
+              </Text>
             </View>
           ) : undefined
         }
@@ -563,6 +628,16 @@ export default function FeedScreen() {
             message: kind === 'appeal' ? 'Appeal sent. The others can vote until Monday noon.' : 'Challenge sent. The others can vote until Monday noon.',
             icon: 'bubble.left',
           });
+        }}
+      />
+      <ObjectionSheet
+        target={objecting}
+        open={objectOpen}
+        onClose={() => setObjectOpen(false)}
+        onDone={(t) => {
+          setObjectOpen(false);
+          onChanged();
+          toast.show({ message: `Objection sent. ${t.ownerName} has to set a new place.`, icon: 'location' });
         }}
       />
     </View>
@@ -598,6 +673,7 @@ const styles = StyleSheet.create({
     paddingRight: space.lg,
     paddingVertical: space.md,
   },
+  placeEvent: { flexDirection: 'row', gap: space.md, paddingHorizontal: space.lg, paddingVertical: space.md },
   threadIcon: { width: 28, alignItems: 'center', paddingTop: 1 },
   threadBody: { flex: 1, gap: space.sm },
   threadHead: { flexDirection: 'row', alignItems: 'center', gap: space.sm },

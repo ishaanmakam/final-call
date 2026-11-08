@@ -1,5 +1,14 @@
 export type CheckinVerdict = "in_fence" | "out_of_fence" | "unjudgeable" | "rejected_simulated";
+/** `excluded` is reserved: since RULES_VERSION 2 no rule produces it (history may still hold it). */
 export type ResultStatus = "pending" | "success" | "failed" | "unverified" | "frozen" | "void" | "excluded";
+export type ReviewKind = "appeal" | "challenge";
+export type ReviewStatus = "open" | "accepted" | "rejected" | "defaulted";
+
+/**
+ * Bumped whenever a verdict, result, review, payout or settlement rule changes.
+ * 1: launch rules. 2: a defaulted appeal leaves the original result standing (N3-1), was `excluded`.
+ */
+export const RULES_VERSION = 2;
 
 export const MAX_ACCURACY_M = 200;
 const EARTH_RADIUS_M = 6371008.8;
@@ -84,6 +93,38 @@ export function computeResults(input: {
     };
   }
   return { voided: false, results };
+}
+
+/** How a review still open at settlement resolves: majority of votes cast; tie → rejected; none → defaulted. */
+export function settlementReviewStatus(yes: number, no: number): Exclude<ReviewStatus, "open"> {
+  if (!Number.isSafeInteger(yes) || !Number.isSafeInteger(no) || yes < 0 || no < 0) throw new Error("invalid vote counts");
+  if (yes + no === 0) return "defaulted";
+  return yes > no ? "accepted" : "rejected";
+}
+
+export interface ReviewOutcome {
+  kind: ReviewKind;
+  status: ReviewStatus;
+}
+
+/**
+ * One resolved review applied to a participant's current result (mirrors `_refresh_result`):
+ * appeal accepted → success at the deadline (D1); challenge accepted → failed; everything else,
+ * including a defaulted appeal (N3-1), leaves the result as it is.
+ */
+export function applyReview(current: ParticipantResult, review: ReviewOutcome, deadlineAt: string): ParticipantResult {
+  if (review.kind === "appeal" && review.status === "accepted") {
+    return { userId: current.userId, status: "success", firstSuccessAt: deadlineAt };
+  }
+  if (review.kind === "challenge" && review.status === "accepted") {
+    return { userId: current.userId, status: "failed", firstSuccessAt: null };
+  }
+  return current;
+}
+
+/** Resolved reviews applied in resolution order (resolved_at, then opened_at). */
+export function applyReviews(base: ParticipantResult, deadlineAt: string, reviews: readonly ReviewOutcome[]): ParticipantResult {
+  return reviews.reduce((cur, r) => applyReview(cur, r, deadlineAt), base);
 }
 
 export function computeInstancePayout(input: {

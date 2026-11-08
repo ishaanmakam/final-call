@@ -11,7 +11,7 @@ import {
   StyleSheet,
   View,
 } from "react-native";
-import { displayName, useFeed, useGroupHome } from "@/api/queries";
+import { displayName, useGroupHome } from "@/api/queries";
 import { leaveGroup } from "@/api/rpc";
 import {
   Avatar,
@@ -44,7 +44,6 @@ export default function GroupHome() {
   const { groupId } = useLocalSearchParams<{ groupId: string }>();
   const userId = useUserId();
   const home = useGroupHome(groupId, userId);
-  const feed = useFeed(groupId);
   const qc = useQueryClient();
   const toast = useToast();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -74,7 +73,6 @@ export default function GroupHome() {
     );
   }
   const { group, members, profiles, pacts, today, unjoinedPactIds } = home.data;
-  const excluded = feed.data?.excludedThisMonth;
 
   const share = () =>
     void Share.share({
@@ -138,11 +136,6 @@ export default function GroupHome() {
     }
     setMenuOpen(true);
   };
-
-  const excludedNote =
-    excluded && excluded.size > 0
-      ? ` Excluded this month: ${[...excluded.entries()].map(([id, n]) => `${id === userId ? "you" : displayName(profiles, id)} ${n}`).join(", ")}.`
-      : "";
 
   return (
     <>
@@ -272,7 +265,7 @@ export default function GroupHome() {
 
         <ListGroup
           header={`Members · ${members.length} of ${MAX_MEMBERS}`}
-          footer={`Share the link or the code. Anyone with it can join until the group has ${MAX_MEMBERS} people.${excludedNote}`}
+          footer={`Share the link or the code. Anyone with it can join until the group has ${MAX_MEMBERS} people.`}
           style={styles.section}
         >
           {/* rows are direct ListRow children so ListGroup can give them corners and separators */}

@@ -1,11 +1,23 @@
 import { expect, it } from 'vitest';
-import { checkinVerdict, computeResults, type CheckinRecord, type CheckinVerdict } from '../../packages/rules/src/index';
+import {
+  applyReviews,
+  checkinVerdict,
+  computeResults,
+  settlementReviewStatus,
+  type CheckinRecord,
+  type CheckinVerdict,
+  type ReviewKind,
+  type ReviewStatus,
+} from '../../packages/rules/src/index';
 import { createDb, createGroupFixture, rows, scalar, type DB } from './helpers/db';
 
 // Differential test: SQL (check_in_at + declare_freeze_at + tick_instances) vs the TypeScript oracle
 // (checkinVerdict + computeResults) on random scenarios. Seed with DIFF_SEED to reproduce.
+// A second test does the same for reviews (open_review_at + cast_vote_at + default_open_reviews vs
+// settlementReviewStatus + applyReviews).
 const SEED = Number(process.env.DIFF_SEED ?? 20261107);
 const SCENARIOS = Number(process.env.DIFF_SCENARIOS ?? 320);
+const REVIEW_SCENARIOS = Number(process.env.DIFF_REVIEW_SCENARIOS ?? 160);
 
 function mulberry32(a: number) {
   return () => {
@@ -186,5 +198,178 @@ it(`SQL results match packages/rules computeResults on ${SCENARIOS} random scena
   expect(stats.void).toBeGreaterThan(20);
   expect(stats.voidedInstances).toBeGreaterThan(10);
   expect(stats.rejected).toBeGreaterThan(20);
+  expect(mismatches.slice(0, 20)).toEqual([]);
+}, 600_000);
+
+it(`SQL review resolution and result overrides match packages/rules on ${REVIEW_SCENARIOS} random scenarios (seed ${SEED})`, async () => {
+  const rnd = mulberry32(SEED + 1);
+  const int = (lo: number, hi: number) => lo + Math.floor(rnd() * (hi - lo + 1));
+  const pick = <T,>(xs: T[]) => xs[Math.floor(rnd() * xs.length)];
+  const shuffle = <T,>(xs: T[]) => [...xs].sort(() => rnd() - 0.5);
+
+  const db: DB = await createDb();
+  await db.exec(`
+    create or replace function public.post_instance_payout(p_instance uuid) returns void
+      language plpgsql security definer set search_path = pg_catalog, public, pg_temp as $$ begin return; end $$;
+    create or replace function public.apply_instance_correction(p_instance uuid) returns void
+      language plpgsql security definer set search_path = pg_catalog, public, pg_temp as $$ begin return; end $$;
+  `);
+  const fx = await createGroupFixture(db, { members: 6, pact: false });
+
+  type Outcome = 'success' | 'failed' | 'unverified';
+  type Review = { id: string; subject: string; kind: ReviewKind; openedAt: number; resolvedAt: number; expected: ReviewStatus };
+  const mismatches: string[] = [];
+  const stats = {
+    appeals: 0, challenges: 0, accepted: 0, rejected: 0, defaulted: 0, early: 0, atSettlement: 0,
+    appealsDefaulted: 0, chained: 0, voided: 0, lateVotesRefused: 0, excluded: 0,
+  };
+  const base = Date.parse('2031-01-01T16:00:00.000Z');
+  const sqlResult = async (inst: string, u: string) => {
+    const r = await rows<{ status: string; first_success_at: Date | null }>(
+      db, `select status::text, first_success_at from public.results where instance_id = $1 and user_id = $2`, [inst, u]);
+    return { status: r[0].status, first: r[0].first_success_at ? r[0].first_success_at.getTime() : null };
+  };
+
+  for (let s = 0; s < REVIEW_SCENARIOS; s++) {
+    const W = base + s * 86_400_000;
+    const D = W + 60 * 60_000;
+    const UNTIL = D + 24 * 60 * 60_000;
+    const users = shuffle(fx.userIds).slice(0, int(3, 6));
+    const pactId = await scalar<string>(
+      db,
+      `insert into public.pacts (group_id, title, days_of_week, window_open_local, deadline_local, tz, created_by)
+       values ($1, $2, '{1,2,3,4,5,6,7}', '08:00', '09:00', 'UTC', $3) returning id`,
+      [fx.groupId, `diff-review ${s}`, fx.ownerId],
+    );
+    const place = new Map<string, { lat: number; lng: number }>();
+    for (const [i, u] of users.entries()) {
+      const p = { lat: 47.6 + i * 0.01, lng: -122.3 };
+      place.set(u, p);
+      await db.query(
+        `insert into public.pact_participants (pact_id, user_id, place_lat, place_lng, place_radius_m, joined_at)
+         values ($1, $2, $3, $4, 100, '2020-01-01Z')`,
+        [pactId, u, p.lat, p.lng],
+      );
+    }
+    const inst = await scalar<string>(
+      db,
+      `insert into public.pact_instances (pact_id, local_date, window_open_at, deadline_at)
+       values ($1, ($2::timestamptz at time zone 'UTC')::date, $2::timestamptz, $3::timestamptz) returning id`,
+      [pactId, iso(W), iso(D)],
+    );
+    await db.query(`select public.tick_instances($1::timestamptz)`, [iso(W)]);
+    for (const u of users) {
+      const outcome: Outcome = pick(['success', 'success', 'failed', 'failed', 'unverified']);
+      if (outcome === 'failed') continue;
+      const p = place.get(u)!;
+      const t = iso(W + int(1, 50) * 60_000);
+      await db.query(
+        `select public.check_in_at($1, $2, $3, $4, $5, $6::timestamptz, false, null, $6::timestamptz)`,
+        [u, inst, p.lat, p.lng, outcome === 'success' ? 10 : null, t],
+      );
+    }
+    await db.query(`select public.tick_instances($1::timestamptz)`, [iso(D + 60_000)]);
+    if ((await scalar<string>(db, `select status::text from public.pact_instances where id = $1`, [inst])) !== 'closed') {
+      stats.voided++;
+      continue;
+    }
+    const baseResults = new Map<string, { status: string; first: number | null }>();
+    for (const u of users) baseResults.set(u, await sqlResult(inst, u));
+
+    const reviews: Review[] = [];
+    let t = D + 60 * 60_000; // strictly increasing instants, well before UNTIL
+    const bump = () => (t += 60_000);
+    const phase = async (kind: ReviewKind) => {
+      for (const u of users) {
+        const cur = (await sqlResult(inst, u)).status;
+        if (kind === 'appeal' ? cur !== 'failed' : !['success', 'unverified'].includes(cur)) continue;
+        if (rnd() > 0.7) continue;
+        const opener = kind === 'appeal' ? u : pick(users.filter((x) => x !== u));
+        const openedAt = bump();
+        const id = await scalar<string>(
+          db,
+          `select public.open_review_at($1, $2, $3, $4::public.review_kind, 'r', null, $5::timestamptz)`,
+          [opener, inst, u, kind, iso(openedAt)],
+        );
+        if (kind === 'appeal') stats.appeals++;
+        else stats.challenges++;
+        if (kind === 'challenge' && reviews.some((r) => r.subject === u)) stats.chained++;
+        const eligible = users.filter((x) => x !== u);
+        let yes = 0;
+        let no = 0;
+        let early: { status: ReviewStatus; at: number } | null = null;
+        for (const voter of shuffle(eligible)) {
+          if (rnd() > 0.55) continue;
+          const supports = rnd() < 0.5;
+          const at = bump();
+          if (early) {
+            // the review is resolved: SQL must refuse the vote
+            try {
+              await db.query(`select public.cast_vote_at($1, $2, $3, $4::timestamptz)`, [voter, id, supports, iso(at)]);
+              mismatches.push(`s${s}: vote accepted on a resolved ${kind}`);
+            } catch (e: any) {
+              if (e.code !== '23514') mismatches.push(`s${s}: late vote refused with ${e.code}, expected 23514`);
+              stats.lateVotesRefused++;
+            }
+            continue;
+          }
+          await db.query(`select public.cast_vote_at($1, $2, $3, $4::timestamptz)`, [voter, id, supports, iso(at)]);
+          if (supports) yes++;
+          else no++;
+          // a majority of ELIGIBLE voters resolves immediately (cast_vote_at)
+          if (2 * yes > eligible.length) early = { status: 'accepted', at };
+          else if (2 * no > eligible.length) early = { status: 'rejected', at };
+        }
+        const expected: ReviewStatus = early ? early.status : settlementReviewStatus(yes, no);
+        if (early) stats.early++;
+        else stats.atSettlement++;
+        stats[expected as 'accepted' | 'rejected' | 'defaulted']++;
+        if (kind === 'appeal' && expected === 'defaulted') stats.appealsDefaulted++;
+        reviews.push({ id, subject: u, kind, openedAt, resolvedAt: early ? early.at : UNTIL, expected });
+      }
+    };
+    await phase('appeal');
+    await phase('challenge');
+    await db.query(`select public.default_open_reviews($1, $2::timestamptz)`, [fx.groupId, iso(UNTIL)]);
+
+    for (const r of reviews) {
+      const got = await rows<{ status: string; resolved_at: Date }>(db, `select status::text, resolved_at from public.reviews where id = $1`, [r.id]);
+      if (got[0].status !== r.expected) mismatches.push(`s${s}: ${r.kind} on ${r.subject} sql=${got[0].status} oracle=${r.expected}`);
+      if (got[0].resolved_at.getTime() !== r.resolvedAt) {
+        mismatches.push(`s${s}: ${r.kind} resolved_at sql=${got[0].resolved_at.toISOString()} oracle=${iso(r.resolvedAt)}`);
+      }
+    }
+    for (const u of users) {
+      const b = baseResults.get(u)!;
+      const mine = reviews
+        .filter((r) => r.subject === u)
+        .sort((x, y) => x.resolvedAt - y.resolvedAt || x.openedAt - y.openedAt)
+        .map((r) => ({ kind: r.kind, status: r.expected }));
+      const oracle = applyReviews(
+        { userId: u, status: b.status as 'success' | 'failed' | 'unverified', firstSuccessAt: b.first === null ? null : iso(b.first) },
+        iso(D),
+        mine,
+      );
+      const sql = await sqlResult(inst, u);
+      const oFirst = oracle.firstSuccessAt === null ? null : Date.parse(oracle.firstSuccessAt);
+      if (sql.status !== oracle.status || sql.first !== oFirst) {
+        mismatches.push(`s${s} user ${u}: base=${b.status} reviews=${JSON.stringify(mine)} sql=${sql.status}/${sql.first} oracle=${oracle.status}/${oFirst}`);
+      }
+      if (sql.status === 'excluded') stats.excluded++;
+    }
+  }
+
+  // Coverage: every branch of the review rules must have been exercised.
+  expect(stats.appeals).toBeGreaterThan(40);
+  expect(stats.challenges).toBeGreaterThan(40);
+  expect(stats.accepted).toBeGreaterThan(15);
+  expect(stats.rejected).toBeGreaterThan(15);
+  expect(stats.defaulted).toBeGreaterThan(15);
+  expect(stats.early).toBeGreaterThan(10);
+  expect(stats.atSettlement).toBeGreaterThan(10);
+  expect(stats.appealsDefaulted).toBeGreaterThan(8); // the N3-1 branch: the miss must stand
+  expect(stats.chained).toBeGreaterThan(0); // accepted appeal, then its new success challenged
+  expect(stats.lateVotesRefused).toBeGreaterThan(3);
+  expect(stats.excluded).toBe(0);
   expect(mismatches.slice(0, 20)).toEqual([]);
 }, 600_000);

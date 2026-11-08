@@ -9,7 +9,14 @@ Verification per phase: `cd supabase/tests && npx tsc -p tsconfig.json && npx vi
 - Remote `origin` added; `master` renamed `main` and pushed; `ui-overhaul` pushed; `night-1` created from `ui-overhaul` and pushed. `gh` 2.102 is installed.
 - Baseline test status at branch point: db 220, rules 33, push-outbox 49, app 417, all green.
 
-## Phase 1 — devil's advocate (in progress)
+## Phase 1 — devil's advocate (agents done, integrating)
+Landed (uncommitted until integration is green):
+- N1 places: `20261108000100_place_accountability.sql` (place gate: first place immediate but objectable 24 h; changes count after another member confirms, never before 12 h, or after 24 h without objection; objection blocks; objected/no-place participants are off later rosters), `place_events`, view `pact_places_visible`, RPCs `acknowledge_place`, `object_place`, `pact_place_distances`; app pact detail / place picker / feed show and act on places. 17 tests.
+- N2 precise location: client refuses Approximate Location with explicit "would count as Missed" copy (`features/checkin/precision.ts`); server Unverified budget: 3rd unverified in a pact-month auto-opens a `system_opened` challenge (`20261108000200_unverified_budget.sql`, view `unverified_month_counts`). 10 tests.
+- N3 appeal default: unvoted appeal leaves the original result standing (`20261108000300_appeal_default.sql` replaces `_refresh_result`); oracle `applyReviews` in packages/rules; differential-results has a 160-scenario review test; e2e week recomputed. `excluded` is now a reserved status.
+- Integrator applying cross-lane patches (test allowlists for the new RPCs, e2e outbox kinds, push copy for `place_changed` and automatic reviews, types/view for the budget, removal of the vestigial Excluded counter).
+
+### Phase 1 original plan
 Plan: three parallel agents, each test-first, each with its own migration file:
 1. Places accountability → `supabase/migrations/20261108000100_place_accountability.sql`, `supabase/tests/places.test.ts`, app pact detail / place picker / feed / queries.
 2. Precise Location refusal + Unverified budget → `20261108000200_unverified_budget.sql`, `supabase/tests/unverified-budget.test.ts`, `app/src/lib/location.ts`, check-in screen.

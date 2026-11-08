@@ -10,7 +10,7 @@ import { attemptId, type CheckinAttempt, type SendOutcome } from '../../lib/chec
 import { DbError, userMessage } from '../../lib/errors';
 import { summarizeInstance } from '../../lib/instanceStatus';
 import { OPEN_OBLIGATION_STATUSES } from '../../lib/obligations';
-import { effectivePlaceAt, nextWindow, placeForWindow } from '../../lib/places';
+import { derivePlaceState, effectivePlaceAt, haversineM, nextWindow, placeForWindow } from '../../lib/places';
 import { localDateInZone } from '../../lib/time';
 import type {
   Feed,
@@ -24,7 +24,7 @@ import type {
   TodayItem,
 } from '../queries';
 import type { CreatePactInput, JoinPactInput, OpenReviewInput } from '../rpc';
-import type { CheckinRow, ProfileRow } from '../types';
+import type { CheckinRow, PactParticipantPlaceRow, PactPlaceVisibleRow, PlaceDistanceRow, PlaceEventKind, ProfileRow } from '../types';
 import { DEMO_T0, EMPTY_GROUP_ID, GROUP_ID, INVITE_CODE, SETTLE_VARIANTS, store } from './fixtures';
 import { DEMO, DEMO_USER_ID, demoKey, demoSettingsFromParams, getDemoSettings, setDemoSettings, type DemoSettings } from './settings';
 
@@ -50,7 +50,7 @@ const PROFILE_DEPENDENT_KEYS = (userId: string) => [['profile', userId], ['group
 export function useDemoSettings(): DemoSettings {
   const params = useGlobalSearchParams<Record<string, string | string[]>>();
   const settings = demoSettingsFromParams(params as Record<string, string | string[] | undefined>);
-  useEffect(() => setDemoSettings(settings), [settings.verdict, settings.empty, settings.state, settings.perm, settings.signedOut, settings.freeze, settings.settle, settings.fix]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => setDemoSettings(settings), [settings.verdict, settings.empty, settings.state, settings.perm, settings.signedOut, settings.freeze, settings.settle, settings.fix, settings.precise, settings.budget]); // eslint-disable-line react-hooks/exhaustive-deps
   return settings;
 }
 
@@ -81,6 +81,89 @@ async function gate(settings: DemoSettings): Promise<void> {
 const profileMap = (): Map<string, ProfileRow> => new Map(store.profiles.map((p) => [p.id, p]));
 const groupOf = (groupId: string) => store.groups.find((g) => g.id === groupId) ?? store.groups[0]!;
 const isEmptyGroup = (groupId: string, s: DemoSettings) => s.empty || groupId === EMPTY_GROUP_ID;
+const nameOf = (id: string) => store.profiles.find((p) => p.id === id)?.display_name ?? null;
+
+// ---------- places as the group sees them (mirrors pact_places_visible / pact_place_distances) ----------
+
+function visiblePlaces(pactId: string, nowMs = Date.now()): PactPlaceVisibleRow[] {
+  const pact = store.pacts.find((p) => p.id === pactId);
+  if (!pact) return [];
+  const current = new Set(store.participants.filter((p) => p.pact_id === pactId && !p.left_at).map((p) => p.user_id));
+  const rows = store.placeHistory.filter((h) => h.pact_id === pactId && current.has(h.user_id));
+  return rows.map((h) => ({
+    place_id: h.id,
+    pact_id: h.pact_id,
+    group_id: pact.group_id,
+    user_id: h.user_id,
+    user_name: nameOf(h.user_id),
+    lat: h.lat,
+    lng: h.lng,
+    radius_m: h.radius_m,
+    label: h.label,
+    created_at: h.created_at,
+    effective_from: h.effective_from,
+    requires_ack: h.requires_ack,
+    acknowledged_at: h.acknowledged_at,
+    acknowledged_by: h.acknowledged_by,
+    acknowledged_by_name: h.acknowledged_by ? nameOf(h.acknowledged_by) : null,
+    objected_at: h.objected_at,
+    objected_by: h.objected_by,
+    objected_by_name: h.objected_by ? nameOf(h.objected_by) : null,
+    objection_reason: h.objection_reason,
+    ...derivePlaceState(h, rows.filter((r) => r.user_id === h.user_id), nowMs),
+  }));
+}
+
+function placeDistances(pactId: string): PlaceDistanceRow[] {
+  const rows = visiblePlaces(pactId);
+  const out: PlaceDistanceRow[] = [];
+  for (const a of rows) {
+    if (!(a.is_current || a.state === 'pending')) continue;
+    for (const b of rows) {
+      if (b.user_id === a.user_id || !b.is_current) continue;
+      out.push({
+        pact_id: pactId,
+        place_id: a.place_id,
+        user_id: a.user_id,
+        label: a.label,
+        state: a.is_current ? 'effective' : 'pending',
+        other_user_id: b.user_id,
+        other_place_id: b.place_id,
+        other_label: b.label,
+        distance_m: haversineM(a.lat, a.lng, b.lat, b.lng),
+      });
+    }
+  }
+  return out;
+}
+
+function pushPlaceEvent(place: PactParticipantPlaceRow, kind: PlaceEventKind, actorId: string, reason: string | null) {
+  const pact = store.pacts.find((p) => p.id === place.pact_id);
+  if (!pact) return;
+  const mine = store.placeHistory.filter((h) => h.pact_id === place.pact_id && h.user_id === place.user_id);
+  const prev = effectivePlaceAt(mine, place.created_at);
+  const prevRow = prev && prev.id !== place.id ? prev : null;
+  store.placeEvents.push({
+    id: store.placeEvents.reduce((m, e) => Math.max(m, e.id), 0) + 1,
+    group_id: pact.group_id,
+    pact_id: place.pact_id,
+    place_id: place.id,
+    user_id: place.user_id,
+    actor_id: actorId,
+    kind,
+    label: place.label,
+    lat: place.lat,
+    lng: place.lng,
+    radius_m: place.radius_m,
+    prev_label: prevRow?.label ?? null,
+    prev_lat: prevRow?.lat ?? null,
+    prev_lng: prevRow?.lng ?? null,
+    prev_radius_m: prevRow?.radius_m ?? null,
+    distance_from_prev_m: prevRow ? Math.round(haversineM(prevRow.lat, prevRow.lng, place.lat, place.lng)) : null,
+    reason,
+    created_at: new Date().toISOString(),
+  });
+}
 
 // ---------- queries ----------
 
@@ -188,6 +271,8 @@ export function usePactDetail(pactId: string, userId: string) {
         profiles: profileMap(),
         upcoming: s.empty ? [] : upcoming,
         myFreezes: store.freezes.filter((f) => f.pact_id === pact.id && f.user_id === userId),
+        places: s.empty ? [] : visiblePlaces(pact.id),
+        distances: s.empty ? [] : placeDistances(pact.id),
       };
     },
   });
@@ -247,11 +332,16 @@ export function useFeed(groupId: string) {
     queryFn: async (): Promise<Feed> => {
       await gate(s);
       const profiles = profileMap();
-      const empty: Feed = { items: [], profiles, rosterByInstance: new Map(), excludedThisMonth: new Map() };
+      const empty: Feed = { items: [], profiles, rosterByInstance: new Map(), placeEvents: [], pacts: [], placesById: new Map() };
       if (isEmptyGroup(groupId, s)) return empty;
       const now = Date.now();
       const since = now - FEED_DAYS * 86_400_000;
       const pacts = store.pacts.filter((p) => p.group_id === GROUP_ID);
+      empty.pacts = pacts;
+      empty.placeEvents = store.placeEvents
+        .filter((e) => e.group_id === GROUP_ID && Date.parse(e.created_at) >= since)
+        .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+      empty.placesById = new Map(pacts.flatMap((p) => visiblePlaces(p.id)).map((r) => [r.place_id, r]));
       const instances = store.instances.filter(
         (i) => pacts.some((p) => p.id === i.pact_id) && Date.parse(i.deadline_at) >= since && ['closed', 'settled', 'voided'].includes(i.status),
       );
@@ -273,18 +363,16 @@ export function useFeed(groupId: string) {
         (a, b) =>
           Date.parse(b.instance.deadline_at) - Date.parse(a.instance.deadline_at) || a.result.user_id.localeCompare(b.result.user_id),
       );
-      const monthPrefix = new Date(now).toISOString().slice(0, 7);
-      const excludedThisMonth = new Map<string, number>();
-      for (const item of items) {
-        if (item.result.status === 'excluded' && item.instance.local_date.startsWith(monthPrefix)) {
-          excludedThisMonth.set(item.result.user_id, (excludedThisMonth.get(item.result.user_id) ?? 0) + 1);
-        }
-      }
       const rosterByInstance = new Map<string, string[]>();
       for (const r of results) rosterByInstance.set(r.instance_id, [...(rosterByInstance.get(r.instance_id) ?? []), r.user_id]);
-      return { items, profiles, rosterByInstance, excludedThisMonth };
+      return { ...empty, items, rosterByInstance };
     },
   });
+}
+
+/** Demo: the unverified-budget count comes from `?budget=N` (settings.ts). */
+export function useUnverifiedBudget(_pactId: string, _userId: string, _localDate: string): number {
+  return useDemoSettings().budget;
 }
 
 export function useLedger(groupId: string) {
@@ -363,8 +451,68 @@ export const joinPact = async (p: JoinPactInput): Promise<undefined> => {
   const existing = store.participants.find((x) => x.pact_id === p.pactId && x.user_id === DEMO_USER_ID && !x.left_at);
   if (existing) Object.assign(existing, { place_lat: p.lat, place_lng: p.lng, place_radius_m: p.radiusM, place_label: p.label });
   else store.participants.push({ pact_id: p.pactId, user_id: DEMO_USER_ID, place_lat: p.lat, place_lng: p.lng, place_radius_m: p.radiusM, place_label: p.label, joined_at: now, left_at: null });
-  const effective = existing ? new Date(Date.now() + 12 * 3_600_000).toISOString() : now;
-  store.placeHistory.push({ pact_id: p.pactId, user_id: DEMO_USER_ID, lat: p.lat, lng: p.lng, radius_m: p.radiusM, label: p.label, effective_from: effective, created_at: now });
+  // a change is gated (another member must confirm it, or 24 h pass) when anybody else is in the group
+  const groupId = store.pacts.find((x) => x.id === p.pactId)?.group_id;
+  const others = store.members.some((m) => m.group_id === groupId && m.user_id !== DEMO_USER_ID && !m.left_at);
+  const gated = existing !== undefined && others;
+  const effective = !existing ? now : new Date(Date.now() + (gated ? 24 : 12) * 3_600_000).toISOString();
+  // a new request replaces a change that does not count yet
+  for (let i = store.placeHistory.length - 1; i >= 0; i -= 1) {
+    const h = store.placeHistory[i]!;
+    if (h.pact_id === p.pactId && h.user_id === DEMO_USER_ID && Date.parse(h.effective_from) > Date.now() && !h.objected_at) store.placeHistory.splice(i, 1);
+  }
+  const row: PactParticipantPlaceRow = {
+    id: id('ph'),
+    pact_id: p.pactId,
+    user_id: DEMO_USER_ID,
+    lat: p.lat,
+    lng: p.lng,
+    radius_m: p.radiusM,
+    label: p.label,
+    effective_from: effective,
+    created_at: now,
+    requires_ack: gated,
+    acknowledged_at: null,
+    acknowledged_by: null,
+    objected_at: null,
+    objected_by: null,
+    objection_reason: null,
+    effective_event_at: null,
+  };
+  store.placeHistory.push(row);
+  pushPlaceEvent(row, 'created', DEMO_USER_ID, null);
+  return undefined;
+};
+
+export const acknowledgePlace = async (placeId: string): Promise<undefined> => {
+  await gate(getDemoSettings());
+  const h = store.placeHistory.find((x) => x.id === placeId);
+  if (!h) throw new DbError({ message: 'place not found', code: 'P0002' });
+  if (h.user_id === DEMO_USER_ID) throw new DbError({ message: 'you cannot confirm your own place', code: '42501' });
+  if (h.objected_at) throw new DbError({ message: 'this place was objected to and cannot be confirmed', code: '23514' });
+  if (h.acknowledged_at) throw new DbError({ message: 'this place was already confirmed', code: '23514' });
+  if (!h.requires_ack || Date.parse(h.effective_from) <= Date.now()) throw new DbError({ message: 'this place already counts', code: '23514' });
+  const now = Date.now();
+  h.acknowledged_at = new Date(now).toISOString();
+  h.acknowledged_by = DEMO_USER_ID;
+  h.effective_from = new Date(Math.max(now, Date.parse(h.created_at) + 12 * 3_600_000)).toISOString();
+  pushPlaceEvent(h, 'acknowledged', DEMO_USER_ID, null);
+  return undefined;
+};
+
+export const objectPlace = async (placeId: string, reason: string): Promise<undefined> => {
+  await gate(getDemoSettings());
+  const h = store.placeHistory.find((x) => x.id === placeId);
+  if (!h) throw new DbError({ message: 'place not found', code: 'P0002' });
+  if (reason.trim().length === 0) throw new DbError({ message: 'a reason is required', code: '22023' });
+  if (h.user_id === DEMO_USER_ID) throw new DbError({ message: 'you cannot object to your own place', code: '42501' });
+  if (h.objected_at) throw new DbError({ message: 'this place was already objected to', code: '23514' });
+  if (h.acknowledged_at) throw new DbError({ message: 'another member already confirmed this place', code: '23514' });
+  if (Date.parse(h.created_at) + 24 * 3_600_000 <= Date.now()) throw new DbError({ message: 'too late to object', code: '23514' });
+  h.objected_at = new Date().toISOString();
+  h.objected_by = DEMO_USER_ID;
+  h.objection_reason = reason.trim();
+  pushPlaceEvent(h, 'objected', DEMO_USER_ID, reason.trim());
   return undefined;
 };
 
@@ -430,7 +578,7 @@ export const declareFreeze = async (instanceId: string): Promise<string> => {
 
 export const openReview = async (r: OpenReviewInput): Promise<string> => {
   await gate(getDemoSettings());
-  const review = { id: id('r'), instance_id: r.instanceId, subject_user_id: r.subjectUserId, opened_by: DEMO_USER_ID, kind: r.kind, reason: r.reason, photo_path: r.photoPath ?? null, status: 'open' as const, opened_at: new Date().toISOString(), resolved_at: null };
+  const review = { id: id('r'), instance_id: r.instanceId, subject_user_id: r.subjectUserId, opened_by: DEMO_USER_ID, kind: r.kind, reason: r.reason, photo_path: r.photoPath ?? null, status: 'open' as const, opened_at: new Date().toISOString(), resolved_at: null, system_opened: false };
   store.reviews.push(review);
   return review.id;
 };

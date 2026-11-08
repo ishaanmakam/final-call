@@ -17,7 +17,10 @@ import type {
   PactInstanceRow,
   PactParticipantPlaceRow,
   PactParticipantRow,
+  PactPlaceVisibleRow,
   PactRow,
+  PlaceDistanceRow,
+  PlaceEventRow,
   ProfileRow,
   ResultRow,
   ReviewRow,
@@ -210,6 +213,10 @@ export interface PactDetail {
   profiles: Map<string, ProfileRow>;
   upcoming: PactInstanceRow[];
   myFreezes: FreezeRow[];
+  /** every current participant's place rows (in force, pending, objected), as the group sees them */
+  places: PactPlaceVisibleRow[];
+  /** metres from each place to the other participants' places in force */
+  distances: PlaceDistanceRow[];
 }
 
 function usePactDetailReal(pactId: string, userId: string) {
@@ -217,7 +224,7 @@ function usePactDetailReal(pactId: string, userId: string) {
     queryKey: queryKeys.pact(pactId),
     queryFn: async (): Promise<PactDetail> => {
       const since = new Date(Date.now() - 86_400_000).toISOString();
-      const [pact, participants, upcoming, myFreezes] = await Promise.all([
+      const [pact, participants, upcoming, myFreezes, places, distances] = await Promise.all([
         supabase.from('pacts').select('*').eq('id', pactId).single().then(must),
         supabase.from('pact_participants').select('*').eq('pact_id', pactId).is('left_at', null).then(must),
         supabase
@@ -229,9 +236,11 @@ function usePactDetailReal(pactId: string, userId: string) {
           .limit(10)
           .then(must),
         supabase.from('freezes').select('*').eq('pact_id', pactId).eq('user_id', userId).then(must),
+        supabase.from('pact_places_visible').select('*').eq('pact_id', pactId).order('created_at').then(must),
+        supabase.rpc('pact_place_distances', { p_pact: pactId }).then(must),
       ]);
       const profiles = await fetchProfiles(participants.map((p) => p.user_id));
-      return { pact, participants, profiles, upcoming, myFreezes };
+      return { pact, participants, profiles, upcoming, myFreezes, places, distances };
     },
   });
 }
@@ -364,8 +373,11 @@ export interface Feed {
   profiles: Map<string, ProfileRow>;
   /** roster per instance (users with a result row): who may challenge and vote, as the server checks */
   rosterByInstance: Map<string, string[]>;
-  /** Excluded results this calendar month per user: visible so it can't be farmed quietly. */
-  excludedThisMonth: Map<string, number>;
+  /** place set / confirmed / objected / now-counts rows of the last FEED_DAYS, newest first */
+  placeEvents: PlaceEventRow[];
+  pacts: PactRow[];
+  /** today's state of every place row the events point at (actions come from here) */
+  placesById: Map<string, PactPlaceVisibleRow>;
 }
 
 export const FEED_DAYS = 28;
@@ -380,17 +392,37 @@ function useFeedReal(groupId: string) {
         supabase.from('group_members').select('user_id').eq('group_id', groupId).then(must),
       ]);
       const profiles = await fetchProfiles(members.map((m) => m.user_id));
-      const empty: Feed = { items: [], profiles, rosterByInstance: new Map(), excludedThisMonth: new Map() };
+      const empty: Feed = {
+        items: [],
+        profiles,
+        rosterByInstance: new Map(),
+        placeEvents: [],
+        pacts,
+        placesById: new Map(),
+      };
       if (pacts.length === 0) return empty;
       const pactIds = pacts.map((p) => p.id);
       const since = new Date(now - FEED_DAYS * 86_400_000).toISOString();
-      const instances = await supabase
-        .from('pact_instances')
-        .select('*')
-        .in('pact_id', pactIds)
-        .gte('deadline_at', since)
-        .in('status', ['closed', 'settled', 'voided'])
-        .then(must);
+      const [instances, placeEvents, places] = await Promise.all([
+        supabase
+          .from('pact_instances')
+          .select('*')
+          .in('pact_id', pactIds)
+          .gte('deadline_at', since)
+          .in('status', ['closed', 'settled', 'voided'])
+          .then(must),
+        supabase
+          .from('place_events')
+          .select('*')
+          .eq('group_id', groupId)
+          .gte('created_at', since)
+          .order('created_at', { ascending: false })
+          .limit(200)
+          .then(must),
+        supabase.from('pact_places_visible').select('*').in('pact_id', pactIds).then(must),
+      ]);
+      empty.placeEvents = placeEvents;
+      empty.placesById = new Map(places.map((p) => [p.place_id, p]));
       const instanceIds = instances.map((i) => i.id);
       if (instanceIds.length === 0) return empty;
       const [results, reviews] = await Promise.all([
@@ -420,20 +452,45 @@ function useFeedReal(groupId: string) {
           a.result.user_id.localeCompare(b.result.user_id),
       );
 
-      const monthPrefix = new Date(now).toISOString().slice(0, 7);
-      const excludedThisMonth = new Map<string, number>();
-      for (const item of items) {
-        if (item.result.status === 'excluded' && item.instance.local_date.startsWith(monthPrefix)) {
-          excludedThisMonth.set(item.result.user_id, (excludedThisMonth.get(item.result.user_id) ?? 0) + 1);
-        }
-      }
       const rosterByInstance = new Map<string, string[]>();
       for (const r of results) {
         rosterByInstance.set(r.instance_id, [...(rosterByInstance.get(r.instance_id) ?? []), r.user_id]);
       }
-      return { items, profiles, rosterByInstance, excludedThisMonth };
+      return { ...empty, items, rosterByInstance };
     },
   });
+}
+
+// ---------- unverified budget ----------
+
+/** First day of the calendar month of a pact-local date ('2030-01-09' -> '2030-01-01'). */
+export const monthOf = (localDate: string): string => `${localDate.slice(0, 7)}-01`;
+
+/**
+ * How many of this person's days in this pact are unverified this calendar month (pact zone), from
+ * the `unverified_month_counts` view (CONTRACT.md). The third opens an automatic group vote, so the
+ * check-in screen shows the count from the first one (features/checkin/copy.ts#budgetLine). 0 while
+ * loading or on error: the line is a courtesy, never a gate.
+ */
+function useUnverifiedBudgetReal(pactId: string, userId: string, localDate: string): number {
+  const month = monthOf(localDate);
+  const query = useQuery({
+    queryKey: ['unverified-budget', pactId, userId, month],
+    enabled: !!pactId && !!userId,
+    staleTime: 60_000,
+    queryFn: async (): Promise<number> => {
+      const { data, error } = await supabase
+        .from('unverified_month_counts')
+        .select('count')
+        .eq('pact_id', pactId)
+        .eq('user_id', userId)
+        .eq('month', month)
+        .maybeSingle();
+      if (error) throw error;
+      return typeof data?.count === 'number' ? data.count : 0;
+    },
+  });
+  return query.data ?? 0;
 }
 
 // ---------- ledger ----------
@@ -524,3 +581,4 @@ export const usePlaceSchedule = DEMO ? demo.usePlaceSchedule : usePlaceScheduleR
 export const useInstanceDetail = DEMO ? demo.useInstanceDetail : useInstanceDetailReal;
 export const useFeed = DEMO ? demo.useFeed : useFeedReal;
 export const useLedger = DEMO ? demo.useLedger : useLedgerReal;
+export const useUnverifiedBudget = DEMO ? demo.useUnverifiedBudget : useUnverifiedBudgetReal;

@@ -623,7 +623,7 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
       expect.soft(await nets('2026-10-27'), 'Tue 10-27').toEqual(expectNames({ A: 334, C: 333, D: 333, B: -500, E: -500 }));
     });
     // Wed: A,B,C in; D nothing; E no fix. k=3,l=1: 167,167,166.
-    // C challenges A, D appeals; nobody votes -> both default at settlement (challenge: unchanged; appeal: excluded).
+    // C challenges A, D appeals; nobody votes -> both default at settlement and both results stand (N3-1).
     ci('A', '2026-10-28', '08:05', 'in');
     ci('B', '2026-10-28', '08:10', 'in');
     ci('C', '2026-10-28', '08:15', 'in');
@@ -705,20 +705,20 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
     after(la('2026-11-02', '11:00'), 'no settlement at 12:00 PDT (= 11:00 PST)', async () => {
       expect.soft(await settlementFor('2026-10-26'), 'settled at the PDT noon').toBeUndefined();
     });
-    // Settlement defaults: C's challenge on A stands; D's appeal -> excluded (+500 to D, A -167, B -167, C -166),
-    // which Mon 11-02 (A 167, B 167, C 166, D -500) exactly cancels in the live view:
-    //   live      A 876, B 501, C -126, D 749, E -2000
+    // Settlement defaults: C's challenge on A and D's appeal both leave the result standing (N3-1), so
+    // Wed 10-28 stays A 167, B 167, C 166, D -500 and no correction posts. Mon 11-02 closed at 09:00:
+    //   live      A 876+167 = 1043, B 501+167 = 668, C -126+166 = 40, D 749-500 = 249, E -2000
     // Mon 11-02 is closed but unsettled, so billable excludes it; the Sunday instance is settled:
-    //   billable  A 876-167 = 709, B 501-167 = 334, C -126-166 = -292, D 749+500 = 1249, E -2000
+    //   billable  A 876, B 501, C -126, D 749, E -2000
     // (1) E's disputed 1000 was superseded and is billed again; (2) D's 209 is still marked_paid,
     // so it counts as paid: D +209, B -209:
-    //   input     A 709, B 125, C -292, D 1458, E -2000
-    // greedy: E->D 1458, E->A 542, C->A 167, C->B 125.
+    //   input     A 876, B 292, C -126, D 958, E -2000
+    // greedy: E->D 958, E->A 876, E->B 166, C->B 126.
     assertSettlement('2026-10-26', la('2026-11-02', '12:00'), {
-      live: { A: 876, B: 501, C: -126, D: 749, E: -2000 },
-      billable: { A: 709, B: 334, C: -292, D: 1249, E: -2000 },
-      input: { A: 709, B: 125, C: -292, D: 1458, E: -2000 },
-      obligations: ['E->D:1458', 'E->A:542', 'C->A:167', 'C->B:125'],
+      live: { A: 1043, B: 668, C: 40, D: 249, E: -2000 },
+      billable: { A: 876, B: 501, C: -126, D: 749, E: -2000 },
+      input: { A: 876, B: 292, C: -126, D: 958, E: -2000 },
+      obligations: ['E->D:958', 'E->A:876', 'E->B:166', 'C->B:126'],
       carry: 0,
     });
     after(la('2026-11-02', '12:00'), 'week 1 leftovers: disputed superseded, unconfirmed survives', async () => {
@@ -772,17 +772,21 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
       // week 2's obligations were computed before the correction and stay as they are
       const obs = await obligationsOf(db, (await settlementFor('2026-10-26'))!.id);
       expect.soft(obs.map((o) => `${name(o.from_user)}->${name(o.to_user)}:${o.amount_cents}`).sort()).toEqual(
-        ['E->D:1458', 'E->A:542', 'C->A:167', 'C->B:125'].sort(),
+        ['E->D:958', 'E->A:876', 'E->B:166', 'C->B:126'].sort(),
       );
       // the correction is billable right away (the instance is settled) -> picked up next Monday
-      expect.soft(await billable(), 'billable incl. correction').toEqual(expectNames({ A: 459, B: 834, C: -542, D: 1249, E: -2000 }));
+      expect.soft(await billable(), 'billable incl. correction').toEqual(expectNames({ A: 626, B: 1001, C: -376, D: 749, E: -2000 }));
     });
     after(la('2026-11-02', '12:00'), 'week 2 reviews defaulted', async () => {
       expect.soft(await reviewStatus('wed-challenge')).toBe('defaulted');
       expect.soft(await reviewStatus('wed-appeal')).toBe('defaulted');
       expect.soft(await resultOf('A', '2026-10-28')).toBe('success');
-      expect.soft(await resultOf('D', '2026-10-28')).toBe('excluded');
-      expect.soft(await nets('2026-10-28'), 'Wed 10-28 after defaults').toEqual({});
+      expect.soft(await resultOf('D', '2026-10-28')).toBe('failed'); // N3-1: a defaulted appeal leaves the miss
+      expect.soft(await nets('2026-10-28'), 'Wed 10-28 after defaults').toEqual(expectNames({ A: 167, B: 167, C: 166, D: -500 }));
+      expect.soft(
+        await scalar<number>(db, `select count(*)::int from public.ledger_entries where instance_id = $1 and kind = 'correction'`, [await inst('2026-10-28')]),
+        'no correction for a defaulted appeal',
+      ).toBe(0);
       const st = await rows<{ local_date: string; status: string }>(
         db,
         `select to_char(local_date, 'YYYY-MM-DD') local_date, status::text from public.pact_instances where pact_id = $1 and local_date <= '2026-11-02' order by 1`,
@@ -907,7 +911,7 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
       ['C->A:1292:confirmed', 'C->B:83:confirmed', 'D->B:209:confirmed', 'E->B:1000:superseded'].sort(),
     );
     expect(await statuses(sets[1].id)).toEqual(
-      ['C->A:167:confirmed', 'C->B:125:confirmed', 'E->A:542:confirmed', 'E->D:1458:confirmed'].sort(),
+      ['C->B:126:confirmed', 'E->A:876:confirmed', 'E->B:166:confirmed', 'E->D:958:confirmed'].sort(),
     );
     expect(await statuses(sets[2].id)).toEqual(['D->A:417:confirmed']);
     // one settlement_payment per confirmed obligation, for exactly its amount
@@ -945,14 +949,14 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
 
   it('outbox has the expected kinds with no duplicates per (user, instance, kind)', async () => {
     const kinds = await rows<{ kind: string }>(db, `select distinct kind from public.notification_outbox order by kind`);
-    expect(kinds.map((k) => k.kind)).toEqual(['deadline_soon', 'result', 'review_opened', 'settlement', 'window_open']);
+    expect(kinds.map((k) => k.kind)).toEqual(['deadline_soon', 'place_changed', 'result', 'review_opened', 'settlement', 'window_open']);
 
     const dups = await rows(
       db,
       `select user_id, kind, payload->>'instance_id' i, payload->>'correction' c, payload->>'review_id' r,
-              payload->>'settlement_id' s, count(*)::int n
+              payload->>'settlement_id' s, payload->>'place_id' p, payload->>'event' ev, count(*)::int n
          from public.notification_outbox
-        group by 1, 2, 3, 4, 5, 6 having count(*) > 1`,
+        group by 1, 2, 3, 4, 5, 6, 7, 8 having count(*) > 1`,
     );
     expect(dups).toEqual([]);
 
@@ -1014,9 +1018,9 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
       `select instance_id::text i, split_part(idempotency_key, ':', 3) c from public.ledger_entries where kind = 'correction' order by 1, 2`,
     );
     expect(corrections.map((c) => `${c.i}:${c.c}`)).toEqual(correctionEntries.map((c) => `${c.i}:${c.c}`));
-    // Thu 10-22 (late check-in), Fri 10-23 (appeal), Tue 10-27 (challenge), Wed 10-28 (defaulted appeal),
-    // Sun 11-01 (late check-in after settlement)
-    expect(correctionEntries).toHaveLength(5);
+    // Thu 10-22 (late check-in), Fri 10-23 (appeal), Tue 10-27 (challenge), Sun 11-01 (late check-in
+    // after settlement). Wed 10-28's defaulted appeal leaves the result standing: no correction (N3-1).
+    expect(correctionEntries).toHaveLength(4);
 
     // review_opened: every other current participant, once per review.
     for (const [key, rid] of Object.entries(reviewIds)) {

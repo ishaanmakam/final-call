@@ -412,7 +412,7 @@ Reduce Motion: the sweep becomes a pulse, the reveal fill jumps, the card fades 
 | unverified | **Unverified** (live: *Weak GPS*, *Late*, *Not there yet*) | always paired with "never costs you" the first time it appears on a screen |
 | frozen | **Frozen** | "Freeze today", "won't count for or against you" |
 | void | **Didn't count** | fewer than two people were in it |
-| excluded | **Excluded** | review outcome; "Excluded this month" counter |
+| excluded | **Excluded** | historical rows only (no rule sets it since night-1, N3-1); the monthly counter is gone |
 | pending | **Waiting** | before a result exists |
 | in_fence / out_of_fence | **at your place** / **not at your place yet** | verdict copy |
 | obligation pending / marked_paid / confirmed / superseded | **Unpaid** / **Marked paid** / **Confirmed** / **Replaced** | ledger |

@@ -3,7 +3,7 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AppState, Linking, StyleSheet, View } from 'react-native';
 import Animated, { FadeOut } from 'react-native-reanimated';
-import { useInstanceDetail } from '@/api/queries';
+import { useInstanceDetail, useUnverifiedBudget } from '@/api/queries';
 import { RpcError, checkIn, declareFreeze } from '@/api/rpc';
 import type { CheckinRow } from '@/api/types';
 import { EmptyState, Icon, ListGroup, ListRow, Screen, Skeleton, StatusPill, Text, resultLabel } from '@/components';
@@ -11,8 +11,10 @@ import { CheckinButton, RING_SIZE, type RingTone } from '@/features/checkin/Chec
 import { VerdictPanel } from '@/features/checkin/VerdictPanel';
 import { WindowClock } from '@/features/checkin/WindowClock';
 import {
+  budgetLine,
   buttonState,
   busyFootnote,
+  panelForApproximate,
   panelForError,
   panelForPermission,
   panelForQueued,
@@ -28,7 +30,7 @@ import type { CheckinAttempt } from '@/lib/checkinQueue';
 import { enqueueCheckin, kickQueue } from '@/lib/checkinQueueRuntime';
 import { captureAttempt } from '@/lib/checkinAttempt';
 import { userMessage } from '@/lib/errors';
-import { ensureForegroundPermission, takeHighAccuracyFix } from '@/lib/location';
+import { ensurePreciseForegroundPermission, takeHighAccuracyFix } from '@/lib/location';
 import { formatDateInZone, formatTimeInZone } from '@/lib/time';
 import { durations, easing, haptic, space } from '@/theme';
 
@@ -54,13 +56,13 @@ export default function CheckInScreen() {
     setPhase({ kind: 'panel', panel, key: panelCount.current, ...extra });
   }, []);
 
-  // a blocked permission re-checks itself when the person comes back from Settings
+  // a blocked permission or Approximate Location re-checks itself when the person comes back from Settings
   const blocked = phase.kind === 'panel' && phase.permissionBlocked === true;
   useEffect(() => {
     if (!blocked) return;
     const sub = AppState.addEventListener('change', (s) => {
       if (s !== 'active') return;
-      void ensureForegroundPermission().then((p) => {
+      void ensurePreciseForegroundPermission().then((p) => {
         if (p === 'granted') setPhase({ kind: 'idle' });
       });
     });
@@ -158,7 +160,12 @@ function Loaded({
   };
 
   const onCheckIn = async () => {
-    const permission = await ensureForegroundPermission();
+    const permission = await ensurePreciseForegroundPermission();
+    if (permission === 'approximate') {
+      // Approximate Location is a setting, not a tracking failure: nothing is sent (N2-5)
+      show(panelForApproximate(), { permissionBlocked: true });
+      return;
+    }
     if (permission !== 'granted') {
       show(panelForPermission(permission === 'blocked'), { permissionBlocked: permission === 'blocked' });
       return;
@@ -216,6 +223,10 @@ function Loaded({
 
   const canFreeze = windowPhase === 'before' && !finished && !!myPlace && !myFreeze;
 
+  // the unverified budget: from the first unverified day this month, until today is settled or in
+  const budget = useUnverifiedBudget(pact.id, myPlace?.user_id ?? '', instance.local_date);
+  const budgetText = !finished && !myFreeze && state !== 'done' ? budgetLine(budget) : null;
+
   return (
     <Screen refreshing={refetching} onRefresh={refetch}>
       <Stack.Screen options={{ title: pact.title }} />
@@ -269,6 +280,15 @@ function Loaded({
               ) : null}
             </Animated.View>
           )}
+
+          {budgetText ? (
+            <View style={styles.budget} accessibilityRole="text">
+              <Icon name="exclamationmark.triangle" size={16} color="unverified" />
+              <Text variant="footnote" color="unverified" style={styles.budgetText}>
+                {budgetText}
+              </Text>
+            </View>
+          ) : null}
 
           {canFreeze ? (
             <ListGroup style={styles.section}>
@@ -350,6 +370,8 @@ const styles = StyleSheet.create({
   moment: { paddingVertical: space.xl, alignItems: 'center' },
   status: { minHeight: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: space.lg },
   secondaryLine: { marginTop: space.sm },
+  budget: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space.xs, marginTop: space.sm, paddingHorizontal: space.lg },
+  budgetText: { flexShrink: 1 },
   centerPill: { alignSelf: 'center' },
   section: { marginTop: space.md },
   skeletonLines: { alignItems: 'center', gap: space.sm, paddingTop: space.xs },

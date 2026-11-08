@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { CheckinRow } from '../../api/types';
 import {
+  budgetLine,
   busyFootnote,
   buttonEnabled,
   buttonState,
   clockA11yLabel,
   clockCopy,
+  panelForApproximate,
   panelForError,
   panelForPermission,
   panelForQueued,
@@ -104,6 +106,30 @@ describe('other panels', () => {
     expect(p.body).toMatch(/counts as missed/);
     expect(p.body).not.toMatch(/never costs/);
     expect(panelForPermission(true).action).toBe('openSettings');
+  });
+
+  it('approximate location refuses to send, routes to Settings and says missed, not unverified', () => {
+    const p = panelForApproximate();
+    expect(p.headline).toBe('Precise Location is off');
+    expect(p.action).toBe('openSettings');
+    expect(p.body).toMatch(/nothing was sent/);
+    expect(p.body).toMatch(/Settings → Show Up → Location/);
+    expect(p.body).toMatch(/Precise Location/);
+    expect(p.footnote).toMatch(/counts as missed/);
+    expect(p.footnote).toMatch(/not unverified/);
+    expect(`${p.body} ${p.footnote}`).not.toMatch(/never costs/);
+    expect(p.haptic).toBe('error');
+  });
+
+  it('budget line appears from the first unverified day and counts down to the vote', () => {
+    expect(budgetLine(0)).toBeNull();
+    expect(budgetLine(-1)).toBeNull();
+    expect(budgetLine(Number.NaN)).toBeNull();
+    expect(budgetLine(1)).toBe('1 unverified this month. Two more and the group votes on it.');
+    expect(budgetLine(2)).toBe('2 unverified this month. One more and the group votes on it.');
+    expect(budgetLine(3)).toBe('3 unverified this month. Another one goes to a group vote.');
+    expect(budgetLine(5)).toMatch(/^5 unverified this month/);
+    for (const n of [1, 2, 3]) expect(budgetLine(n)).not.toMatch(/stake|pot|bet|wager/i);
   });
 
   it('maps the cap, the roster rule and auth to their panels', () => {

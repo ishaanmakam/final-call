@@ -16,6 +16,7 @@ import type {
   PactParticipantPlaceRow,
   PactParticipantRow,
   PactRow,
+  PlaceEventRow,
   ProfileRow,
   ResultRow,
   ReviewRow,
@@ -101,7 +102,8 @@ export const participants: PactParticipantRow[] = [
   place(PACTS.library, USERS.priya, 47.6557, -122.3094, 60, 'Suzzallo', 20 * DAY),
 ];
 
-export const placeHistory: PactParticipantPlaceRow[] = participants.map((p) => ({
+const historyRow = (p: PactParticipantRow, extra: Partial<PactParticipantPlaceRow> = {}): PactParticipantPlaceRow => ({
+  id: `ph-${p.pact_id}-${p.user_id}`,
   pact_id: p.pact_id,
   user_id: p.user_id,
   lat: p.place_lat,
@@ -110,7 +112,109 @@ export const placeHistory: PactParticipantPlaceRow[] = participants.map((p) => (
   label: p.place_label,
   effective_from: p.joined_at,
   created_at: p.joined_at,
-}));
+  requires_ack: false,
+  acknowledged_at: null,
+  acknowledged_by: null,
+  objected_at: null,
+  objected_by: null,
+  objection_reason: null,
+  effective_event_at: null,
+  ...extra,
+});
+
+export const placeHistory: PactParticipantPlaceRow[] = participants.map((p) => historyRow(p));
+
+// ---------- place accountability scenarios (9am in Kane Hall) ----------
+// Maya moved her place 2 h ago (Savery Hall → Odegaard Library): pending until a friend confirms it
+// or 24 h pass. Diego moved his to his dorm 5 h ago and Priya objected: he has to set a new one.
+// pact_participants keeps the requested place (what the server does); the history holds the truth.
+export const PLACE_IDS = { mayaPending: 'ph-p1-u-maya-2', diegoObjected: 'ph-p1-u-diego-2' } as const;
+{
+  const maya = participants.find((p) => p.pact_id === PACTS.classA && p.user_id === USERS.maya)!;
+  const diego = participants.find((p) => p.pact_id === PACTS.classA && p.user_id === USERS.diego)!;
+  placeHistory.push(
+    historyRow({ ...maya, place_lat: 47.6565, place_lng: -122.3105, place_radius_m: 60, place_label: 'Odegaard Library' }, {
+      id: PLACE_IDS.mayaPending,
+      created_at: ago(2 * HOUR),
+      effective_from: ahead(22 * HOUR),
+      requires_ack: true,
+    }),
+    historyRow({ ...diego, place_lat: 47.6553, place_lng: -122.34, place_radius_m: 100, place_label: 'Lander Hall' }, {
+      id: PLACE_IDS.diegoObjected,
+      created_at: ago(5 * HOUR),
+      effective_from: ahead(19 * HOUR),
+      requires_ack: true,
+      objected_at: ago(4 * HOUR),
+      objected_by: USERS.priya,
+      objection_reason: "That's your dorm, not the lecture hall.",
+    }),
+  );
+  Object.assign(maya, { place_lat: 47.6565, place_lng: -122.3105, place_radius_m: 60, place_label: 'Odegaard Library' });
+  Object.assign(diego, { place_lat: 47.6553, place_lng: -122.34, place_radius_m: 100, place_label: 'Lander Hall' });
+}
+
+export const placeEvents: PlaceEventRow[] = [
+  {
+    id: 1,
+    group_id: GROUP_ID,
+    pact_id: PACTS.classA,
+    place_id: PLACE_IDS.diegoObjected,
+    user_id: USERS.diego,
+    actor_id: USERS.diego,
+    kind: 'created',
+    label: 'Lander Hall',
+    lat: 47.6553,
+    lng: -122.34,
+    radius_m: 100,
+    prev_label: 'Mary Gates',
+    prev_lat: 47.6553,
+    prev_lng: -122.3105,
+    prev_radius_m: 100,
+    distance_from_prev_m: 2214,
+    reason: null,
+    created_at: ago(5 * HOUR),
+  },
+  {
+    id: 2,
+    group_id: GROUP_ID,
+    pact_id: PACTS.classA,
+    place_id: PLACE_IDS.diegoObjected,
+    user_id: USERS.diego,
+    actor_id: USERS.priya,
+    kind: 'objected',
+    label: 'Lander Hall',
+    lat: 47.6553,
+    lng: -122.34,
+    radius_m: 100,
+    prev_label: 'Mary Gates',
+    prev_lat: 47.6553,
+    prev_lng: -122.3105,
+    prev_radius_m: 100,
+    distance_from_prev_m: 2214,
+    reason: "That's your dorm, not the lecture hall.",
+    created_at: ago(4 * HOUR),
+  },
+  {
+    id: 3,
+    group_id: GROUP_ID,
+    pact_id: PACTS.classA,
+    place_id: PLACE_IDS.mayaPending,
+    user_id: USERS.maya,
+    actor_id: USERS.maya,
+    kind: 'created',
+    label: 'Odegaard Library',
+    lat: 47.6565,
+    lng: -122.3105,
+    radius_m: 60,
+    prev_label: 'Savery Hall',
+    prev_lat: 47.6534,
+    prev_lng: -122.3078,
+    prev_radius_m: 60,
+    distance_from_prev_m: 403,
+    reason: null,
+    created_at: ago(2 * HOUR),
+  },
+];
 
 // ---------- instances ----------
 
@@ -250,7 +354,7 @@ export const reviewVotes: ReviewVoteRow[] = [];
   const r = findResult(PACTS.run, USERS.priya, 1);
   force(r, 'failed');
   if (r) {
-    reviews.push({ id: 'r-open', instance_id: r.instance_id, subject_user_id: USERS.priya, opened_by: USERS.priya, kind: 'appeal', reason: 'I was at the Cut by 6:40, GPS spun forever under the bridge. Photo attached.', photo_path: `${GROUP_ID}/${USERS.priya}/evidence.jpg`, status: 'open', opened_at: ago(14 * HOUR), resolved_at: null });
+    reviews.push({ id: 'r-open', instance_id: r.instance_id, subject_user_id: USERS.priya, opened_by: USERS.priya, kind: 'appeal', reason: 'I was at the Cut by 6:40, GPS spun forever under the bridge. Photo attached.', photo_path: `${GROUP_ID}/${USERS.priya}/evidence.jpg`, status: 'open', opened_at: ago(14 * HOUR), resolved_at: null, system_opened: false });
     reviewVotes.push({ review_id: 'r-open', voter_id: USERS.maya, supports: true, cast_at: ago(10 * HOUR) });
   }
 }
@@ -259,7 +363,7 @@ export const reviewVotes: ReviewVoteRow[] = [];
   const r = findResult(PACTS.classA, USERS.diego, 9);
   force(r, 'failed');
   if (r) {
-    reviews.push({ id: 'r-challenge-accepted', instance_id: r.instance_id, subject_user_id: USERS.diego, opened_by: USERS.maya, kind: 'challenge', reason: 'He was in the Ave coffee line at 8:58, I was behind him.', photo_path: null, status: 'accepted', opened_at: ago(9 * DAY - 2 * HOUR), resolved_at: ago(8 * DAY) });
+    reviews.push({ id: 'r-challenge-accepted', instance_id: r.instance_id, subject_user_id: USERS.diego, opened_by: USERS.maya, kind: 'challenge', reason: 'He was in the Ave coffee line at 8:58, I was behind him.', photo_path: null, status: 'accepted', opened_at: ago(9 * DAY - 2 * HOUR), resolved_at: ago(8 * DAY), system_opened: false });
     reviewVotes.push({ review_id: 'r-challenge-accepted', voter_id: USERS.maya, supports: true, cast_at: ago(9 * DAY - 2 * HOUR) });
     reviewVotes.push({ review_id: 'r-challenge-accepted', voter_id: USERS.you, supports: true, cast_at: ago(9 * DAY - HOUR) });
     reviewVotes.push({ review_id: 'r-challenge-accepted', voter_id: USERS.priya, supports: false, cast_at: ago(8 * DAY) });
@@ -270,21 +374,23 @@ export const reviewVotes: ReviewVoteRow[] = [];
   const r = findResult(PACTS.classA, USERS.you, 12);
   force(r, 'failed');
   if (r) {
-    reviews.push({ id: 'r-appeal-rejected', instance_id: r.instance_id, subject_user_id: USERS.you, opened_by: USERS.you, kind: 'appeal', reason: 'Bus broke down on 45th, got there at 9:04.', photo_path: null, status: 'rejected', opened_at: ago(12 * DAY - HOUR), resolved_at: ago(11 * DAY) });
+    reviews.push({ id: 'r-appeal-rejected', instance_id: r.instance_id, subject_user_id: USERS.you, opened_by: USERS.you, kind: 'appeal', reason: 'Bus broke down on 45th, got there at 9:04.', photo_path: null, status: 'rejected', opened_at: ago(12 * DAY - HOUR), resolved_at: ago(11 * DAY), system_opened: false });
     reviewVotes.push({ review_id: 'r-appeal-rejected', voter_id: USERS.maya, supports: false, cast_at: ago(11 * DAY) });
     reviewVotes.push({ review_id: 'r-appeal-rejected', voter_id: USERS.diego, supports: true, cast_at: ago(11 * DAY) });
     reviewVotes.push({ review_id: 'r-appeal-rejected', voter_id: USERS.priya, supports: false, cast_at: ago(11 * DAY) });
   }
 }
-// 4. Defaulted appeal: nobody voted, so Priya's miss 19 days ago became Excluded.
+// 4. Defaulted appeal: nobody voted, so Priya's miss 19 days ago stands as a miss (N3-1: the
+//    result stands and the forfeit is kept; nothing becomes Excluded any more).
 {
   const r = findResult(PACTS.gym, USERS.priya, 19);
-  force(r, 'excluded');
+  force(r, 'failed');
   if (r) {
-    reviews.push({ id: 'r-appeal-defaulted', instance_id: r.instance_id, subject_user_id: USERS.priya, opened_by: USERS.priya, kind: 'appeal', reason: 'Front desk scanner was down, I have the receipt.', photo_path: null, status: 'defaulted', opened_at: ago(19 * DAY - HOUR), resolved_at: ago(14 * DAY) });
+    reviews.push({ id: 'r-appeal-defaulted', instance_id: r.instance_id, subject_user_id: USERS.priya, opened_by: USERS.priya, kind: 'appeal', reason: 'Front desk scanner was down, I have the receipt.', photo_path: null, status: 'defaulted', opened_at: ago(19 * DAY - HOUR), resolved_at: ago(14 * DAY), system_opened: false });
   }
 }
-// A recent excluded result this month so the "Excluded this month" counter has something to show.
+// One historical Excluded result (the pre-night-1 default for an unvoted appeal) so the status pill
+// and the "moves no money" rows still render; no rule produces this status any more (N3-1).
 force(findResult(PACTS.classA, USERS.diego, 3), 'excluded');
 void yesterday;
 
@@ -357,6 +463,7 @@ export interface DemoStore {
   pacts: PactRow[];
   participants: PactParticipantRow[];
   placeHistory: PactParticipantPlaceRow[];
+  placeEvents: PlaceEventRow[];
   instances: PactInstanceRow[];
   checkins: CheckinRow[];
   results: ResultRow[];
@@ -378,6 +485,7 @@ export function createStore(): DemoStore {
     pacts: clone(pacts),
     participants: clone(participants),
     placeHistory: clone(placeHistory),
+    placeEvents: clone(placeEvents),
     instances: [...clone(todayInstances), ...clone(upcomingInstances), ...clone(historyInstances)],
     checkins: [...clone(todayCheckins), ...clone(historyCheckins)],
     results: [...clone(todayResults), ...clone(historyResults)],

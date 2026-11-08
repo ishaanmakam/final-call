@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { FeedItem } from '../../api/queries';
-import type { PactInstanceRow, PactRow, ProfileRow, ResultStatus } from '../../api/types';
+import type { PactInstanceRow, PactRow, PlaceEventRow, ProfileRow, ResultStatus } from '../../api/types';
 import {
   carryNote,
-  excludedFootnote,
+  feedSections,
   groupFeedByDay,
   instanceSubtitle,
   instanceSummary,
@@ -164,9 +164,51 @@ describe('names', () => {
     expect(joinNames(['Maya', 'you'])).toBe('Maya and you');
     expect(joinNames(['Maya', 'Priya', 'you'])).toBe('Maya, Priya and you');
   });
+});
 
-  it('writes the excluded footnote, most first, or nothing', () => {
-    expect(excludedFootnote(new Map(), n)).toBeNull();
-    expect(excludedFootnote(new Map([['diego', 1], ['priya', 2]]), n)).toMatch(/^Excluded this month: Priya Nair 2, Diego Alvarez 1\./);
+describe('feedSections (results and place events by day)', () => {
+  const placeEvent = (id: number, createdAt: string, extra: Partial<PlaceEventRow> = {}): PlaceEventRow => ({
+    id,
+    group_id: 'g',
+    pact_id: pact.id,
+    place_id: `pl-${id}`,
+    user_id: 'maya',
+    actor_id: 'maya',
+    kind: 'created',
+    label: 'Odegaard Library',
+    lat: 0,
+    lng: 0,
+    radius_m: 60,
+    prev_label: 'Savery Hall',
+    prev_lat: 0,
+    prev_lng: 0,
+    prev_radius_m: 60,
+    distance_from_prev_m: 400,
+    reason: null,
+    created_at: createdAt,
+    ...extra,
+  });
+
+  it('interleaves events with result groups newest first inside a local day, and drops events of unknown pacts', () => {
+    const items = [item(mon, 'me', 'success'), item(mon, 'diego', 'failed'), item(tue, 'me', 'success'), item(tue, 'diego', 'failed')];
+    const events = [
+      placeEvent(1, '2026-11-10T18:30:00Z'), // Tue 10 Nov 10:30 PST: after Monday's deadline on the same local day
+      placeEvent(2, '2026-11-10T15:00:00Z'), // 07:00 PST: before it
+      placeEvent(3, '2026-11-12T02:00:00Z'), // Wed 11 Nov 18:00 PST
+      placeEvent(4, '2026-11-11T00:00:00Z', { pact_id: 'gone' }),
+    ];
+    const sections = feedSections(items, events, [pact], new Map(), n);
+    expect(sections.map((s) => s.key)).toEqual(['2026-11-11', '2026-11-10']);
+    expect(sections[0]!.data.map((e) => e.key)).toEqual(['place-event:3', 'i-tue']);
+    expect(sections[1]!.data.map((e) => e.key)).toEqual(['place-event:1', 'i-mon', 'place-event:2']);
+    const entry = sections[1]!.data[0]!;
+    expect(entry.kind).toBe('place');
+    if (entry.kind === 'place') expect(entry.place).toBeNull();
+  });
+
+  it('a day with only place events is its own section', () => {
+    const sections = feedSections([], [placeEvent(9, '2026-11-13T17:00:00Z')], [pact], new Map(), n);
+    expect(sections).toHaveLength(1);
+    expect(sections[0]!.title).toBe('Fri, Nov 13');
   });
 });

@@ -676,7 +676,7 @@ describe('roster, leaving and places', () => {
     await join(late, fx.pactId, 47.7, -122.4);
   });
 
-  it('place history: the first place applies at once, later changes 12 hours after the request; check-ins use the place in effect at window open', async () => {
+  it('place history: the first place applies at once, a confirmed change 12 hours after the request; check-ins use the place in effect at window open', async () => {
     const fx = await setup(db, { members: 4, participants: 3 });
     const [a] = fx.participantIds;
     const p0 = placeOf(0);
@@ -695,6 +695,13 @@ describe('roster, leaving and places', () => {
     const later = await realInstance(fx.pactId, 13 * 60, 14 * 60, 'scheduled', '2099-01-02');
 
     await join(a, fx.pactId, HOME.lat, HOME.lng, 150, 'new gym');
+    // another member confirms the change at once: it still waits the 12 h minimum (places.test.ts)
+    await asUser(db, fx.userIds[3], (d) =>
+      d.query(
+        `select public.acknowledge_place((select id from public.pact_participant_places where pact_id = $1 and user_id = $2 order by created_at desc limit 1))`,
+        [fx.pactId, a],
+      ),
+    );
     expect((await hist()).map((h) => [h.lat, h.radius_m, h.delay_s])).toEqual([
       [p0.lat, 100, 0],
       [HOME.lat, 150, 12 * 3600],
@@ -728,7 +735,7 @@ describe('roster, leaving and places', () => {
     });
   });
 
-  it('rejoining with a different place is a place change (12 hours), not a first join', async () => {
+  it('rejoining with a different place is a place change (24 hours unless confirmed), not a first join', async () => {
     const fx = await setup(db, { members: 3 });
     const [, b] = fx.participantIds;
     await leave(b, fx.groupId);
@@ -743,7 +750,7 @@ describe('roster, leaving and places', () => {
       ),
     ).toEqual([
       { lat: placeOf(1).lat, delay_s: 0 },
-      { lat: 47.7, delay_s: 12 * 3600 },
+      { lat: 47.7, delay_s: 24 * 3600 },
     ]);
   });
 });

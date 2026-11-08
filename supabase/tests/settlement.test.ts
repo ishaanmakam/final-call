@@ -287,6 +287,37 @@ describe('settlement contents', () => {
     ]);
   });
 
+  it('an appeal nobody votes on changes nothing: same obligations as without the appeal, no correction entry (N3-1)', async () => {
+    const i = await closedInstance(db, pact, '2026-10-28', [
+      [u[0], 'success'],
+      [u[1], 'failed'],
+      [u[2], 'failed'],
+    ]);
+    await payout(db, i);
+    const posted = await rows(db, `select kind::text, idempotency_key from public.ledger_entries where instance_id = $1 order by id`, [i]);
+    const appeal = await asUser(db, u[1], (d) =>
+      scalar<string>(d, `select public.open_review($1, $2, 'appeal'::public.review_kind, 'late Sunday night', null)`, [i, u[1]]),
+    );
+    expect(await settle(db, '2026-11-02T20:00:00Z')).toBe(1);
+    expect(await scalar(db, `select status::text from public.reviews where id = $1`, [appeal])).toBe('defaulted');
+    expect(await scalar(db, `select status::text from public.results where instance_id = $1 and user_id = $2`, [i, u[1]])).toBe('failed');
+    expect(await instStatus(db, i)).toBe('settled');
+    // ledger: exactly what the payout posted, nothing corrected
+    expect(await rows(db, `select kind::text, idempotency_key from public.ledger_entries where instance_id = $1 order by id`, [i])).toEqual(posted);
+    expect(await scalar(db, `select count(*)::int from public.ledger_entries where instance_id = $1 and kind = 'correction'`, [i])).toBe(0);
+    // obligations are the ones a plain loss produces
+    const bal = await balances(db, fx.groupId);
+    expect(bal).toMatchObject({ [u[0]]: 1000, [u[1]]: -500, [u[2]]: -500 });
+    const obs = await obligations(db, fx.groupId, 'pending');
+    expect(obs.map((o) => [o.from_user, o.to_user, Number(o.amount_cents)])).toEqual([
+      [u[1], u[0], 500],
+      [u[2], u[0], 500],
+    ]);
+    expect(obs.map((o) => [o.from_user, o.to_user, Number(o.amount_cents)].join('|')).sort()).toEqual(
+      simplifyDebts(bal).obligations.map((o) => [o.from, o.to, o.amountCents].join('|')).sort(),
+    );
+  });
+
   it('calls default_open_reviews(group, end of week) before settling the week', async () => {
     await db.exec(`
       create table public._spy (group_id uuid, p_until timestamptz, settled_at_call int);

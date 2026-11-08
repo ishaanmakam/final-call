@@ -1,17 +1,18 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { Linking, StyleSheet, View } from 'react-native';
+import { AppState, Linking, StyleSheet, View } from 'react-native';
 import { usePactDetail, usePlaceSchedule, type PlaceSchedule } from '@/api/queries';
 import { joinPact } from '@/api/rpc';
 import { Button, Card, EmptyState, ListGroup, ListRow, Screen, SkeletonCard, Text, TextField } from '@/components';
 import { RadiusSlider } from '@/components/RadiusSlider';
+import { APPROXIMATE_LOCATION_HEADLINE, approximateLocationBody } from '@/features/checkin/copy';
+import { PLACE_RULE_CHANGE, PLACE_RULE_CHANGE_MIN, PLACE_RULE_JOIN } from '@/features/place/placeCopy';
 import { placeSaveState } from '@/features/place/placeRules';
 import { RADIUS_DEFAULT, accuracyLine, isRoughFix } from '@/features/place/radius';
 import { useUserId } from '@/lib/auth';
 import { userMessage } from '@/lib/errors';
-import { FixTimeoutError, ensureForegroundPermission, takeHighAccuracyFix, type PermissionOutcome } from '@/lib/location';
-import { PLACE_CHANGE_LEAD_HOURS } from '@/lib/places';
+import { FixTimeoutError, ensurePreciseForegroundPermission, takeHighAccuracyFix, type PreciseOutcome } from '@/lib/location';
 import { formatDateInZone, formatTimeInZone } from '@/lib/time';
 import { useNow } from '@/lib/useNow';
 import { haptic, space, useTheme } from '@/theme';
@@ -23,7 +24,13 @@ interface Spot {
   accuracy: number | null;
 }
 
-type Problem = { kind: 'permission'; outcome: Exclude<PermissionOutcome, 'granted'> } | { kind: 'nofix' } | { kind: 'other'; message: string };
+type Problem = { kind: 'permission'; outcome: Exclude<PreciseOutcome, 'granted'> } | { kind: 'nofix' } | { kind: 'other'; message: string };
+
+/** The place screen's version of the check-in refusal: an Approximate fix cannot draw a circle either (N2-5, NI-3). */
+const APPROXIMATE_PLACE_BODY = approximateLocationBody({
+  consequence: "can't place your circle, so nothing was captured",
+  next: 'capture your place',
+});
 
 const at = (iso: string, tz: string) => `${formatDateInZone(iso, tz)} at ${formatTimeInZone(iso, tz)}`;
 
@@ -61,11 +68,25 @@ export default function PlacePicker() {
     }
   }, [mine, spot]);
 
+  // a blocked permission or Approximate Location re-checks itself when the person comes back from Settings
+  const settingsProblem = problem?.kind === 'permission' && (problem.outcome === 'blocked' || problem.outcome === 'approximate');
+  useEffect(() => {
+    if (!settingsProblem) return;
+    const sub = AppState.addEventListener('change', (s) => {
+      if (s !== 'active') return;
+      void ensurePreciseForegroundPermission().then((p) => {
+        if (p === 'granted') setProblem(null);
+      });
+    });
+    return () => sub.remove();
+  }, [settingsProblem]);
+
   const captureLocation = async () => {
     setProblem(null);
     setLocating(true);
     try {
-      const permission = await ensureForegroundPermission();
+      // precise accuracy is required: a kilometre-level fix cannot set a circle (same rule as the check-in tap)
+      const permission = await ensurePreciseForegroundPermission();
       if (permission !== 'granted') {
         setProblem({ kind: 'permission', outcome: permission });
         haptic('error');
@@ -173,8 +194,8 @@ export default function PlacePicker() {
       <View style={styles.intro}>
         <Text variant="headline">{pact.title}</Text>
         <Text variant="subheadline" color="secondary">
-          Everyone sets their own place. Stand where you need to be, then capture it. You're in when your GPS fix
-          lands inside this circle.
+          Everyone sets their own place and everyone sees everyone's. Stand where you need to be, then capture it.
+          You're in when your GPS fix lands inside this circle.
         </Text>
       </View>
 
@@ -194,14 +215,16 @@ export default function PlacePicker() {
             <Card>
               <EmptyState
                 icon="location"
-                title="Location is off for Show Up"
+                title={problem.outcome === 'approximate' ? APPROXIMATE_LOCATION_HEADLINE : 'Location is off for Show Up'}
                 body={
-                  problem.outcome === 'blocked'
-                    ? 'Location is turned off for Show Up in iOS Settings. Turn it on, then come back and capture your place.'
-                    : 'Setting a place needs your location once. Allow "While Using the App".'
+                  problem.outcome === 'approximate'
+                    ? APPROXIMATE_PLACE_BODY
+                    : problem.outcome === 'blocked'
+                      ? 'Location is turned off for Show Up in iOS Settings. Turn it on, then come back and capture your place.'
+                      : 'Setting a place needs your location once. Allow "While Using the App".'
                 }
                 action={
-                  problem.outcome === 'blocked'
+                  problem.outcome === 'blocked' || problem.outcome === 'approximate'
                     ? { label: 'Open Settings', onPress: () => void Linking.openSettings() }
                     : { label: 'Allow location', onPress: () => void captureLocation() }
                 }
@@ -283,8 +306,8 @@ export default function PlacePicker() {
               rules.locked
                 ? "Today's window is open, so you're judged against the place you already saved."
                 : rules.mode === 'join'
-                  ? 'Takes effect right away.'
-                  : `New places apply to check-in windows that open ${PLACE_CHANGE_LEAD_HOURS} or more hours from now. Until then you're judged against ${mine?.place_label ?? 'your current place'}.`
+                  ? PLACE_RULE_JOIN
+                  : `${PLACE_RULE_CHANGE} ${PLACE_RULE_CHANGE_MIN} Until then you're judged against your current place.`
             }
           >
             <ListRow
@@ -300,15 +323,17 @@ export default function PlacePicker() {
 
 function SavedSummary({ schedule, tz, label, radius }: { schedule: PlaceSchedule; tz: string; label: string; radius: number }) {
   const { nextInstance, nextPlace, latestSaved } = schedule;
-  const deferred = latestSaved && nextPlace && latestSaved !== nextPlace;
+  const deferred = latestSaved && latestSaved !== nextPlace && Date.parse(latestSaved.effective_from) > Date.now();
   return (
     <ListGroup
       header="Saved"
       footer={
         deferred && latestSaved
-          ? `${latestSaved.label ?? label} applies from ${at(latestSaved.effective_from, tz)}.`
+          ? latestSaved.requires_ack
+            ? `${latestSaved.label ?? label} counts as soon as a friend confirms it (not before ${at(new Date(Date.parse(latestSaved.created_at) + 12 * 3_600_000).toISOString(), tz)}), or from ${at(latestSaved.effective_from, tz)} if nobody objects. Your friends have been told.`
+            : `${latestSaved.label ?? label} applies from ${at(latestSaved.effective_from, tz)}.`
           : nextInstance
-            ? 'Your place is set for the next window.'
+            ? 'Your place is set for the next window. Your friends see it and can object within 24 hours.'
             : 'Your place is saved. Days appear up to a week ahead.'
       }
     >

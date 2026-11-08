@@ -247,11 +247,34 @@ describe('default_open_reviews', () => {
 
     expect(await resultOf(inst, a)).toEqual({ status: 'success', first: at(MON_OPEN, 10) });
     expect(await resultOf(inst, b)).toEqual({ status: 'success', first: at(MON_OPEN, 11) });
-    expect(await resultOf(inst, c)).toEqual({ status: 'excluded', first: null });
+    expect(await resultOf(inst, c)).toEqual({ status: 'failed', first: null }); // N3-1: a defaulted appeal leaves the result
     expect(await resultOf(inst, d)).toEqual({ status: 'success', first: MON_DEADLINE });
     expect(await resultOf(inst, e)).toEqual({ status: 'failed', first: null });
     expect(await corrections(inst)).toBeGreaterThanOrEqual(1);
     expect(await run(at(MON_DEADLINE, 60 * 24))).toBe(0);
+  });
+
+  it('a defaulted appeal leaves the original result standing: never excluded, result row untouched', async () => {
+    const { fx, inst, u } = await closedInstance(['success', 'failed', 'unverified', 'failed']);
+    const [a, b, c, d] = u;
+    const before = await rows<{ status: string; decided_at: Date }>(
+      db, `select status::text, decided_at from public.results where instance_id = $1 and user_id = $2`, [inst, b]);
+    const appeal = await open(b, inst, b, 'appeal');
+    // d also appeals; a single "they didn't" vote is a majority of votes cast at settlement -> rejected, also unchanged
+    const rejected = await open(d, inst, d, 'appeal');
+    await vote(a, rejected, false);
+    const run = (until: string) => asService(db, (x) => scalar<number>(x, `select public.default_open_reviews($1, $2::timestamptz)`, [fx.groupId, until]));
+    expect(await run(at(MON_DEADLINE, 60 * 24))).toBe(2);
+    expect(await reviewStatus(appeal)).toBe('defaulted');
+    expect(await reviewStatus(rejected)).toBe('rejected');
+    expect(await resultOf(inst, b)).toEqual({ status: 'failed', first: null });
+    expect(await resultOf(inst, d)).toEqual({ status: 'failed', first: null });
+    expect(await resultOf(inst, c)).toEqual({ status: 'unverified', first: null });
+    // the result row was not rewritten (same decided_at): nothing for the ledger to correct
+    expect(await rows(db, `select status::text, decided_at from public.results where instance_id = $1 and user_id = $2`, [inst, b])).toEqual(before);
+    expect(await scalar(db, `select count(*)::int from public.results where status = 'excluded'`)).toBe(0);
+    // one appeal per person, ever: the default cannot be retried
+    expect(await code(open(b, inst, b, 'appeal'))).toBe('23514');
   });
 });
 

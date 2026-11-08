@@ -289,9 +289,9 @@ Changes: intro paragraph (`:240-243`); `Excluded this month` first (`:244-253`);
 - Actions: on your own `Missed` row, a swipe action and context-menu item `Appeal…`; on others' `Showed up` / `Unverified`, context-menu `Challenge…`. A row with an available action also shows a small tinted text button so it is discoverable: `Appeal` / `Challenge`.
 - Review (inline expansion under the row):
   - Appeal: `{You} appealed: "{reason}"` · `Challenge: {Sam} challenged: "{reason}"`.
-  - Status line: `Voting open · 1 says they showed up, 0 say they didn't` / `Upheld` / `Turned down` / `No votes, so {excluded / result stands}`.
+  - Status line: `Voting open · 1 says they showed up, 0 say they didn't` / `Upheld` / `Turned down` / `No votes, so {the miss stands / the result stands}` (N3-1: an unvoted appeal no longer excludes the day).
   - Vote buttons (appeal): primary `They showed up` · secondary `They didn't`. (Challenge): primary `They didn't show up` · secondary `Result stands`. After voting: `You said they showed up · Change`.
-  - Footnote under an open appeal: `If nobody votes by Monday noon, the day is excluded: no pledge moves either way.` Under an open challenge: `If nobody votes by Monday noon, the result stands.`
+  - Footnote under an open appeal: `If nobody votes by Monday noon, the miss stands and the pledge is forfeited.` (was "the day is excluded: no pledge moves either way" before N3-1). Under an open challenge: `If nobody votes by Monday noon, the result stands.`
 - Review form (`formSheet`): title `Appeal {Mon, Nov 10}` / `Challenge {Sam}'s {Mon, Nov 10}`; `TextField` multiline label `What happened?` placeholder `I was in the back row, GPS put me in the courtyard.` (appeal) / `They left the building before 9.` (challenge); `Add a photo` row (appeal only) → `Photo attached · Change`; right nav `Send`. Validation: `Say briefly what happened.` (keep).
 - Excluded counts: a footnote under the Members section on group home: `Excluded this month: {Sam} 1.` Not a card in the feed.
 - Empty: `No results yet. Days show up here after their deadline.`

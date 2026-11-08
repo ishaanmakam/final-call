@@ -3,12 +3,21 @@ import {
   canVoteOn,
   defaultFootnote,
   myVoteText,
+  openerLine,
   reviewOutcomeText,
   reviewSheetCopy,
   tally,
   tallyText,
   voteLabels,
 } from './reviewCopy';
+
+describe('openerLine', () => {
+  it('names the opener, or the unverified budget when the server opened the review', () => {
+    expect(openerLine('appeal', 'Priya')).toBe('Priya appealed');
+    expect(openerLine('challenge', 'Maya')).toBe('Maya challenged');
+    expect(openerLine('challenge', 'Priya', true)).toBe('Automatic review: 3rd unverified day this month');
+  });
+});
 
 describe('vote words', () => {
   it('name the outcome, never agree / disagree', () => {
@@ -39,10 +48,12 @@ describe('vote words', () => {
 });
 
 describe('outcomes', () => {
-  it('spells out the silent default per kind', () => {
-    expect(defaultFootnote('appeal')).toMatch(/excluded/);
+  it('spells out the silent default per kind: the result stands either way (N3-1), never "excluded"', () => {
+    expect(defaultFootnote('appeal')).toMatch(/miss stands/);
+    expect(defaultFootnote('appeal')).toMatch(/forfeit/);
+    expect(defaultFootnote('appeal')).not.toMatch(/exclud/i);
     expect(defaultFootnote('challenge')).toMatch(/result stands/);
-    expect(reviewOutcomeText({ kind: 'appeal', status: 'defaulted' })).toBe('No votes, so the day was excluded');
+    expect(reviewOutcomeText({ kind: 'appeal', status: 'defaulted' })).toBe('No votes, so the miss stands');
     expect(reviewOutcomeText({ kind: 'challenge', status: 'defaulted' })).toBe('No votes, so the result stands');
   });
 

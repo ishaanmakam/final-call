@@ -138,6 +138,46 @@ export function panelForPermission(blocked: boolean): VerdictPanel {
       };
 }
 
+/**
+ * iOS Approximate Location (DECISIONS.md N2-5): nothing is sent. Unlike weak GPS this is the person's
+ * own setting, so the money consequence is the opposite of fail-open and the copy says so plainly.
+ * Re-checked on foreground after "Open Settings", like the blocked panel.
+ */
+export function panelForApproximate(): VerdictPanel {
+  return {
+    headline: APPROXIMATE_LOCATION_HEADLINE,
+    body: approximateLocationBody({ consequence: "can't be judged against your circle, so nothing was sent", next: 'tap Check in' }),
+    footnote:
+      'Without Precise Location today counts as missed and your pledge is forfeited, not unverified: turning it off is a choice, not a tracking failure.',
+    tone: 'neutral',
+    haptic: 'error',
+    action: 'openSettings',
+  };
+}
+
+/** Shared with the place screen: the same words wherever an Approximate-Location fix is refused. */
+export const APPROXIMATE_LOCATION_HEADLINE = 'Precise Location is off';
+
+/**
+ * "Show Up only gets your approximate location (about a kilometre), which {consequence}. In Settings
+ * → Show Up → Location, turn on Precise Location, then come back and {next}."
+ */
+export function approximateLocationBody(p: { consequence: string; next: string }): string {
+  return `Show Up only gets your approximate location (about a kilometre), which ${p.consequence}. In Settings → Show Up → Location, turn on Precise Location, then come back and ${p.next}.`;
+}
+
+/**
+ * The unverified budget (CONTRACT.md "Review"): the third unverified day in a pact in a calendar
+ * month opens an automatic challenge the group votes on. Shown only from the first unverified day.
+ */
+export function budgetLine(count: number): string | null {
+  if (!Number.isFinite(count) || count < 1) return null;
+  const n = Math.floor(count);
+  if (n === 1) return '1 unverified this month. Two more and the group votes on it.';
+  if (n === 2) return '2 unverified this month. One more and the group votes on it.';
+  return `${n} unverified this month. Another one goes to a group vote.`;
+}
+
 /** A server refusal or an unexpected error, mapped through lib/errors so no raw text reaches the UI. */
 export function panelForError(error: unknown): VerdictPanel {
   const body = userMessage(error);

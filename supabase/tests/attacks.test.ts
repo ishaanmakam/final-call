@@ -291,6 +291,27 @@ describe('review attacks', () => {
     expect(await code(openReview(c, inst, c, 'appeal'))).toBe('23514');
   });
 
+  it('appealing every loss and hoping nobody votes costs exactly what the loss cost (N3-1: a defaulted appeal is not "excluded")', async () => {
+    const fx = await fixture(4);
+    const inst = await closedInstance(fx, ['success', 'success', 'failed', 'failed']);
+    const [a, , c, d] = fx.participantIds;
+    const control = await closedInstance(fx, ['success', 'success', 'failed', 'failed']);
+    const balance = (u: string) => scalar<number>(db, `select balance_cents::int from public.member_balances where user_id = $1`, [u]);
+    expect(await balance(c)).toBe(-1000);
+    await openReview(c, inst, c, 'appeal'); // Sunday night, nobody votes
+    await openReview(c, control, c, 'appeal');
+    await asService(db, (d) => d.query(`select public.default_open_reviews($1, now() + interval '1 day')`, [fx.groupId]));
+    expect(await rows(db, `select status::text from public.reviews where subject_user_id = $1`, [c])).toEqual([{ status: 'defaulted' }, { status: 'defaulted' }]);
+    expect(await resultOf(inst, c)).toBe('failed');
+    expect(await resultOf(control, c)).toBe('failed');
+    expect(await balance(c)).toBe(-1000); // both forfeits stand
+    expect(await balance(d)).toBe(-1000); // and the non-appealing loser is no worse off than the appealing one
+    expect(await balance(a)).toBe(1000); // 500 from each instance's pot
+    expect(await scalar<number>(db, `select count(*)::int from public.ledger_entries where kind = 'correction'`)).toBe(0);
+    expect(await scalar<number>(db, `select count(*)::int from public.results where status = 'excluded'`)).toBe(0);
+    expect(await code(openReview(c, inst, c, 'appeal'))).toBe('23514'); // and it cannot be retried
+  });
+
   it('a rejected appeal cannot be turned into "excluded" by re-appealing and waiting for the default', async () => {
     const fx = await fixture(4);
     const inst = await closedInstance(fx, ['success', 'success', 'failed', 'failed']);
@@ -528,6 +549,7 @@ const CLIENT_RPCS: [string, string[]][] = [
   ['open_review', ['uuid', 'uuid', 'public.review_kind', 'text', 'text']], ['cast_vote', ['uuid', 'boolean']],
   ['mark_obligation_paid', ['uuid']], ['confirm_obligation', ['uuid']], ['dispute_obligation', ['uuid']],
   ['register_push_token', ['text', 'text']],
+  ['acknowledge_place', ['uuid']], ['object_place', ['uuid', 'text']], ['pact_place_distances', ['uuid']],
 ];
 const callSql = (fn: string, types: string[]) => `select public.${fn}(${types.map((t) => `null::${t}`).join(', ')})`;
 
@@ -555,7 +577,14 @@ describe('service-only functions', () => {
     );
     expect(fns.filter((f) => f.secdef && f.anon).map((f) => f.name)).toEqual([]);
     expect(fns.filter((f) => f.secdef && f.auth && !allow.has(f.name)).map((f) => f.name)).toEqual([]);
-    expect(fns.filter((f) => f.name.startsWith('_') && (f.auth || f.anon)).map((f) => f.name)).toEqual([]);
+    // _place_row_at is the one underscore helper a client role may run: the security-invoker view
+    // pact_places_visible calls it as the member and it reads only RLS-visible rows (N1-7, NI-1).
+    // It must stay a plain function (never SECURITY DEFINER) and must never reach anon.
+    const helperException = new Set(['_place_row_at']);
+    expect(fns.filter((f) => f.name.startsWith('_') && !helperException.has(f.name) && (f.auth || f.anon)).map((f) => f.name)).toEqual([]);
+    for (const name of helperException) {
+      expect(fns.find((f) => f.name === name), name).toMatchObject({ secdef: false, anon: false });
+    }
   });
 });
 

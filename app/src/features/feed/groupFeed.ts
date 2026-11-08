@@ -5,9 +5,9 @@
  * recomputed on the client.
  */
 import type { FeedItem } from '../../api/queries';
-import type { PactInstanceRow, PactRow, ProfileRow, ResultStatus } from '../../api/types';
+import type { PactInstanceRow, PactPlaceVisibleRow, PactRow, PlaceEventRow, ProfileRow, ResultStatus } from '../../api/types';
 import { formatCents } from '../../lib/money';
-import { formatDateInZone, formatTimeInZone } from '../../lib/time';
+import { formatDateInZone, formatTimeInZone, localDateInZone } from '../../lib/time';
 
 export interface InstanceGroup {
   key: string;
@@ -106,6 +106,74 @@ export function groupFeedByDay(items: readonly FeedItem[], n: Namer): DaySection
   return out.sort((a, b) => b.key.localeCompare(a.key));
 }
 
+// ---------- place events in the feed ----------
+
+export interface InstanceEntry {
+  kind: 'instance';
+  key: string;
+  group: InstanceGroup;
+}
+
+export interface PlaceEventEntry {
+  kind: 'place';
+  key: string;
+  event: PlaceEventRow;
+  pact: PactRow;
+  /** the place row today, when it still exists (actions and the current state come from it) */
+  place: PactPlaceVisibleRow | null;
+}
+
+export type FeedEntry = InstanceEntry | PlaceEventEntry;
+
+export interface FeedDaySection {
+  key: string;
+  title: string;
+  data: FeedEntry[];
+}
+
+/**
+ * The feed: result groups (groupFeedByDay) and place events, by local day newest first; inside a
+ * day newest first by the instance deadline or the event time. Events for pacts that are gone
+ * are dropped.
+ */
+export function feedSections(
+  items: readonly FeedItem[],
+  events: readonly PlaceEventRow[],
+  pacts: readonly PactRow[],
+  placesById: ReadonlyMap<string, PactPlaceVisibleRow>,
+  n: Namer,
+): FeedDaySection[] {
+  const days = new Map<string, FeedDaySection>();
+  const stamp = new Map<string, number>();
+  const push = (dayKey: string, title: string, entry: FeedEntry, at: number) => {
+    let day = days.get(dayKey);
+    if (!day) {
+      day = { key: dayKey, title, data: [] };
+      days.set(dayKey, day);
+    }
+    day.data.push(entry);
+    stamp.set(entry.key, at);
+  };
+  for (const section of groupFeedByDay(items, n)) {
+    for (const g of section.data) push(section.key, section.title, { kind: 'instance', key: g.key, group: g }, Date.parse(g.instance.deadline_at));
+  }
+  for (const e of events) {
+    const pact = pacts.find((p) => p.id === e.pact_id);
+    if (!pact) continue;
+    const at = Date.parse(e.created_at);
+    push(localDateInZone(at, pact.tz), formatDateInZone(e.created_at, pact.tz), {
+      kind: 'place',
+      key: `place-event:${e.id}`,
+      event: e,
+      pact,
+      place: e.place_id ? (placesById.get(e.place_id) ?? null) : null,
+    }, at);
+  }
+  const out = [...days.values()];
+  for (const d of out) d.data.sort((a, b) => (stamp.get(b.key) ?? 0) - (stamp.get(a.key) ?? 0));
+  return out.sort((a, b) => b.key.localeCompare(a.key));
+}
+
 /** "9:00 AM · $5.00 pledge" */
 export function instanceSubtitle(g: InstanceGroup): string {
   return `${formatTimeInZone(g.instance.deadline_at, g.pact.tz)} · ${formatCents(g.pact.stake_cents)} pledge`;
@@ -175,12 +243,3 @@ export function personDetail(item: FeedItem, g: InstanceGroup): string | undefin
 }
 
 const capitalize = (s: string): string => (s.length ? s.charAt(0).toUpperCase() + s.slice(1) : s);
-
-/** "Excluded this month: Diego 1, Priya 1." or null when nobody was. */
-export function excludedFootnote(excluded: Map<string, number>, n: Namer): string | null {
-  if (excluded.size === 0) return null;
-  const parts = [...excluded.entries()]
-    .sort((a, b) => b[1] - a[1] || nameOf(n, a[0]).localeCompare(nameOf(n, b[0])))
-    .map(([id, count]) => `${nameOf(n, id)} ${count}`);
-  return `Excluded this month: ${parts.join(', ')}. An appeal nobody votes on excludes the day for that person.`;
-}

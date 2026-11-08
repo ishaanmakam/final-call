@@ -160,6 +160,13 @@ const disputeObligationReal = (obligationId: string) =>
 const registerPushTokenReal = (token: string, platform: string) =>
   call('register_push_token', { p_token: token, p_platform: platform });
 
+/** Another member confirms a changed place; it counts from then (never before 12 h after the change). */
+const acknowledgePlaceReal = (placeId: string) => call('acknowledge_place', { p_place: placeId });
+
+/** Another member blocks a place set in the last 24 h; the owner must set a new one. */
+const objectPlaceReal = (placeId: string, reason: string) =>
+  call('object_place', { p_place: placeId, p_reason: reason.trim() });
+
 // ---------- demo-mode switch ----------
 // With EXPO_PUBLIC_DEMO=1 every RPC resolves against the in-memory fixtures (see ./demo).
 
@@ -178,3 +185,5 @@ export const markObligationPaid = DEMO ? demo.markObligationPaid : markObligatio
 export const confirmObligation = DEMO ? demo.confirmObligation : confirmObligationReal;
 export const disputeObligation = DEMO ? demo.disputeObligation : disputeObligationReal;
 export const registerPushToken = DEMO ? demo.registerPushToken : registerPushTokenReal;
+export const acknowledgePlace = DEMO ? demo.acknowledgePlace : acknowledgePlaceReal;
+export const objectPlace = DEMO ? demo.objectPlace : objectPlaceReal;

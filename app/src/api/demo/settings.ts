@@ -13,6 +13,8 @@
  *   ?freeze=1       the clock stops at the fixture anchor (deterministic countdowns)
  *   ?settle=owe|owed   settle-up variants: only obligations you pay / only ones paid to you
  *   ?fix=none       the GPS fix times out on the check-in tap (fail-open: sent without coordinates)
+ *   ?precise=0      iOS Approximate Location: the check-in tap refuses to send and points to Settings
+ *   ?budget=N       N unverified days this month in this pact (0-9; the check-in screen's budget line)
  */
 import type { CheckinVerdict } from '../types';
 
@@ -33,6 +35,10 @@ export interface DemoSettings {
   freeze: boolean;
   settle: DemoSettleVariant;
   fix: DemoFix;
+  /** false = iOS Approximate Location (reduced accuracy authorization) */
+  precise: boolean;
+  /** unverified days this month in the open instance's pact (the check-in screen's budget line) */
+  budget: number;
 }
 
 export const DEFAULT_DEMO_SETTINGS: DemoSettings = {
@@ -44,6 +50,8 @@ export const DEFAULT_DEMO_SETTINGS: DemoSettings = {
   freeze: false,
   settle: 'mixed',
   fix: 'ok',
+  precise: true,
+  budget: 0,
 };
 
 const VERDICTS: readonly CheckinVerdict[] = ['in_fence', 'out_of_fence', 'unjudgeable', 'rejected_simulated'];
@@ -58,6 +66,10 @@ const one = (v: string | string[] | undefined): string | undefined => (Array.isA
 const flag = (v: string | string[] | undefined): boolean => {
   const s = one(v);
   return s === '1' || s === 'true';
+};
+const digit = (v: string | string[] | undefined, fallback: number): number => {
+  const s = one(v);
+  return s !== undefined && /^[0-9]$/.test(s) ? Number(s) : fallback;
 };
 const pick = <T extends string>(v: string | string[] | undefined, allowed: readonly T[], fallback: T): T => {
   const s = one(v);
@@ -74,6 +86,8 @@ export function demoSettingsFromParams(params: Params): DemoSettings {
     freeze: flag(params.freeze),
     settle: pick(params.settle, SETTLES, DEFAULT_DEMO_SETTINGS.settle),
     fix: pick(params.fix, FIXES, DEFAULT_DEMO_SETTINGS.fix),
+    precise: one(params.precise) !== '0' && one(params.precise) !== 'false',
+    budget: digit(params.budget, DEFAULT_DEMO_SETTINGS.budget),
   };
 }
 
@@ -92,7 +106,9 @@ export function setDemoSettings(next: DemoSettings): void {
     next.signedOut === current.signedOut &&
     next.freeze === current.freeze &&
     next.settle === current.settle &&
-    next.fix === current.fix
+    next.fix === current.fix &&
+    next.precise === current.precise &&
+    next.budget === current.budget
   ) {
     return;
   }

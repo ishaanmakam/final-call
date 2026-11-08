@@ -106,6 +106,8 @@ Route params steer the scenario (web: the URL query; native: any `router.push` w
 | `?freeze=1` | stops the clock at the fixture anchor (deterministic countdowns) |
 | `?settle=owe\|owed` | settle-up variants: only obligations you pay / only ones paid to you |
 | `?fix=none` | the GPS fix times out on the Check In tap (sent without coordinates: unverified, never missed) |
+| `?precise=0` | iOS Approximate Location: the Check In tap sends nothing and points to Settings (the day would count as missed) |
+| `?budget=N` | N unverified days this month in the open instance's pact (0-9): the check-in screen's "N unverified this month" line |
 
 Demo ids: group `g1` (empty group `g-empty`), pacts `p1`..`p5` (`p5` "Chem lab by 2" is one you are not in), today's instances `i-open`, `i-before`, `i-closed`, `i-void`, `i-frozen`, `i-notin`, invite code `KANE9AM`.
 
@@ -190,7 +192,7 @@ Then in `types.ts`, replace the hand-written `Database` with `export type { Data
 ## How check-in works
 
 1. The button is enabled only while `window_open_at <= now <= deadline_at` and the instance isn't closed.
-2. Tapping asks for When-In-Use permission if needed, then takes exactly one `getCurrentPositionAsync({ accuracy: Accuracy.Highest })` fix (25 s timeout). Location is read nowhere else except when you set your place.
+2. Tapping asks for When-In-Use permission if needed, then takes exactly one `getCurrentPositionAsync({ accuracy: Accuracy.Highest })` fix (25 s timeout). Location is read nowhere else except when you set your place. If the permission response reports reduced accuracy (iOS Approximate Location), nothing is sent: the screen explains that such a day counts as missed and offers Open Settings (`features/checkin/precision.ts`).
 3. The fix goes to `check_in` with `p_client_captured_at` set to the fix's own timestamp and `p_is_simulated` from `mocked`.
 4. If the request fails for network reasons (status 0, timeout after 15 s, 5xx, 401), the attempt is saved in the offline queue and the screen says so. Business-rule rejections are shown, not queued.
 5. If no GPS fix arrives, you can send an attempt with null coordinates, which the contract judges `unjudgeable`, so the day becomes unverified instead of missed.
@@ -217,6 +219,9 @@ The client needs these, which are not in CONTRACT.md yet:
 5. `check_in` should accept null `p_lat`/`p_lng`/`p_accuracy_m` ("no fix", judged `unjudgeable` by the existing rule).
 6. A `profiles` row is created for each new auth user (trigger), since the app only updates it.
 7. Notification payload `data` should include `instance_id` (opens check-in), `group_id` (opens group) or `url` (an in-app path).
+8. Place accountability (`20261108000100_place_accountability.sql`): view `pact_places_visible` (every current participant's place rows with `state`, `is_current`, `acknowledgeable`, `objectable`), table `place_events` (feed rows), RPCs `acknowledge_place(p_place)`, `object_place(p_place, p_reason)` and `pact_place_distances(p_pact)` (metres from each place to the others' places in force). `pact_participant_places` carries `id`, `requires_ack`, `acknowledged_*`, `objected_*`, `objection_reason`. A participant with no place in force at window open is not on that day's roster (`lib/places.ts#placeForWindow` returns null).
+9. Notification kind `place_changed` (payload `event` = created / acknowledged / objected / effective, `url` = `/pacts/<id>`); the push function needs a renderer for it.
+8. The view `unverified_month_counts(pact_id, user_id, month, count)` (`20261108000200`), read by `features/checkin/useUnverifiedBudget.ts`; `reviews.system_opened` marks the automatic challenge the third unverified day of a pact-month opens (CONTRACT.md "Unverified budget"). Neither is in `api/types.ts` yet.
 
 ## Known limitations
 

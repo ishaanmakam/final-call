@@ -4,7 +4,7 @@ const BUNDLE_ID = process.env.IOS_BUNDLE_ID ?? 'com.ishaanmakam.showup';
 const EAS_PROJECT_ID = process.env.EAS_PROJECT_ID || undefined;
 
 const LOCATION_WHEN_IN_USE =
-  'Show Up reads your location once, only when you tap Check In during a pact window, to confirm you made it to your place. It never tracks you in the background.';
+  'Show Up reads your location once, only when you tap Check In during a pact window, to confirm you made it to your place. Keep Precise Location on: an approximate location cannot be judged. It never tracks you in the background.';
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,

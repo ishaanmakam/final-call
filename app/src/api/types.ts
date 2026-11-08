@@ -69,10 +69,14 @@ export type PactParticipantRow = {
 };
 
 /**
- * Place history: a change takes effect for windows opening 12+ hours after it is saved.
- * The place that applies to an instance is the row with the latest effective_from <= window_open_at.
+ * Place history (20261108000100_place_accountability.sql). A first place counts at once. A change
+ * counts from `effective_from`: 24 h after it was saved, moved earlier (never before 12 h) when
+ * another member confirms it (`acknowledged_*`); an objection (`objected_*`) blocks it for good.
+ * The place that applies to an instance is the latest row with effective_from <= window_open_at
+ * that was not objected to by then.
  */
 export type PactParticipantPlaceRow = {
+  id: string;
   pact_id: string;
   user_id: string;
   lat: number;
@@ -81,6 +85,86 @@ export type PactParticipantPlaceRow = {
   label: string | null;
   effective_from: string;
   created_at: string;
+  /** true when another member had to confirm it (a change while others are in the group) */
+  requires_ack: boolean;
+  acknowledged_at: string | null;
+  acknowledged_by: string | null;
+  objected_at: string | null;
+  objected_by: string | null;
+  objection_reason: string | null;
+  /** when the tick posted the "now counts" feed event for an unconfirmed, unobjected change */
+  effective_event_at: string | null;
+};
+
+export type PlaceState = 'effective' | 'pending' | 'objected' | 'superseded';
+
+/** View `pact_places_visible`: every current participant's place rows, readable by the group. */
+export type PactPlaceVisibleRow = {
+  place_id: string;
+  pact_id: string;
+  group_id: string;
+  user_id: string;
+  user_name: string | null;
+  lat: number;
+  lng: number;
+  radius_m: number;
+  label: string | null;
+  created_at: string;
+  effective_from: string;
+  requires_ack: boolean;
+  acknowledged_at: string | null;
+  acknowledged_by: string | null;
+  acknowledged_by_name: string | null;
+  objected_at: string | null;
+  objected_by: string | null;
+  objected_by_name: string | null;
+  objection_reason: string | null;
+  /** the row in force right now */
+  is_current: boolean;
+  state: PlaceState;
+  /** another member may confirm it now (not the owner) */
+  acknowledgeable: boolean;
+  /** another member may object now (24 h after it was set, unless confirmed) */
+  objectable: boolean;
+};
+
+export type PlaceEventKind = 'created' | 'acknowledged' | 'objected' | 'effective';
+
+/** Table `place_events`: the feed rows for places (snapshots; `place_id` is null once a pending place was replaced). */
+export type PlaceEventRow = {
+  id: number;
+  group_id: string;
+  pact_id: string;
+  place_id: string | null;
+  /** whose place */
+  user_id: string;
+  /** who did it: the setter, the confirmer or the objector */
+  actor_id: string;
+  kind: PlaceEventKind;
+  label: string | null;
+  lat: number | null;
+  lng: number | null;
+  radius_m: number | null;
+  prev_label: string | null;
+  prev_lat: number | null;
+  prev_lng: number | null;
+  prev_radius_m: number | null;
+  distance_from_prev_m: number | null;
+  reason: string | null;
+  created_at: string;
+};
+
+/** RPC `pact_place_distances`: metres from each place (in force or pending) to the others' places in force. */
+export type PlaceDistanceRow = {
+  pact_id: string;
+  place_id: string;
+  user_id: string;
+  label: string | null;
+  state: 'effective' | 'pending';
+  other_user_id: string;
+  other_place_id: string;
+  other_label: string | null;
+  distance_m: number;
 };
 
 export type PactInstanceRow = {
@@ -138,6 +222,17 @@ export type ReviewRow = {
   status: ReviewStatus;
   opened_at: string;
   resolved_at: string | null;
+  /** true for the unverified-budget challenge the server opens itself (opened_by = subject) */
+  system_opened: boolean;
+};
+
+/** `unverified_month_counts` view: unverified results per person, pact and calendar month (pact zone). */
+export type UnverifiedMonthCountRow = {
+  pact_id: string;
+  user_id: string;
+  /** first day of the month, 'YYYY-MM-01' */
+  month: string;
+  count: number;
 };
 
 export type ReviewVoteRow = {
@@ -285,6 +380,11 @@ export type RpcFunctions = {
   /** payee only: moves a marked_paid obligation back to pending ("I didn't receive this") */
   dispute_obligation: Fn<{ p_obligation: string }, undefined>;
   register_push_token: Fn<{ p_token: string; p_platform: string }, undefined>;
+  /** another current member confirms a changed place (counts from then, never before 12 h after the change) */
+  acknowledge_place: Fn<{ p_place: string }, undefined>;
+  /** another current member blocks a place set in the last 24 h; the owner must set a new one */
+  object_place: Fn<{ p_place: string; p_reason: string }, undefined>;
+  pact_place_distances: Fn<{ p_pact: string }, PlaceDistanceRow[]>;
 };
 
 export type RpcName = keyof RpcFunctions;
@@ -300,6 +400,7 @@ export type Database = {
       pacts: Table<PactRow>;
       pact_participants: Table<PactParticipantRow>;
       pact_participant_places: Table<PactParticipantPlaceRow>;
+      place_events: Table<PlaceEventRow>;
       pact_instances: Table<PactInstanceRow>;
       checkins: Table<CheckinRow>;
       freezes: Table<FreezeRow>;
@@ -319,6 +420,8 @@ export type Database = {
       member_balances: View<MemberBalanceRow>;
       /** what settlement bills: settled instances plus settlement payments only */
       billable_member_balances: View<MemberBalanceRow>;
+      pact_places_visible: View<PactPlaceVisibleRow>;
+      unverified_month_counts: View<UnverifiedMonthCountRow>;
     };
     Functions: RpcFunctions;
     Enums: {
