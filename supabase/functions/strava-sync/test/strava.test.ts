@@ -152,6 +152,16 @@ describe("signed state", () => {
     expect(await verifyState(SECRET, "nota.state", NOW)).toBeNull();
     expect(await verifyState("", state, NOW)).toBeNull();
   });
+  it("red team: a state signed for one user cannot be re-pointed at another, and the TTL bounds a replay", async () => {
+    const mine = await signState(SECRET, { u: USER, e: Math.floor(NOW.getTime() / 1000) + 900 });
+    const [body, mac] = mine.split(".") as [string, string];
+    const other = "00000000-0000-4000-8000-000000000001";
+    const swapped = base64UrlEncode(new TextEncoder().encode(JSON.stringify({ u: other, e: Math.floor(NOW.getTime() / 1000) + 900 })));
+    expect(await verifyState(SECRET, `${swapped}.${mac}`, NOW)).toBeNull();
+    expect(await verifyState(SECRET, `${body}.${mac}`, new Date(NOW.getTime() + 899_000))).toMatchObject({ u: USER });
+    expect(await verifyState(SECRET, `${body}.${mac}`, new Date(NOW.getTime() + 900_000))).toBeNull();
+  });
+
   it("rejects a payload whose user id is not a uuid", async () => {
     const state = await signState(SECRET, { u: "not-a-uuid", e: Math.floor(NOW.getTime() / 1000) + 600 });
     expect(await verifyState(SECRET, state, NOW)).toBeNull();
@@ -436,6 +446,32 @@ describe("processEvent", () => {
     expect(d.submitted[0]!.items[0]).toMatchObject({ is_manual: true });
   });
 
+  it("red team: a forged event for a known athlete can only re-deliver that athlete's own activity; nothing from the body is stored", async () => {
+    // the sender claims object 999 is a 50 km run; Strava (the only source we read) says it is the athlete's real 8 km
+    const fetch = fakeFetch([["GET https://www.strava.com/api/v3/activities/999", () => jsonResponse({ ...run, id: 999 })]]);
+    const d = deps(fetch);
+    const forged = { ...createEvent, object_id: 999, updates: { distance: "50000", type: "Run", manual: "false" } };
+    expect(await processEvent(d, forged)).toEqual({ ok: true, action: "submitted", submitted: 1 });
+    expect(d.submitted[0]!.items[0]).toMatchObject({ external_id: "999", distance_m: 8012.3, is_manual: false });
+    // an unknown owner_id costs no Strava call; a non-activity object is ignored
+    expect(await processEvent(d, { ...createEvent, owner_id: 31337 })).toEqual({ ok: true, action: "no_token" });
+    expect(await processEvent(d, { ...createEvent, object_type: "club" })).toEqual({ ok: true, action: "ignored" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("red team: with STRAVA_SUBSCRIPTION_ID pinned, an event for another subscription is dropped before any Strava call", async () => {
+    const fetch = fakeFetch([["GET https://www.strava.com/api/v3/activities/", () => jsonResponse(run)]]);
+    const d = deps(fetch, { subscriptionId: 1 });
+    expect(await processEvent(d, { ...createEvent, subscription_id: 2 })).toEqual({ ok: true, action: "foreign_subscription" });
+    expect(await processEvent(d, { ...createEvent, subscription_id: undefined })).toEqual({ ok: true, action: "foreign_subscription" });
+    expect(await processEvent(d, { object_type: "athlete", object_id: 4242, aspect_type: "update", owner_id: 4242, subscription_id: 2, updates: { authorized: "false" } })).toEqual({ ok: true, action: "foreign_subscription" });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(d.deleted).toEqual([]);
+    expect(await processEvent(d, createEvent)).toEqual({ ok: true, action: "submitted", submitted: 1 });
+    // unset: any subscription id is accepted (the payload is never evidence anyway)
+    expect(await processEvent(deps(fetch), { ...createEvent, subscription_id: 2 })).toEqual({ ok: true, action: "submitted", submitted: 1 });
+  });
+
   it("unknown athlete: nothing to do (no token), no fetch", async () => {
     const fetch = fakeFetch([]);
     const d = deps(fetch);
@@ -558,7 +594,7 @@ describe("ensureSubscription", () => {
       expect(u.searchParams.get("client_secret")).toBe("csecret");
       return jsonResponse([{ id: 1, callback_url: cfg.callbackUrl }]);
     }]]);
-    expect(await ensureSubscription(fetch, cfg, NOW)).toBe("exists");
+    expect(await ensureSubscription(fetch, cfg, NOW)).toEqual({ status: "exists", id: 1 });
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
@@ -572,7 +608,7 @@ describe("ensureSubscription", () => {
         return jsonResponse({ id: 7 }, { status: 201 });
       }],
     ]);
-    expect(await ensureSubscription(fetch, cfg, NOW)).toBe("created");
+    expect(await ensureSubscription(fetch, cfg, NOW)).toEqual({ status: "created", id: 7 });
   });
 
   it("treats Strava's 'already exists' as success and fails otherwise", async () => {
@@ -580,7 +616,7 @@ describe("ensureSubscription", () => {
       ["GET https://www.strava.com/api/v3/push_subscriptions", () => jsonResponse([])],
       ["POST https://www.strava.com/api/v3/push_subscriptions", () => jsonResponse({ message: "Bad Request", errors: [{ resource: "PushSubscription", field: "", code: "already exists" }] }, { status: 400 })],
     ]);
-    expect(await ensureSubscription(dup, cfg, NOW)).toBe("exists");
+    expect(await ensureSubscription(dup, cfg, NOW)).toEqual({ status: "exists", id: null });
     const bad = fakeFetch([
       ["GET https://www.strava.com/api/v3/push_subscriptions", () => jsonResponse([])],
       ["POST https://www.strava.com/api/v3/push_subscriptions", () => jsonResponse({ message: "callback url not verifiable" }, { status: 400 })],

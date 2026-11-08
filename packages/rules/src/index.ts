@@ -12,8 +12,11 @@ export type ReviewStatus = "open" | "accepted" | "rejected" | "defaulted";
  * 4: challenge kinds (20261109000100): activity verdicts (`activityVerdict`), progress over accepted
  *    activities (`computeProgress`), goal results (`goalResult`; success / failed, never unverified,
  *    evidence submitted by deadline + 24 h), custom completions; `computeResults` takes a `kind`.
+ * 5: red team of the kinds (20261109000400): the duplicate rule covers every source, the same one
+ *    included (RK-5); source `manual` is hand-entered whatever `isManual` says (RK-7); `durationS` is
+ *    clamped to the elapsed time plus 60 s (RK-6).
  */
-export const RULES_VERSION = 4;
+export const RULES_VERSION = 5;
 
 // ---------------------------------------------------------------------------------------------
 // Challenge kinds
@@ -34,8 +37,10 @@ export const MIN_WORKOUT_S = 600;
 export const LATE_EVIDENCE_MS = 24 * 60 * 60_000;
 /** An activity may end this far in the future (clock skew) before it is `rejected_future`. */
 export const FUTURE_SLACK_MS = 5 * 60_000;
-/** Time overlap (share of the shorter activity) from which a second source is a duplicate. */
+/** Time overlap (share of the shorter activity) from which a second recording is a duplicate (any source). */
 export const DUPLICATE_OVERLAP = 0.8;
+/** `durationS` may exceed the elapsed time by this much (rounding between sources) before it is clamped. */
+export const DURATION_SLACK_S = 60;
 /** Speed bounds per type (m/s); faster is `rejected_type` 'implausible pace'. */
 export const MAX_SPEED_MPS: Readonly<Record<string, number>> = {
   running: 12,
@@ -69,12 +74,18 @@ export interface ActivityRecord extends ActivityInput {
 }
 
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
-const durationS = (a: ActivityInput): number => (a.durationS === null ? Math.round((ms(a.endedAt) - ms(a.startedAt)) / 1000) : a.durationS);
+/** Moving time, never more than the activity itself (RK-6: 60 s of rounding slack, then clamped to elapsed). */
+const durationS = (a: ActivityInput): number => {
+  const elapsed = Math.round((ms(a.endedAt) - ms(a.startedAt)) / 1000);
+  if (a.durationS === null) return elapsed;
+  return a.durationS > elapsed + DURATION_SLACK_S ? elapsed : a.durationS;
+};
 
 /**
  * The verdict `submit_activities` gives one item, judged against the user's already accepted
- * activities (first accepted wins) at server time `now`. Order of the rules: unknown type, manual,
- * future, implausible pace, duplicate across sources (>= 80 % of the shorter one's time).
+ * activities (first accepted wins) at server time `now`. Order of the rules: unknown type, manual
+ * (the flag, or the `manual` source), future, implausible pace, duplicate of any accepted recording
+ * from any source (>= 80 % of the shorter one's time; steps samples excluded).
  */
 export function activityVerdict(
   a: ActivityInput,
@@ -88,7 +99,7 @@ export function activityVerdict(
   if (type !== STEPS_ACTIVITY_TYPE && !(ACTIVITY_TYPES as readonly string[]).includes(type)) {
     return { verdict: "rejected_type", reason: "unknown activity type" };
   }
-  if (a.isManual) return { verdict: "rejected_manual", reason: "entered by hand" };
+  if (a.isManual || a.source === "manual") return { verdict: "rejected_manual", reason: "entered by hand" };
   if (end > ms(now) + FUTURE_SLACK_MS) return { verdict: "rejected_future", reason: "ends in the future" };
   const limit = MAX_SPEED_MPS[type];
   if (limit !== undefined && a.distanceM !== null && a.distanceM / Math.max(durationS(a), 1) > limit) {
@@ -96,7 +107,7 @@ export function activityVerdict(
   }
   if (type !== STEPS_ACTIVITY_TYPE) {
     const dup = previous
-      .filter((p) => p.verdict === "accepted" && p.source !== a.source && p.activityType !== STEPS_ACTIVITY_TYPE)
+      .filter((p) => p.verdict === "accepted" && p.activityType !== STEPS_ACTIVITY_TYPE)
       .filter((p) => {
         const ps = ms(p.startedAt);
         const pe = ms(p.endedAt);

@@ -366,7 +366,6 @@ export default function NewPactWizard() {
             inputMode="decimal"
             placeholder={draft.unit === 'mi' ? '15' : '25'}
             error={show ? goalErrors.goal : undefined}
-            helper={show && goalErrors.goal ? undefined : `Accepted ${option.activityTypes?.map((t) => `${activityTypeLabel(t).toLowerCase()}s`).join(' and ')} from Apple Health or Strava add up. Manual entries don't count.`}
             clearable={false}
             selectTextOnFocus
             autoFocus
@@ -374,6 +373,9 @@ export default function NewPactWizard() {
           <View style={styles.segmentRow}>
             <SegmentedControl segments={['mi', 'km']} index={draft.unit === 'mi' ? 0 : 1} onChange={(i) => switchUnit(i === 0 ? 'mi' : 'km')} accessibilityLabel="Distance unit" style={styles.unitSegment} />
           </View>
+          <Text variant="footnote" color="secondary" style={styles.unitHelper}>
+            {`Accepted ${option.activityTypes?.map((t) => `${activityTypeLabel(t).toLowerCase()}s`).join(' and ')} from Apple Health or Strava add up. Manual entries don't count.`}
+          </Text>
           <ListGroup
             header="When"
             footer={
@@ -833,5 +835,6 @@ const styles = StyleSheet.create({
   presetWrap: { paddingHorizontal: space.lg, paddingVertical: space.md, gap: space.sm },
   errorWrap: { paddingHorizontal: space.lg, paddingBottom: space.md },
   segmentRow: { flexDirection: 'row', justifyContent: 'flex-start', marginTop: -space.xs },
+  unitHelper: { marginTop: space.xs },
   unitSegment: { width: 140 },
 });

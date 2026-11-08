@@ -39,6 +39,17 @@ export interface HKStepBucketLike {
   sumQuantity?: HKQuantityLike;
 }
 
+/** A raw step-count sample (`queryQuantitySamples('HKQuantityTypeIdentifierStepCount', ...)`); only the hand-entered ones are read. */
+export interface HKStepSampleLike {
+  startDate: Date | string;
+  endDate: Date | string;
+  quantity?: number;
+  metadata?: Record<string, unknown>;
+}
+
+/** The metadata predicate that asks HealthKit for hand-entered samples only (`HKWasUserEntered = true`; 4 = equalTo). */
+export const HK_USER_ENTERED_FILTER = { withMetadataKey: 'HKWasUserEntered', operatorType: 4 as const, value: true } as const;
+
 /** HKWorkoutActivityType raw values (Apple's enum) and names → our nine types; anything else is `other`. */
 const HK_TYPE_BY_CODE: Record<number, ActivityType> = {
   37: 'running',
@@ -109,15 +120,22 @@ export function mapWorkout(w: HKWorkoutLike): ActivitySubmission {
  * Daily step totals as one `steps` sample per local day with a deterministic id (`steps:YYYY-MM-DD`),
  * so today's row grows on every sync (the server updates a steps row whose hash changed and whose
  * end moved later; CONTRACT "Activities"). Today's bucket ends now, never in the future.
+ *
+ * `userEntered` are the range's hand-entered step samples (HKWasUserEntered; the statistics query
+ * cannot tell them apart from counted ones). A day that holds one is sent with `is_manual: true`
+ * and the server rejects it as entered by hand, like a typed-in workout (CE-10).
  */
-export function rollupSteps(buckets: readonly HKStepBucketLike[], tz: string, nowMs: number): ActivitySubmission[] {
+export function rollupSteps(buckets: readonly HKStepBucketLike[], tz: string, nowMs: number, userEntered: readonly HKStepSampleLike[] = []): ActivitySubmission[] {
   const out: ActivitySubmission[] = [];
+  const typed = userEntered.filter((s) => s.metadata === undefined || truthy(s.metadata.HKWasUserEntered)).map((s) => Date.parse(toIso(s.startDate)));
   for (const b of buckets) {
     const steps = b.sumQuantity ? Math.round(b.sumQuantity.quantity) : 0;
     if (steps <= 0) continue;
     const startMs = Date.parse(toIso(b.startDate));
-    const endMs = Math.min(Date.parse(toIso(b.endDate)) - 1000, nowMs);
+    const bucketEndMs = Date.parse(toIso(b.endDate));
+    const endMs = Math.min(bucketEndMs - 1000, nowMs);
     if (endMs <= startMs) continue;
+    const isManual = typed.some((t) => t >= startMs && t < bucketEndMs);
     out.push({
       source: 'healthkit',
       external_id: `steps:${localDateInZone(startMs, tz)}`,
@@ -129,7 +147,7 @@ export function rollupSteps(buckets: readonly HKStepBucketLike[], tz: string, no
       steps,
       device: null,
       app_bundle: null,
-      is_manual: false,
+      is_manual: isManual,
       raw_hash: null,
     });
   }

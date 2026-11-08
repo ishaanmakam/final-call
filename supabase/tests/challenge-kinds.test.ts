@@ -401,12 +401,12 @@ describe('submit_activities: verdicts, idempotency and access', () => {
       [
         run(at(t0, 2), { source: 'strava', external_id: 'st-dup', ended_at: at(t0, 31) }), // 28 of 29 min overlap
         run(at(t0, 25), { source: 'strava', external_id: 'st-other', ended_at: at(t0, 60) }), // 5 of 30 min overlap
-        run(at(t0, 5), { external_id: 'hk-same-source', ended_at: at(t0, 30) }), // same source: not the duplicate rule's business
+        run(at(t0, 5), { external_id: 'hk-same-source', ended_at: at(t0, 30) }), // same source, 25 of 25 min: a duplicate too (RK-5)
       ],
       now,
     );
     const v = Object.fromEntries((await verdicts(a)).map((r) => [r.external_id, r.verdict]));
-    expect(v).toEqual({ 'hk-run': 'accepted', 'st-dup': 'rejected_duplicate', 'st-other': 'accepted', 'hk-same-source': 'accepted' });
+    expect(v).toEqual({ 'hk-run': 'accepted', 'st-dup': 'rejected_duplicate', 'st-other': 'accepted', 'hk-same-source': 'rejected_duplicate' });
     expect(await scalar(db, `select reject_reason from public.activities where external_id = 'st-dup'`)).toMatch(/healthkit/);
     // a rejected (manual) activity never blocks a real one
     const b = fx.userIds[1];

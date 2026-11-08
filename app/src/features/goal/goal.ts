@@ -34,6 +34,34 @@ export function formatDuration(seconds: number): string {
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
 }
 
+/**
+ * A duration in words for a list row: "45 min", "1 hr 5 min", "40 sec". The clock form ("8:00")
+ * next to a date reads as a time of day (audit, day 2).
+ */
+export function formatDurationWords(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s} sec`;
+  const total = Math.round(s / 60);
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  if (h === 0) return `${m} min`;
+  return m === 0 ? `${h} hr` : `${h} hr ${m} min`;
+}
+
+/** Why an accepted workout still does not count toward a workouts goal. */
+export const tooShortText = (minS: number): string => `Under ${Math.round(minS / 60)} minutes · doesn't count`;
+
+/** What syncs for this pact, for the join copy: "runs", "rides", "walks and runs", "workouts", "steps". */
+export function evidenceNoun(pact: Pick<PactRow, 'kind' | 'activity_types'>): string {
+  if (pact.kind === 'workouts') return 'workouts';
+  if (pact.kind === 'steps') return 'steps';
+  if (pact.kind !== 'distance') return 'activities';
+  const types = pact.activity_types ?? [];
+  if (types.length === 1) return `${activityTypeLabel(types[0]!).toLowerCase()}s`;
+  if (types.length === 2 && types.includes('walking') && types.includes('running')) return 'walks and runs';
+  return 'activities';
+}
+
 /** "8:42 /mi"; null when there is no distance or no time. */
 export function paceText(distanceM: number | null, durationS: number, unit: DistanceUnit): string | null {
   if (!distanceM || distanceM <= 0 || durationS <= 0) return null;
@@ -215,12 +243,12 @@ export const activityTypeLabel = (type: string): string => TYPE_LABEL[type] ?? '
 const SOURCE_LABEL: Record<ActivitySource, string> = { healthkit: 'Apple Health', strava: 'Strava', manual: 'Manual' };
 export const sourceLabel = (source: ActivitySource): string => SOURCE_LABEL[source];
 
-/** "5.0 mi · 45:10 · 9:02 /mi" for a run; "30:00" for a timed session; "10,432 steps" for a step day. */
+/** "5.0 mi · 45 min · 9:02 /mi" for a run; "30 min" for a timed session; "10,432 steps" for a step day. */
 export function activityLine(a: Pick<PactActivityRow, 'distance_m' | 'duration_s' | 'steps'>, unit: DistanceUnit): string {
   if (a.steps !== null && a.steps > 0 && !a.distance_m && a.duration_s === 0) return `${thousands(a.steps)} steps`;
   const parts: string[] = [];
   if (a.distance_m !== null && a.distance_m > 0) parts.push(formatDistance(a.distance_m, unit));
-  if (a.duration_s > 0) parts.push(formatDuration(a.duration_s));
+  if (a.duration_s > 0) parts.push(formatDurationWords(a.duration_s));
   const pace = paceText(a.distance_m, a.duration_s, unit);
   if (pace) parts.push(pace);
   return parts.join(' · ');

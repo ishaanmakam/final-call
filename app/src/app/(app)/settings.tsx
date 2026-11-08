@@ -25,7 +25,7 @@ const ABOUT_FOOTNOTE =
 const DELETE_FOOTNOTE =
   'Deleting your account leaves every group, erases your sign-in and push tokens, and renames you "Deleted member". Past results and settle-ups stay in your groups\' history, because your friends\' balances came from them.';
 const INTEGRATIONS_FOOTNOTE =
-  'Strava sends each new activity as you finish it, and the last 30 days when you connect. Only workouts count, never your location or route. Disconnecting keeps what already counted.';
+  'Each activity arrives as you finish it, plus the last 30 days when you connect; only workouts, never your route. Disconnecting keeps what already counted.';
 const SAVED_MS = 2000;
 
 /** A grouped-list row whose value is typed in place: label left, input right, autosaves on end-editing. */
@@ -394,8 +394,10 @@ export default function Settings() {
 
       <ListGroup header="Integrations" footer={INTEGRATIONS_FOOTNOTE}>
         {strava.status === 'connected' ? (
-          <>
+          // two rows, not a fragment: ListGroup positions its direct children (a fragment is one child and both rows drew their own corners)
+          [
             <ListRow
+              key="strava"
               title="Strava"
               subtitle={`Connected as athlete ${strava.athleteId}${strava.connectedAt ? ` · since ${formatDateInZone(strava.connectedAt, deviceTimeZone())}` : ''}`}
               leading={<Icon name="arrow.triangle.2.circlepath" size={20} color="success" />}
@@ -404,15 +406,16 @@ export default function Settings() {
                   Connected
                 </Text>
               }
-            />
+            />,
             <ListRow
+              key="disconnect"
               title="Disconnect Strava"
               destructive
               disabled={stravaBusy}
               onPress={() => void onDisconnectStrava()}
               accessibilityHint="Asks you to confirm first. Activities that already counted stay."
-            />
-          </>
+            />,
+          ]
         ) : (
           <ListRow
             title="Connect Strava"

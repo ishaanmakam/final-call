@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { HK_READ_TYPES, hashInput, mapWorkout, rollupSteps, withHashes, type HKWorkoutLike, type HKStepBucketLike } from './health';
+import { HK_READ_TYPES, HK_USER_ENTERED_FILTER, hashInput, mapWorkout, rollupSteps, withHashes, type HKWorkoutLike, type HKStepBucketLike } from './health';
 
 const workout = (over: Partial<HKWorkoutLike> = {}): HKWorkoutLike => ({
   uuid: '3F2504E0-4F89-11D3-9A0C-0305E82C3301',
@@ -106,6 +106,39 @@ describe('steps', () => {
         raw_hash: null,
       },
     ]);
+  });
+});
+
+describe('steps edited in Health (red team)', () => {
+  const buckets: HKStepBucketLike[] = [
+    { startDate: new Date('2026-11-12T08:00:00Z'), endDate: new Date('2026-11-13T08:00:00Z'), sumQuantity: { quantity: 10432, unit: 'count' } },
+    { startDate: new Date('2026-11-13T08:00:00Z'), endDate: new Date('2026-11-14T08:00:00Z'), sumQuantity: { quantity: 12000, unit: 'count' } },
+  ];
+  const now = Date.parse('2026-11-13T18:00:00Z');
+
+  it('a day with a hand-entered step sample is sent as manual (the server rejects it); other days are untouched', () => {
+    const rows = rollupSteps(buckets, 'America/Los_Angeles', now, [
+      { startDate: new Date('2026-11-13T15:00:00Z'), endDate: new Date('2026-11-13T15:01:00Z'), quantity: 10000, metadata: { HKWasUserEntered: true } },
+    ]);
+    expect(rows.map((r) => [r.external_id, r.is_manual, r.steps])).toEqual([
+      ['steps:2026-11-12', false, 10432],
+      ['steps:2026-11-13', true, 12000],
+    ]);
+    // the flag is part of the hash, so the re-sent row is a different submission the server re-judges
+    expect(hashInput(rows[1]!).endsWith('|true')).toBe(true);
+  });
+
+  it('a sample outside the bucket, or one HealthKit says was not typed, changes nothing', () => {
+    const rows = rollupSteps(buckets, 'America/Los_Angeles', now, [
+      { startDate: new Date('2026-11-11T15:00:00Z'), endDate: new Date('2026-11-11T15:01:00Z'), quantity: 500, metadata: { HKWasUserEntered: true } },
+      { startDate: new Date('2026-11-12T15:00:00Z'), endDate: new Date('2026-11-12T15:10:00Z'), quantity: 700, metadata: { HKWasUserEntered: false } },
+    ]);
+    expect(rows.every((r) => r.is_manual === false)).toBe(true);
+    expect(rollupSteps(buckets, 'America/Los_Angeles', now)).toEqual(rows);
+  });
+
+  it('asks HealthKit for HKWasUserEntered = true samples', () => {
+    expect(HK_USER_ENTERED_FILTER).toEqual({ withMetadataKey: 'HKWasUserEntered', operatorType: 4, value: true });
   });
 });
 

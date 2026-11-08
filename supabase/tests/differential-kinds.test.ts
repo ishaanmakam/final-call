@@ -13,7 +13,7 @@ import { createDb, createGroupFixture, rows, scalar, type DB } from './helpers/d
 // Differential test for challenge kinds (20261109000100): random weekly distance / workouts pacts and
 // daily steps pacts with random activities (sources, manual flags, future ends, unknown types,
 // implausible paces, cross-source overlaps, step-sample updates, late arrivals inside and outside the
-// 24 h window, freezes) run through submit_activities_at + tick_instances, compared with the oracle:
+// 24 h window, freezes; same-source twins since RK-5) run through submit_activities_at + tick_instances, compared with the oracle:
 // every verdict (activityVerdict), the instance_progress view (computeProgress), results
 // (computeResults with kind) and the ledger per instance (computeInstancePayout), plus the property
 // invariants: zero-sum per instance and an idempotent replay of the whole sync sequence.
@@ -74,6 +74,8 @@ it(`SQL verdicts, progress, results and payouts match packages/rules on ${SCENAR
   // week that started in the next week's window counts there (the generator makes some on purpose).
   const records: ActivityRecord[] = [];
   const byKey = new Map<string, ActivityRecord>();
+  // steps instances per scenario: a steps re-send after a day's 24 h money cut-off is a no-op (RK-4)
+  const stepsWindows: { users: string[]; W: number; D: number }[] = [];
 
   for (let s = 0; s < SCENARIOS; s++) {
     const kind: PactKind = pick(['distance', 'distance', 'workouts', 'steps']);
@@ -110,6 +112,7 @@ it(`SQL verdicts, progress, results and payouts match packages/rules on ${SCENAR
        values ($1, ($2::timestamptz at time zone 'UTC')::date, $2::timestamptz, $3::timestamptz) returning id`,
       [pactId, iso(W), iso(D)],
     );
+    if (kind === 'steps') stepsWindows.push({ users, W, D });
     const frozen = new Set<string>();
     for (const u of users) {
       if (rnd() < 0.12) {
@@ -210,8 +213,13 @@ it(`SQL verdicts, progress, results and payouts match packages/rules on ${SCENAR
           // only a later (or equal-time, larger) snapshot of the day replaces the row
           const curEnd = Date.parse(cur.endedAt);
           const newEnd = Date.parse(it.ended_at);
+          if (cur.startedAt !== input.startedAt) continue; // RK-3: the day is the row's identity
           if (newEnd < curEnd || (newEnd === curEnd && (it.steps ?? 0) < (cur.steps ?? 0))) continue;
-          const v = it.is_manual ? 'rejected_manual' : Date.parse(it.ended_at) > sub.now + 5 * 60_000 ? 'rejected_future' : 'accepted';
+          // RK-4: final once the earliest cut-off of a steps day the user is on has passed
+          const start = Date.parse(cur.startedAt);
+          const cutoffs = stepsWindows.filter((w) => w.users.includes(sub.user) && start >= w.W && start < w.D).map((w) => w.D + DAY);
+          if (cutoffs.length > 0 && sub.now > Math.min(...cutoffs)) continue;
+          const v = it.is_manual || it.source === 'manual' ? 'rejected_manual' : Date.parse(it.ended_at) > sub.now + 5 * 60_000 ? 'rejected_future' : 'accepted';
           const rec: ActivityRecord = { ...cur, ...input, verdict: v, submittedAt: iso(sub.now) };
           (rec as any).rawHash = it.raw_hash;
           pending.push({ key, rec });

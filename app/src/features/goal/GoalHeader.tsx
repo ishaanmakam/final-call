@@ -3,7 +3,7 @@ import type { PactInstanceRow, PactRow } from '../../api/types';
 import { Button, Card, Pill, ProgressRing, StatusPill, Text } from '../../components';
 import type { DayState } from '../../components/status';
 import { space } from '../../theme';
-import { formatGoalValue, goalLabel, progressFraction, remainingText, timeLeftText, type DistanceUnit } from './goal';
+import { evidenceNoun, formatGoalValue, goalLabel, progressFraction, remainingText, timeLeftText, type DistanceUnit } from './goal';
 import { weekTimingLine } from './progress';
 
 export interface GoalHeaderProps {
@@ -58,7 +58,9 @@ export function GoalHeader({ pact, instance, myValue, notOnRoster, myReached, my
           {timing}
         </Text>
         <Text variant="footnote" color="secondary">
-          Join and your runs sync from Apple Health or Strava. Miss the goal and your pledge goes to the pool for the friends who made it.
+          {pact.kind === 'custom'
+            ? `Join and mark each ${pact.period === 'weekly' ? 'week' : 'day'} done; friends can challenge it. Miss it and your pledge goes to the pool for the friends who made it.`
+            : `Join and your ${evidenceNoun(pact)} sync from Apple Health${pact.kind === 'steps' ? '' : ' or Strava'}. Miss the goal and your pledge goes to the pool for the friends who made it.`}
         </Text>
         {onJoin ? <Button title="Join this challenge" onPress={onJoin} loading={joining} style={styles.action} accessibilityHint="Joins without a place; asks to read your workouts" /> : null}
       </Card>

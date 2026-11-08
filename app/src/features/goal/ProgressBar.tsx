@@ -1,5 +1,5 @@
 import { StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
-import Animated from 'react-native-reanimated';
+import Animated, { useReducedMotion } from 'react-native-reanimated';
 import { resolveTextColor, type TextColor } from '../../components/Text';
 import { transition, useTheme } from '../../theme';
 
@@ -15,10 +15,11 @@ export interface ProgressBarProps {
 /**
  * A thin track (fill-strong) with a tinted fill: the standings row's version of the ProgressRing.
  * The fill scales on the x axis from its left edge (transform only, per the motion contract),
- * 180 ms on the state curve when a value changes.
+ * 180 ms on the in-out curve (movement on screen) when a value changes; it snaps under Reduce Motion.
  */
 export function ProgressBar({ fraction, color = 'tint', width = 72, accessibilityLabel, style }: ProgressBarProps) {
   const { colors } = useTheme();
+  const reduced = useReducedMotion();
   const clamped = Math.min(1, Math.max(0, fraction));
   return (
     <View
@@ -29,13 +30,13 @@ export function ProgressBar({ fraction, color = 'tint', width = 72, accessibilit
       style={[styles.track, { width, backgroundColor: colors.fillStrong }, style]}
     >
       <Animated.View
-        style={[styles.fill, fillTransition, { backgroundColor: resolveTextColor(colors, color), transform: [{ scaleX: Math.max(0.001, clamped) }] }]}
+        style={[styles.fill, reduced ? null : fillTransition, { backgroundColor: resolveTextColor(colors, color), transform: [{ scaleX: Math.max(0.001, clamped) }] }]}
       />
     </View>
   );
 }
 
-const fillTransition = transition('transform', 'state');
+const fillTransition = transition('transform', 'state', 'inOut');
 
 const styles = StyleSheet.create({
   track: { height: 4, borderRadius: 2, overflow: 'hidden' },

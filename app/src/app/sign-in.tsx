@@ -11,7 +11,7 @@ import { pendingNext } from '@/lib/pendingNextRuntime';
 import { userMessage } from '@/lib/errors';
 import { gutter, radius, space, useTheme } from '@/theme';
 
-const PITCH = "Pledge a few dollars to be where you said you'd be. Show up and you split what the others forfeit. Miss, and your pledge goes to the pool.";
+const PITCH = 'Pledge a few dollars to show up, run the miles or get the workouts in. Make it and you split what the others forfeit. Miss, and your pledge goes to the pool.';
 const PRIVACY = 'Your location is read once, only when you tap Check In during a window. Never in the background.';
 /** the web simulator that shares the Pages site with this app (docs/DEPLOY.md §13) */
 const SIMULATOR_URL = 'https://ishaanmakam.github.io/final-call/';

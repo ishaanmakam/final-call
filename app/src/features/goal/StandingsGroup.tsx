@@ -45,7 +45,9 @@ export function StandingsGroup({ pact, standings, participantIds, results, userI
         const result = resultFor(s.user_id);
         const name = nameOf(s.user_id);
         const streak = streakLine?.(s.user_id) ?? null;
-        const subtitle = [ordinal(s.rank), reached ? 'reached' : left ? `${left} to go` : null, streak].filter(Boolean).join(' · ');
+        // once the gate closed there is nothing left "to go": the gap is what they were short by
+        const gap = left ? (closed ? `${left} short` : `${left} to go`) : null;
+        const subtitle = [ordinal(s.rank), reached ? 'reached' : gap, streak].filter(Boolean).join(' · ');
         return (
           <ListRow
             key={s.user_id}
@@ -71,7 +73,7 @@ export function StandingsGroup({ pact, standings, participantIds, results, userI
                 <ProgressBar fraction={progressFraction(value, goal)} color={reached ? 'success' : closed ? 'forfeit' : 'tint'} />
               </View>
             }
-            accessibilityLabel={`${name}, ${ordinal(s.rank)}, ${formatGoalValue(pact, value, unit)}${reached ? ', reached' : left ? `, ${left} to go` : ''}${result ? `, ${result}` : ''}`}
+            accessibilityLabel={`${name}, ${ordinal(s.rank)}, ${formatGoalValue(pact, value, unit)}${reached ? ', reached' : gap ? `, ${gap}` : ''}${result ? `, ${result}` : ''}`}
           />
         );
       })}

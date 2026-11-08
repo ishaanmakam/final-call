@@ -11,7 +11,7 @@ import {
   type CheckinRecord,
 } from "../src/index";
 
-// Challenge kinds (RULES_VERSION 4): activity verdicts, progress, goal results.
+// Challenge kinds (RULES_VERSION 4, red-teamed in 5): activity verdicts, progress, goal results.
 
 const W_OPEN = "2030-01-07T08:00:00.000Z";
 const W_DEADLINE = "2030-01-14T08:00:00.000Z";
@@ -41,8 +41,15 @@ describe("activityVerdict", () => {
   it("rejects unknown types before anything else", () => {
     expect(activityVerdict({ ...base, activityType: "skiing", isManual: true }, [], now).verdict).toBe("rejected_type");
   });
-  it("rejects hand-entered activities", () => {
+  it("rejects hand-entered activities, and anything from the manual source whatever the flag says (RK-7)", () => {
     expect(activityVerdict({ ...base, isManual: true }, [], now).verdict).toBe("rejected_manual");
+    expect(activityVerdict({ ...base, source: "manual", isManual: false }, [], now).verdict).toBe("rejected_manual");
+  });
+  it("clamps a moving time longer than the activity, so it cannot hide an implausible pace (RK-6)", () => {
+    // 15 miles between 10:00 and 10:01 with "two hours of moving time"
+    expect(activityVerdict({ ...base, distanceM: 24140, durationS: 7200, endedAt: plus(base.startedAt, 1) }, [], now).verdict).toBe("rejected_type");
+    // a second of rounding slack is fine
+    expect(activityVerdict({ ...base, durationS: 1801 }, [], now).verdict).toBe("accepted");
   });
   it("rejects activities ending more than 5 minutes in the future, with 5 minutes of slack", () => {
     expect(activityVerdict({ ...base, startedAt: plus(now, -20), endedAt: plus(now, 6) }, [], now).verdict).toBe("rejected_future");
@@ -64,8 +71,9 @@ describe("activityVerdict", () => {
     // exactly 80 % of the shorter one counts as a duplicate
     expect(activityVerdict({ ...strava, startedAt: plus(W_OPEN, 606), endedAt: plus(W_OPEN, 636) }, [hk], now).verdict).toBe("rejected_duplicate");
     expect(activityVerdict({ ...strava, startedAt: plus(W_OPEN, 607), endedAt: plus(W_OPEN, 637) }, [hk], now).verdict).toBe("accepted");
-    // same source, a rejected twin, or a steps sample never block
-    expect(activityVerdict({ ...strava, source: "healthkit" }, [hk], now).verdict).toBe("accepted");
+    // the same source is a duplicate too (watch + phone, a HealthKit edit with a new uuid; RK-5)
+    expect(activityVerdict({ ...strava, source: "healthkit" }, [hk], now).verdict).toBe("rejected_duplicate");
+    // a rejected twin or a steps sample never block
     expect(activityVerdict(strava, [{ ...hk, verdict: "rejected_manual" }], now).verdict).toBe("accepted");
     expect(activityVerdict(strava, [{ ...hk, activityType: "steps", steps: 100 }], now).verdict).toBe("accepted");
   });
@@ -184,6 +192,6 @@ describe("computeResults for goal kinds", () => {
     const ci: CheckinRecord = { userId: "a", verdict: "in_fence", serverReceivedAt: "2026-11-09T16:20:00Z", clientCapturedAt: "2026-11-09T16:20:00Z" };
     const r = computeResults({ deadlineAt: "2026-11-09T17:00:00Z", participants: participants.slice(0, 2), checkins: [ci] });
     expect(r.results.map((x) => x.status)).toEqual(["success", "failed"]);
-    expect(RULES_VERSION).toBe(4);
+    expect(RULES_VERSION).toBe(5);
   });
 });

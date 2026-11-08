@@ -23,6 +23,9 @@ import {
   timeLeftText,
   toGoText,
   unitToMeters,
+  formatDurationWords,
+  tooShortText,
+  evidenceNoun,
 } from './goal';
 
 const base: PactRow = {
@@ -204,8 +207,19 @@ describe('activity rows', () => {
   });
 
   it('distance, duration and pace for a run; duration only for a strength session; steps for a step day', () => {
-    expect(activityLine(row(), 'mi')).toBe('5.0 mi · 45:10 · 9:02 /mi');
-    expect(activityLine(row({ activity_type: 'strength', distance_m: null, duration_s: 1800 }), 'mi')).toBe('30:00');
+    expect(activityLine(row(), 'mi')).toBe('5.0 mi · 45 min · 9:02 /mi');
+    expect(activityLine(row({ activity_type: 'strength', distance_m: null, duration_s: 1800 }), 'mi')).toBe('30 min');
+    // an 8-minute session must not read as 8 o'clock (audit, day 2)
+    expect(activityLine(row({ activity_type: 'strength', distance_m: null, duration_s: 480 }), 'mi')).toBe('8 min');
+    expect(formatDurationWords(3900)).toBe('1 hr 5 min');
+    expect(formatDurationWords(3600)).toBe('1 hr');
+    expect(formatDurationWords(40)).toBe('40 sec');
+    expect(tooShortText(600)).toBe("Under 10 minutes · doesn't count");
+    expect(evidenceNoun({ kind: 'distance', activity_types: ['running'] })).toBe('runs');
+    expect(evidenceNoun({ kind: 'distance', activity_types: ['cycling'] })).toBe('rides');
+    expect(evidenceNoun({ kind: 'distance', activity_types: ['running', 'walking'] })).toBe('walks and runs');
+    expect(evidenceNoun({ kind: 'workouts', activity_types: ['running', 'yoga'] })).toBe('workouts');
+    expect(evidenceNoun({ kind: 'steps', activity_types: null })).toBe('steps');
     expect(activityLine(row({ activity_type: 'walking', distance_m: null, duration_s: 0, steps: 10432 }), 'mi')).toBe('10,432 steps');
   });
 

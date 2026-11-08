@@ -16,7 +16,9 @@
 //                    retries. Anything else: 404.
 // Auth: /connect and /callback are authenticated by the signed state; /webhook is public per
 // Strava; /state checks the user's JWT with auth.getUser. verify_jwt is therefore off for this
-// function (config.toml), and nothing here ever trusts a caller-supplied user id.
+// function (config.toml), and nothing here ever trusts a caller-supplied user id. Webhook events
+// are never trusted as evidence either (see processEvent); STRAVA_SUBSCRIPTION_ID, when set,
+// drops events for any other subscription before a Strava call is spent on them.
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import {
@@ -56,6 +58,9 @@ const VERIFY_TOKEN = Deno.env.get("STRAVA_VERIFY_TOKEN") ?? "";
 const STATE_SECRET = Deno.env.get("STRAVA_STATE_SECRET") ?? "";
 const APP_SCHEME = Deno.env.get("APP_SCHEME") || DEFAULT_APP_SCHEME;
 const WEB_ORIGINS = parseOrigins(Deno.env.get("WEB_ORIGIN") || undefined);
+// Optional: pin the webhook to our subscription (logged by /callback as `subscription_id` after the
+// first connect). Events naming another id are dropped before any Strava call.
+const SUBSCRIPTION_ID = Number(Deno.env.get("STRAVA_SUBSCRIPTION_ID") || NaN);
 // Public URL of this function. Locally SUPABASE_URL is the in-Docker Kong address, so set
 // STRAVA_FUNCTION_URL=http://127.0.0.1:54321/functions/v1/strava-sync when serving locally.
 const FUNCTION_URL = (Deno.env.get("STRAVA_FUNCTION_URL") || `${SUPABASE_URL}/functions/v1/strava-sync`).replace(/\/+$/, "");
@@ -117,6 +122,7 @@ const deps: Deps = {
   now: () => new Date(),
   clientId: CLIENT_ID,
   clientSecret: CLIENT_SECRET,
+  ...(Number.isFinite(SUBSCRIPTION_ID) ? { subscriptionId: SUBSCRIPTION_ID } : {}),
   tokenForAthlete: async (athleteId) => {
     const { data, error } = await db
       .from("integration_tokens")
@@ -275,7 +281,7 @@ async function handleCallback(url: URL): Promise<Response> {
   // Best effort from here: the connection is already saved.
   try {
     const sub = await ensureSubscription(deps.fetch, { clientId: CLIENT_ID, clientSecret: CLIENT_SECRET, callbackUrl: `${FUNCTION_URL}/webhook`, verifyToken: VERIFY_TOKEN }, new Date());
-    log({ route: "callback", subscription: sub });
+    log({ route: "callback", subscription: sub.status, subscription_id: sub.id });
   } catch (e) {
     logError({ route: "callback", step: "subscription", error: e instanceof Error ? e.message : String(e) });
   }

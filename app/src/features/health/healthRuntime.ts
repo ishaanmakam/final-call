@@ -19,7 +19,7 @@ import { submitActivities } from '../../api/rpc';
 import type { ActivitySubmission } from '../../api/types';
 import { captureException } from '../../lib/sentry';
 import { isGoalKind } from '../goal/goal';
-import { HK_READ_TYPES, mapWorkout, rollupSteps, withHashes, type HKStepBucketLike, type HKWorkoutLike } from './health';
+import { HK_READ_TYPES, HK_USER_ENTERED_FILTER, mapWorkout, rollupSteps, withHashes, type HKStepBucketLike, type HKStepSampleLike, type HKWorkoutLike } from './health';
 import { demoLastHealthSyncAt, demoSyncHealth } from './healthDemo';
 import type { HealthStatus, HealthSyncOutcome, HealthSyncRequest } from './healthTypes';
 
@@ -90,7 +90,21 @@ async function readSteps(from: Date, to: Date, tz: string, nowMs: number): Promi
     filter: { date: { startDate: from, endDate: to } },
     unit: 'count',
   });
-  return rollupSteps(buckets as unknown as HKStepBucketLike[], tz, nowMs);
+  // The daily sums cannot tell a typed-in sample from a counted one: ask for the hand-entered ones
+  // separately and let the mapper flag their days (`is_manual`, rejected server side). A failure
+  // here must not hide the honest days: it degrades to "none found" and is reported.
+  let typed: HKStepSampleLike[] = [];
+  try {
+    const samples = await HealthKit.queryQuantitySamples('HKQuantityTypeIdentifierStepCount', {
+      filter: { date: { startDate: anchor, endDate: to }, metadata: HK_USER_ENTERED_FILTER },
+      limit: -1,
+      unit: 'count',
+    });
+    typed = samples as unknown as HKStepSampleLike[];
+  } catch (e) {
+    captureException(e, { where: 'health.steps.userEntered' });
+  }
+  return rollupSteps(buckets as unknown as HKStepBucketLike[], tz, nowMs, typed);
 }
 
 let inFlight: Promise<HealthSyncOutcome | null> | null = null;

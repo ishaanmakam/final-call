@@ -1,7 +1,7 @@
 import type { PactActivityRow } from '../../api/types';
 import { EmptyState, Icon, ListGroup, ListRow, Pill, Text, type IconName } from '../../components';
 import { formatDateInZone, formatTimeInZone } from '../../lib/time';
-import { activityLine, activityTypeLabel, rejectionText, sourceLabel, type DistanceUnit } from './goal';
+import { activityLine, activityTypeLabel, rejectionText, sourceLabel, tooShortText, type DistanceUnit } from './goal';
 
 export interface ActivityGroupProps {
   activities: readonly PactActivityRow[];
@@ -15,6 +15,8 @@ export interface ActivityGroupProps {
   header: string;
   footer?: string;
   emptyBody: string;
+  /** workouts kind: an accepted session under this many seconds is shown greyed as not counting */
+  minDurationS?: number;
 }
 
 const TYPE_ICON: Record<string, IconName> = {
@@ -35,18 +37,19 @@ const TYPE_ICON: Record<string, IconName> = {
  * server rejected are greyed with the reason in plain words. Others' accepted entries carry a
  * Challenge affordance once the week has a posted result.
  */
-export function ActivityGroup({ activities, userId, nameOf, tz, unit, canChallenge, onChallenge, header, footer, emptyBody }: ActivityGroupProps) {
+export function ActivityGroup({ activities, userId, nameOf, tz, unit, canChallenge, onChallenge, header, footer, emptyBody, minDurationS }: ActivityGroupProps) {
   return (
     <ListGroup header={header} footer={footer}>
       {activities.length === 0 ? <EmptyState icon="heart" title="No activities yet" body={emptyBody} /> : null}
       {activities.map((a) => {
-        const rejected = a.verdict !== 'accepted';
+        const tooShort = a.verdict === 'accepted' && minDurationS !== undefined && a.duration_s < minDurationS;
+        const rejected = a.verdict !== 'accepted' || tooShort;
         const who = nameOf(a.user_id);
         // the day is enough in the row; VoiceOver gets the time too
         const when = formatDateInZone(a.started_at, tz);
         const whenFull = `${when} ${formatTimeInZone(a.started_at, tz)}`;
         const line = activityLine(a, unit);
-        const reason = rejectionText(a, unit);
+        const reason = tooShort && minDurationS !== undefined ? tooShortText(minDurationS) : rejectionText(a, unit);
         const chip = a.device ?? sourceLabel(a.source);
         const challenge = !rejected && a.user_id !== userId && canChallenge(a);
         return (

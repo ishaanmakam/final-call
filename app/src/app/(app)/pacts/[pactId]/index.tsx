@@ -431,7 +431,7 @@ export default function PactDetail() {
             />
 
             {amIn && pact.kind !== 'custom' ? (
-              <ListGroup header="Evidence" footer="Only workouts and steps are read, never your location. Entries typed into Apple Health by hand don't count, and anyone in the pact can challenge an entry.">
+              <ListGroup header="Evidence" footer="Only workouts and steps are read, never your location. Typed-in entries don't count; any member can challenge an entry.">
                 <ListRow
                   leading={<Icon name="heart" size={20} color="tint" />}
                   title="Sync Apple Health"
@@ -450,7 +450,6 @@ export default function PactDetail() {
                       : 'Runs recorded with Strava or a Garmin count too.'
                   }
                   trailing={stravaConnected ? <Pill label="Connected" tone="success" size="compact" /> : <Value color="tint">Connect</Value>}
-                  chevron={!stravaConnected}
                   onPress={stravaConnected ? undefined : () => void connectStrava()}
                   disabled={strava.status === 'loading'}
                   accessibilityHint={stravaConnected ? undefined : 'Opens Strava to allow Final Call to read your activities'}
@@ -468,6 +467,7 @@ export default function PactDetail() {
                 canChallenge={canChallenge}
                 onChallenge={challenge}
                 header={pact.period === 'daily' ? "Today's activities" : `This ${periodWord}'s activities`}
+                minDurationS={pact.kind === 'workouts' ? 600 : undefined}
                 emptyBody={pact.kind === 'custom' ? 'Marks appear here as people mark the day done.' : 'Runs appear here as they sync from Apple Health or Strava.'}
               />
             ) : null}
@@ -487,7 +487,7 @@ export default function PactDetail() {
               />
             ) : null}
 
-            <ListGroup header="Goal" footer={pact.tz !== deviceZone ? `Weeks follow ${timeZoneDisplayName(pact.tz)}.` : undefined}>
+            <ListGroup header="Details" footer={pact.tz !== deviceZone ? `Weeks follow ${timeZoneDisplayName(pact.tz)}.` : undefined}>
               <ListRow title="Goal" trailing={<Value tabular>{goalLabel(pact, unit)}</Value>} />
               <ListRow title="Counts" trailing={<Value>{countsLine}</Value>} />
               {pact.period === 'weekly' ? (

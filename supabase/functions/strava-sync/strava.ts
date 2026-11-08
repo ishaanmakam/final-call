@@ -468,24 +468,37 @@ interface Subscription {
   callback_url?: string;
 }
 
+export interface SubscriptionResult {
+  status: "exists" | "created";
+  /** Strava's subscription id, when the answer carried one: the value for STRAVA_SUBSCRIPTION_ID. */
+  id: number | null;
+}
+
 /**
  * One webhook subscription per Strava application. Lists first; creates if ours is missing;
- * treats Strava's "already exists" rejection as success (two first-connects racing).
+ * treats Strava's "already exists" rejection as success (two first-connects racing). The id comes
+ * back so the founder can pin STRAVA_SUBSCRIPTION_ID (events from any other id are ignored).
  */
-export async function ensureSubscription(fetchFn: FetchFn, cfg: SubscriptionConfig, now: Date): Promise<"exists" | "created"> {
+export async function ensureSubscription(fetchFn: FetchFn, cfg: SubscriptionConfig, now: Date): Promise<SubscriptionResult> {
   const listUrl = new URL(`${STRAVA_API}/push_subscriptions`);
   listUrl.searchParams.set("client_id", cfg.clientId);
   listUrl.searchParams.set("client_secret", cfg.clientSecret);
   const list = await stravaJson<Subscription[]>(fetchFn, listUrl.toString(), { method: "GET", headers: { accept: "application/json" } }, now);
-  if (list.status === 200 && Array.isArray(list.body) && list.body.length > 0) return "exists";
+  if (list.status === 200 && Array.isArray(list.body) && list.body.length > 0) {
+    const id = list.body[0]?.id;
+    return { status: "exists", id: typeof id === "number" ? id : null };
+  }
   const created = await stravaJson<Subscription | { message?: string; errors?: unknown[] }>(
     fetchFn,
     `${STRAVA_API}/push_subscriptions`,
     form({ client_id: cfg.clientId, client_secret: cfg.clientSecret, callback_url: cfg.callbackUrl, verify_token: cfg.verifyToken }),
     now,
   );
-  if (created.status === 200 || created.status === 201) return "created";
-  if (/already exists/i.test(created.text)) return "exists";
+  if (created.status === 200 || created.status === 201) {
+    const id = created.body && "id" in created.body && typeof created.body.id === "number" ? created.body.id : null;
+    return { status: "created", id };
+  }
+  if (/already exists/i.test(created.text)) return { status: "exists", id: null };
   throw new Error(`webhook subscription failed: HTTP ${created.status} ${created.text.slice(0, 200)}`);
 }
 
@@ -503,6 +516,12 @@ export interface StoredToken {
 export interface Deps extends OAuthConfig {
   fetch: FetchFn;
   now: () => Date;
+  /**
+   * Our Strava webhook subscription id (STRAVA_SUBSCRIPTION_ID). When set, an event that names
+   * another subscription is ignored before any Strava call: a forged POST to the public webhook
+   * then costs nothing but a log row. Unset = accept any (the payload is never trusted anyway).
+   */
+  subscriptionId?: number;
   tokenForAthlete(athleteId: string): Promise<StoredToken | null>;
   saveToken(token: StoredToken): Promise<void>;
   deleteTokenForAthlete(athleteId: string): Promise<void>;
@@ -587,7 +606,7 @@ export function parseWebhookEvent(body: unknown): WebhookEvent | null {
 
 export type EventOutcome =
   | { ok: true; action: "submitted"; submitted: number }
-  | { ok: true; action: "ignored" | "no_token" | "deauthorized" | "delete_recorded" | "revoked" | "not_found" }
+  | { ok: true; action: "ignored" | "foreign_subscription" | "no_token" | "deauthorized" | "delete_recorded" | "revoked" | "not_found" }
   | { ok: false; error: string; retryAt?: string };
 
 /**
@@ -595,9 +614,18 @@ export type EventOutcome =
  * submit_activities_for. Deletes are recorded only (activities are append-only evidence).
  * Athlete deauthorization deletes the tokens. Never throws: failures come back as {ok: false}
  * so the caller can store them on the event row and retry later.
+ *
+ * Trust: Strava does not sign webhooks and `owner_id` / `object_id` are whatever the sender wrote.
+ * Nothing in the event is stored as evidence: the activity is fetched from Strava with the token of
+ * the athlete the event names, so a forged event can at most re-deliver that athlete's own real
+ * activity (idempotent server side). With `subscriptionId` set, events for another subscription are
+ * dropped before that fetch.
  */
 export async function processEvent(deps: Deps, event: WebhookEvent): Promise<EventOutcome> {
   try {
+    if (deps.subscriptionId !== undefined && event.subscription_id !== deps.subscriptionId) {
+      return { ok: true, action: "foreign_subscription" };
+    }
     if (event.object_type === "athlete") {
       if (event.aspect_type === "update" && event.updates?.authorized === "false") {
         await deps.deleteTokenForAthlete(String(event.owner_id));
