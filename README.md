@@ -21,3 +21,18 @@ cd app && npm install && npx tsc --noEmit && npx vitest run
 ```
 
 The database tests run real Postgres (PGlite, compiled to WebAssembly) inside Node, so they work on Windows ARM without Docker.
+
+## Web simulator
+
+**https://ishaanmakam.github.io/final-call/** — a playable model of one group's week: an iPhone frame with the app's screens on the left, and on the right a fence playground (drag your GPS dot and accuracy ring and watch the verdict), your phone's online / location settings, your three friends' behaviour, a clock you fast-forward (Boarding, Final call, Gate closed, Next day, Monday noon), four preset weeks, and the live ledger. Every money number on it comes from `packages/rules` (the same oracle the database is differential-tested against), imported straight from source.
+
+```bash
+cd packages/rules && npm install
+cd ../web && npm install
+npm run dev          # http://localhost:5173/final-call/
+npm test             # engine + scenario + component tests (vitest, jsdom)
+npm run build        # web/dist, base /final-call/ (VITE_BASE=/ for a root deploy)
+npm run screenshots  # 1440×900 light + dark PNGs into web/screenshots/ (uses installed Chrome)
+```
+
+Deploys from `main` by `.github/workflows/pages.yml` whenever `web/**` or `packages/rules/**` change. One-time setup: in the GitHub repo, Settings → Pages → Build and deployment → Source: **GitHub Actions**.

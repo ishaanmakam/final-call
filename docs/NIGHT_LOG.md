@@ -40,8 +40,8 @@ Suites: db 21 files green, rules 42, push-outbox 57, app 496, scripts tsc, maest
 Suites: db 23 files / 314, rules 42, push-outbox 57, app 533; 166 screenshots.
 Polish notes for phase 5: Stats recap shows negative nets in red (decision UB2 says neutral; red only for Missed); the completion card repeats "81%" twice.
 
-## In flight
-- W: web simulator in `web/` (Vite + React + motion, imports packages/rules), `.github/workflows/pages.yml`, README Pages URL.
+## Phase 4 — committed and pushed
+- `web/`: Vite + React + motion simulator importing the real `packages/rules` oracle (alias to source); pure engine `web/src/sim` with scenarios and conservation invariants (36 tests); iPhone-frame screens (home, check-in, gate-closed reveal, feed, settle up) + control panel (fence playground, online/offline, precise/approximate/denied, friend behaviours, fast-forward, presets, live ledger); `.github/workflows/pages.yml` deploys to https://ishaanmakam.github.io/final-call/ on push to main (manual step: Settings → Pages → Source: GitHub Actions); 10 screenshots in `web/screenshots/`.
 
 ## Next
-Commit phase 4 when W reports; then phase 5 fresh verification agent (all suites incl. web, impeccable audit + review-animations on app and simulator with fresh screenshots, final money red-team, README/PLAN/DECISIONS updates), push, open PR night-1 → main with gh, finish NIGHT_LOG.
+Phase 5 fresh verification agent: all suites incl. web, impeccable audit + review-animations on app and simulator with fresh screenshots, final money red-team, README/PLAN/DECISIONS updates; then push, open PR night-1 → main, finish this log.
