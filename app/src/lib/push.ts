@@ -9,8 +9,8 @@ import { registerPushToken } from '../api/rpc';
 import { supabase } from '../api/supabase';
 import { routeFromData } from './pushRoute';
 
-const PREF_KEY = 'showup.notificationsEnabled';
-const TOKEN_KEY = 'showup.expoPushToken';
+const PREF_KEY = 'finalcall.notificationsEnabled';
+const TOKEN_KEY = 'finalcall.expoPushToken';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({

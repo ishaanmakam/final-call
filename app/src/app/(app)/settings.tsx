@@ -5,10 +5,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking, Platform, StyleSheet, Switch, TextInput, View, type TextInputProps } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { useProfile, useUpdateProfile } from '@/api/queries';
+import { deleteMyAccount } from '@/api/rpc';
 import { Button, EmptyState, Icon, ListGroup, ListRow, Screen, SkeletonList, Text } from '@/components';
 import { confirmDestructive } from '@/features/settings/confirm';
 import { profilePatch, type ProfileSaved } from '@/features/settings/profileForm';
-import { signOut, useUserId } from '@/lib/auth';
+import { deleteAccountAndSignOut, signOut, useUserId } from '@/lib/auth';
 import { checkinQueue, kickQueue, subscribeToQueue } from '@/lib/checkinQueueRuntime';
 import { classifyRpcError, userMessage } from '@/lib/errors';
 import { clearPushOnSignOut, disablePush, enablePush, getNotificationsEnabled } from '@/lib/push';
@@ -17,7 +18,9 @@ import { TOUCH_TARGET, haptic, space, transition, type as typeScale, useTheme } 
 const PROFILE_FOOTNOTE = "Friends use your Venmo to pay you at settle-up. Leave it blank and they'll pay you however you agree.";
 const NOTIF_FOOTNOTE = 'When a window opens, 15 minutes before a deadline, results, reviews and settle-up.';
 const ABOUT_FOOTNOTE =
-  'Your location is read once, only when you tap Check In. Raw coordinates are deleted after 30 days. No real money moves through Show Up; it keeps the tally and hands out Venmo links at settle-up.';
+  'Your location is read once, only when you tap Check In. Raw coordinates are deleted after 30 days. No real money moves through Final Call; it keeps the tally and hands out Venmo links at settle-up.';
+const DELETE_FOOTNOTE =
+  'Deleting your account leaves every group, erases your sign-in and push tokens, and renames you "Deleted member". Past results and settle-ups stay in your groups\' history, because your friends\' balances came from them.';
 const SAVED_MS = 2000;
 
 /** A grouped-list row whose value is typed in place: label left, input right, autosaves on end-editing. */
@@ -84,6 +87,7 @@ export default function Settings() {
   const [notifNote, setNotifNote] = useState<{ text: string; denied: boolean } | null>(null);
   const [queued, setQueued] = useState(0);
   const [signingOut, setSigningOut] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<unknown>(null);
 
   const refreshQueued = useCallback(() => void checkinQueue.pending().then((q) => setQueued(q.length)), []);
@@ -164,6 +168,32 @@ export default function Settings() {
     } catch (e) {
       setError(e);
       setSigningOut(false);
+    }
+  };
+
+  const onDeleteAccount = async () => {
+    const ok = await confirmDestructive({
+      title: 'Delete your account?',
+      message:
+        'You leave every group and your sign-in is erased; this cannot be undone. Your name becomes "Deleted member" on past results, forfeits and settle-ups, which stay in your groups\' history. Anything you still owe or are owed from settled weeks stays visible to the other person.',
+      confirmLabel: 'Delete account',
+    });
+    if (!ok) return;
+    haptic('commit');
+    setDeleting(true);
+    setError(null);
+    try {
+      await clearPushOnSignOut();
+    } catch {
+      // best effort: the server deletes the tokens too
+    }
+    try {
+      await deleteAccountAndSignOut(deleteMyAccount);
+      qc.clear();
+      router.replace('/sign-in');
+    } catch (e) {
+      setError(e);
+      setDeleting(false);
     }
   };
 
@@ -273,7 +303,7 @@ export default function Settings() {
             leading={<Icon name="gearshape" size={20} color="tint" />}
             chevron
             onPress={() => void Linking.openSettings()}
-            accessibilityHint="Opens iOS Settings for Show Up"
+            accessibilityHint="Opens iOS Settings for Final Call"
           />
         ) : null}
       </ListGroup>
@@ -298,10 +328,22 @@ export default function Settings() {
             </Text>
           }
         />
+        <ListRow title="Privacy policy" chevron onPress={() => router.push('/legal/privacy')} />
+        <ListRow title="Terms of use" chevron onPress={() => router.push('/legal/terms')} />
       </ListGroup>
 
       <ListGroup>
-        <ListRow title="Sign out" destructive onPress={() => void onSignOut()} disabled={signingOut} accessibilityHint="Asks you to confirm first" />
+        <ListRow title="Sign out" destructive onPress={() => void onSignOut()} disabled={signingOut || deleting} accessibilityHint="Asks you to confirm first" />
+      </ListGroup>
+
+      <ListGroup footer={DELETE_FOOTNOTE}>
+        <ListRow
+          title="Delete account"
+          destructive
+          onPress={() => void onDeleteAccount()}
+          disabled={deleting || signingOut}
+          accessibilityHint="Asks you to confirm first. Cannot be undone."
+        />
       </ListGroup>
 
       {error ? (

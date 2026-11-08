@@ -16,7 +16,7 @@ describe('groupNameError', () => {
 describe('parseInviteInput', () => {
   it('accepts a bare code or a link and upper-cases the code', () => {
     expect(parseInviteInput('kane9am')).toEqual({ code: 'KANE9AM' });
-    expect(parseInviteInput('showup://join/kane9am')).toEqual({ code: 'KANE9AM' });
+    expect(parseInviteInput('finalcall://join/kane9am')).toEqual({ code: 'KANE9AM' });
     expect(canJoin(' KANE9AM ')).toBe(true);
   });
   it('refuses empty and malformed input', () => {
@@ -29,6 +29,6 @@ describe('parseInviteInput', () => {
 describe('normalizeInviteInput', () => {
   it('upper-cases typed codes but leaves links alone', () => {
     expect(normalizeInviteInput('kane9am')).toBe('KANE9AM');
-    expect(normalizeInviteInput('showup://join/Kane9am')).toBe('showup://join/Kane9am');
+    expect(normalizeInviteInput('finalcall://join/Kane9am')).toBe('finalcall://join/Kane9am');
   });
 });

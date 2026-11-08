@@ -294,7 +294,8 @@ it(`SQL review resolution and result overrides match packages/rules on ${REVIEW_
         if (kind === 'appeal') stats.appeals++;
         else stats.challenges++;
         if (kind === 'challenge' && reviews.some((r) => r.subject === u)) stats.chained++;
-        const eligible = users.filter((x) => x !== u);
+        // RT-1: the opener of a challenge is not one of its voters
+        const eligible = users.filter((x) => x !== u && (kind === 'appeal' || x !== opener));
         let yes = 0;
         let no = 0;
         let early: { status: ReviewStatus; at: number } | null = null;

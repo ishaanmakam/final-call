@@ -1,0 +1,60 @@
+# Signed-out → sign-in screen → Apple fallback / email link → groups list.
+#
+# Demo mode cannot mint a session: lib/auth.tsx returns early from signInWithApple and sendMagicLink
+# (the fake session exists whenever the route has no ?signedOut=1). So this flow exercises both
+# controls and the "Check your email" state, then re-enters the app by deep link, which restores the
+# demo session and lands on the groups list (DECISIONS.md P4-2).
+appId: com.ishaanmakam.finalcall
+name: sign-in
+tags:
+  - smoke
+env:
+  APP_SCHEME: ${APP_SCHEME || "finalcall"}
+  # the large title on the sign-in screen (app.config.ts `name`)
+  APP_NAME: ${APP_NAME || "Final Call"}
+---
+- launchApp:
+    clearState: true
+- runFlow:
+    file: _open.yaml
+    env:
+      ROUTE: 'sign-in?signedOut=1'
+- extendedWaitUntil:
+    visible: 'Email me a sign-in link'
+    timeout: 15000
+- assertVisible: ${APP_NAME}
+- assertVisible: 'Your location is read once, only when you tap Check In during a window. Never in the background.'
+
+# The fallback Button renders only when the simulator reports Apple sign-in available
+# (AppleAuthentication.isAvailableAsync). In demo the tap is a no-op; we only prove it is tappable.
+- runFlow:
+    when:
+      visible: 'Sign in with Apple'
+    commands:
+      - tapOn: 'Sign in with Apple'
+      - assertVisible: 'Email me a sign-in link'
+
+# The field's accessibility label is "Email" (TextField), which is also the visible label text, so
+# target the placeholder, which only the input carries.
+# UNSURE: if the iOS driver does not expose the placeholder as text, use the testID fallback listed
+# in DECISIONS.md P4-4 (`testID="sign-in-email"`) and `tapOn: { id: sign-in-email }` here.
+- tapOn: 'name@example.com'
+- inputText: 'sam@uw.edu'
+- hideKeyboard
+- tapOn: 'Email me a sign-in link'
+- extendedWaitUntil:
+    visible: 'Check your email'
+    timeout: 10000
+- assertVisible: 'We sent a sign-in link to sam@uw.edu. Open it on this phone.'
+- assertVisible: 'Use a different email'
+
+# Back in: no ?signedOut on the route, so the demo session returns and /groups renders.
+- runFlow:
+    file: _open.yaml
+    env:
+      ROUTE: 'groups'
+- extendedWaitUntil:
+    visible: 'Morning crew'
+    timeout: 15000
+- assertVisible: 'Groups'
+- assertVisible: 'New group'

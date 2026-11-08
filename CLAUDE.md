@@ -1,4 +1,4 @@
-# Show-up pacts: project rules for Claude Code
+# Final Call (show-up pacts): project rules for Claude Code
 
 Read `docs/DESIGN.md` (why) and `docs/CONTRACT.md` (exact tables, rules and RPC signatures) before changing anything. `docs/DECISIONS.md` records choices made without the founder; respect them unless he overrides one.
 

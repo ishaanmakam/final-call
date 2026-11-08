@@ -26,10 +26,13 @@ Then a fresh red-team agent, fixes test-first.
 ## Phase 1a — committed and pushed (4272671)
 Suites: db 251, rules 41, push-outbox 55, app 446; 138 screenshots.
 
-## In flight
-- Fresh red-team agent: `supabase/tests/redteam.test.ts`, `supabase/migrations/20261108000400_redteam_fixes.sql`, `docs/REDTEAM.md`.
-- Phase 2 in parallel: P1 Supabase-for-real (`supabase/config.toml`, `seed.sql`, `scripts/smoke.ts`, `docs/DEPLOY.md`), P2 reliability (local notifications, heartbeat migration `20261108000500_heartbeat.sql`, Sentry, clock skew), P4 device testing (`.maestro/`, `.eas/workflows/`, CI, `docs/TESTING.md`).
-- After P2 finishes: P3 App Store readiness + global rename to Final Call (account deletion, privacy/terms, APP_STORE.md, Apple nonce, expo-updates, bundle id, scheme).
+## Phase 1b + Phase 2 — committed and pushed
+- Red-team (`docs/REDTEAM.md`): 4 proven holes fixed in `20261108000400_redteam_fixes.sql` (challenge opener is not a voter; unverified days can no longer hide behind a voided 2-person day; mark-paid/dispute notify the counterparty; late taps re-run the budget check); 35 attacks confirmed safe; accepted risks RT-5/RT-6. Oracle RULES_VERSION 3.
+- P1: `supabase/config.toml` rewritten, `supabase/seed.sql` + `seed.test.ts`, `scripts/smoke.ts` (skips without .env), `docs/DEPLOY.md` (Windows), root `.env.example`.
+- P2: local Boarding / Final-call notifications planned from the query cache (`lib/localNotifications.ts`), cron heartbeat + `job_health` + `check_job_health` ops alerts (`20261108000500_heartbeat.sql`), Sentry behind env flags (app + Edge Function, location scrubbed), server-vs-device clock notice on check-in.
+- P3: renamed to Final Call (`com.ishaanmakam.finalcall`, `finalcall://`), `delete_my_account` (`20261108000600_account_deletion.sql`, profile anonymized, ledger kept), privacy + terms screens and `docs/legal/*.md`, `docs/APP_STORE.md`, Sign in with Apple nonce, expo-updates, cross-lane patches.
+- P4: `.maestro/` flows + lint, `app/.eas/workflows/maestro.yml`, CI extended, `docs/TESTING.md`.
+Suites: db 21 files green, rules 42, push-outbox 57, app 496, scripts tsc, maestro lint ok; 146 screenshots.
 
 ## Next
-Collect red-team + P1/P2/P4 reports, integrate, run all suites, commit "Phase 1b/2a", push. Then P3, then phase 3.
+Phase 3: airport voice (Boarding / Final call / Gate closed), gate-close money moment with reveal motion, seasons + streaks + settlement completion stats. Then phase 4 web simulator, phase 5 verification + PR.

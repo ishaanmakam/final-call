@@ -607,14 +607,17 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
       expect.soft(await billable(), 'billable after week 1 settle-up').toEqual(expectNames({ B: 1209, D: -209, E: -1000 }));
       expect.soft(await balances(), 'live after week 1 settle-up').toEqual(expectNames({ A: 125, B: 1334, C: 125, D: -84, E: -1500 }));
     });
-    // Tue: everyone but E checks in; A challenges B; A (opener), C, D vote yes -> accepted, B failed.
-    // k=3, l=2 (B, E): pot 1000 -> 333 r1 (A earliest).
+    // Tue: everyone but E checks in; A challenges B; C, D vote yes (2 of the 3 eligible: C, D, E; the
+    // opener A does not vote, RT-1) -> accepted, B failed. k=3, l=2 (B, E): pot 1000 -> 333 r1 (A earliest).
     ci('A', '2026-10-27', '08:05', 'in');
     ci('B', '2026-10-27', '08:10', 'in');
     ci('C', '2026-10-27', '08:15', 'in');
     ci('D', '2026-10-27', '08:20', 'in');
     openReview('A', 'B', 'challenge', 'tue-challenge', '2026-10-27', '10:00');
-    vote('A', 'tue-challenge', true, la('2026-10-27', '10:10'));
+    before(la('2026-10-27', '10:10'), 'A cannot vote on the challenge A opened (RT-1)', async () => {
+      const e = await expectError(asUser(db, id.A, (d) => d.query(`select public.cast_vote($1, true)`, [reviewIds['tue-challenge']])));
+      expect.soft(e.code).toBe('42501');
+    });
     vote('C', 'tue-challenge', true, la('2026-10-27', '10:20'));
     vote('D', 'tue-challenge', true, la('2026-10-27', '10:30'));
     after(la('2026-10-27', '10:30'), 'challenge accepted', async () => {
@@ -949,14 +952,33 @@ describe('Scenario A: 5 roommates, 3 weeks across the 2026-11-01 fall-back', () 
 
   it('outbox has the expected kinds with no duplicates per (user, instance, kind)', async () => {
     const kinds = await rows<{ kind: string }>(db, `select distinct kind from public.notification_outbox order by kind`);
-    expect(kinds.map((k) => k.kind)).toEqual(['deadline_soon', 'place_changed', 'result', 'review_opened', 'settlement', 'window_open']);
+    expect(kinds.map((k) => k.kind)).toEqual([
+      'deadline_soon', 'obligation_disputed', 'obligation_marked_paid', 'place_changed', 'result', 'review_opened', 'settlement', 'window_open',
+    ]);
+    // RT-3: every mark-paid went to its payee, the one dispute to its payer; nothing still marked paid is unannounced
+    expect(await scalar<number>(db, `select count(*)::int from public.notification_outbox where kind = 'obligation_disputed'`)).toBe(1);
+    expect(
+      await scalar<number>(
+        db,
+        `select count(*)::int from public.notification_outbox n join public.obligations o on o.id = (n.payload ->> 'obligation_id')::uuid
+          where (n.kind = 'obligation_marked_paid' and n.user_id <> o.to_user) or (n.kind = 'obligation_disputed' and n.user_id <> o.from_user)`,
+      ),
+    ).toBe(0);
+    expect(
+      await scalar<number>(
+        db,
+        `select count(*)::int from public.obligations o
+          where o.status = 'marked_paid'
+            and not exists (select 1 from public.notification_outbox n where n.kind = 'obligation_marked_paid' and (n.payload ->> 'obligation_id')::uuid = o.id)`,
+      ),
+    ).toBe(0);
 
     const dups = await rows(
       db,
       `select user_id, kind, payload->>'instance_id' i, payload->>'correction' c, payload->>'review_id' r,
-              payload->>'settlement_id' s, payload->>'place_id' p, payload->>'event' ev, count(*)::int n
+              payload->>'settlement_id' s, payload->>'place_id' p, payload->>'event' ev, payload->>'obligation_id' ob, count(*)::int n
          from public.notification_outbox
-        group by 1, 2, 3, 4, 5, 6, 7, 8 having count(*) > 1`,
+        group by 1, 2, 3, 4, 5, 6, 7, 8, 9 having count(*) > 1`,
     );
     expect(dups).toEqual([]);
 

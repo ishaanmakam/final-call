@@ -1,8 +1,8 @@
-# Show Up: iOS app (Expo)
+# Final Call: iOS app (Expo)
 
-The client for show-up pacts. Expo SDK 58, React Native 0.88, TypeScript (strict), expo-router, Supabase JS, TanStack Query. Design: `../docs/DESIGN.md`. Interfaces: `../docs/CONTRACT.md`.
+The client for show-up pacts (the product was renamed from "Show Up" to **Final Call** on 2026-11-07: bundle id `com.ishaanmakam.finalcall`, scheme `finalcall://`). Expo SDK 58, React Native 0.88, TypeScript (strict), expo-router, Supabase JS, TanStack Query. Design: `../docs/DESIGN.md`. Interfaces: `../docs/CONTRACT.md`.
 
-Native modules are limited to expo-location (foreground only), expo-notifications, expo-apple-authentication, expo-secure-store, expo-linking, expo-image-picker (appeal photos) and AsyncStorage (offline queue). One EAS development build covers all of them, and everything else is JavaScript that reloads without a rebuild.
+Native modules are limited to expo-location (foreground only), expo-notifications, expo-apple-authentication, expo-crypto (the Sign in with Apple nonce), expo-secure-store, expo-linking, expo-image-picker (appeal photos), expo-updates (OTA JS updates) and AsyncStorage (offline queue). One EAS development build covers all of them, and everything else is JavaScript that reloads without a rebuild.
 
 ## Setup on Windows (no Mac needed)
 
@@ -41,7 +41,11 @@ npx expo start --dev-client --tunnel
 
 You only need to rebuild when native config changes (app.config.ts, plugins, a new native module). Screens, queries and logic reload instantly.
 
-Other profiles in `eas.json`: `preview` (internal ad hoc build without the dev menu) and `production` (App Store, auto-incrementing build number).
+Other profiles in `eas.json`: `preview` (internal ad hoc build without the dev menu), `demo-simulator` (fixture data, for Maestro) and `production` (App Store, auto-incrementing build number). Each profile has an expo-updates `channel` of the same name.
+
+### Ship an OTA fix
+
+JavaScript-only changes (screens, copy, queries, rules of display) can reach installed builds without a store release: `cd app; npx eas-cli@latest update --channel production --message "fix: settle-up copy"` builds the bundle and publishes it to every production build whose `runtimeVersion` matches; the app picks it up on the next cold start (expo-updates' default `checkAutomatically: ON_LOAD`). `runtimeVersion` is `{ policy: 'appVersion' }` (`app.config.ts`), so an update only ever lands on binaries with the same `version`; anything that touches native code (a new module, a plugin, a permission string) needs a version bump and a new `eas build`. `--channel preview` does the same for TestFlight/internal builds; `--branch` is derived from the channel. The updates URL is `https://u.expo.dev/<EAS_PROJECT_ID>`, added to the config only when `EAS_PROJECT_ID` is set (local web exports and screenshots run without it).
 
 ## Environment variables
 
@@ -50,7 +54,10 @@ Other profiles in `eas.json`: `preview` (internal ad hoc build without the dev m
 | `EXPO_PUBLIC_SUPABASE_URL` | Supabase project URL, inlined into the JS bundle |
 | `EXPO_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon key (safe to ship, RLS protects data) |
 | `EAS_PROJECT_ID` | read by `app.config.ts` into `extra.eas.projectId`, needed for Expo push tokens |
-| `IOS_BUNDLE_ID` | optional override of the placeholder `com.ishaanmakam.showup` |
+| `IOS_BUNDLE_ID` | optional override of `com.ishaanmakam.finalcall` |
+| `EXPO_PUBLIC_SENTRY_DSN` | optional; turns crash reporting on (see "Reliability") |
+| `EXPO_PUBLIC_SENTRY_ENVIRONMENT` | optional Sentry environment name (default: development under Metro, production in a release build) |
+| `SENTRY_ORG`, `SENTRY_PROJECT`, `SENTRY_AUTH_TOKEN` | build-time only (EAS secrets): with the DSN set they enable the Sentry config plugin, which uploads source maps |
 
 `.env` is gitignored, so EAS cloud builds don't see it. Add the same values to EAS for each environment the profiles use (`development`, `preview`, `production`):
 
@@ -66,9 +73,7 @@ If the URL or key is missing the app shows a "Setup needed" screen instead of cr
 
 ## Supabase dashboard settings the app relies on
 
-- Auth > URL Configuration > Redirect URLs: add `showup://auth-callback`. Magic links use the PKCE flow and land on that route, which exchanges the `code` for a session.
-- Auth > Providers > Apple: enable it and add the bundle id (`com.ishaanmakam.showup`) under Client IDs. Native Sign in with Apple sends the identity token straight to `signInWithIdToken`; no Services ID or secret is needed for native-only.
-- Storage: a private bucket named `review-photos` (see "Schema additions").
+`../docs/DEPLOY.md` §8 (Auth: `finalcall://auth-callback` redirect URLs, the Apple provider with the bundle id as Client ID, email templates, SMTP) and §9 (the private `review-photos` bucket) are the authoritative list; `supabase/config.toml` carries the same values for `supabase config push`. Native Sign in with Apple sends Apple's identity token plus a nonce to `signInWithIdToken` (`src/features/auth/appleNonce.ts`); keep `skip_nonce_check = false`.
 
 ## Scripts
 
@@ -108,8 +113,9 @@ Route params steer the scenario (web: the URL query; native: any `router.push` w
 | `?fix=none` | the GPS fix times out on the Check In tap (sent without coordinates: unverified, never missed) |
 | `?precise=0` | iOS Approximate Location: the Check In tap sends nothing and points to Settings (the day would count as missed) |
 | `?budget=N` | N unverified days this month in the open instance's pact (0-9): the check-in screen's "N unverified this month" line |
+| `?skew=S` | the phone's clock is S seconds off the server (negative = phone ahead): past 120 s the check-in screen shows the clock-skew notice |
 
-Demo ids: group `g1` (empty group `g-empty`), pacts `p1`..`p5` (`p5` "Chem lab by 2" is one you are not in), today's instances `i-open`, `i-before`, `i-closed`, `i-void`, `i-frozen`, `i-notin`, invite code `KANE9AM`.
+Demo ids: group `g1` (empty group `g-empty`), pacts `p1`..`p6` (`p5` "Chem lab by 2" is one you are not in; `p6` "Lab notebook by noon" is today's Missed day of yours, `i-missed`, with no review yet), today's instances `i-open`, `i-before`, `i-closed`, `i-void`, `i-frozen`, `i-notin`, `i-missed`, invite code `KANE9AM`.
 
 ## Screenshots
 
@@ -133,18 +139,20 @@ screenshots/             the review artifact: every route, light and dark (see "
 scripts/screenshot.mjs   exports the demo web build and captures it with Playwright
 src/app/                 expo-router routes (layout and data only; copy and state tables live in src/features)
   sign-in.tsx            Sign in with Apple + email magic link
-  auth-callback.tsx      showup://auth-callback?code=... (magic link landing)
+  auth-callback.tsx      finalcall://auth-callback?code=... (magic link landing)
+  legal/privacy.tsx, legal/terms.tsx   static legal text (src/features/legal/content.ts; the same words as ../docs/legal/*.md)
   (app)/_layout.tsx      signed-in guard, push registration, offline queue runner, queue toasts
   (app)/groups/...       list, create/join, group home, feed, settle-up (route name `ledger`), pact wizard
   (app)/pacts/[pactId]/  pact detail, per-person place picker
   (app)/checkin/[id]     the check-in moment (ring, button, verdict panel)
-  (app)/join/[code]      showup://join/<code> invite links
-  (app)/settings.tsx     profile + Venmo username (autosave), notifications, sign out
+  (app)/join/[code]      finalcall://join/<code> invite links
+  (app)/settings.tsx     profile + Venmo username (autosave), notifications, privacy/terms, sign out, delete account
 src/components/          the primitives (see "Design system"); `status.ts` maps every state to its word and tone
 src/theme/               tokens (colors, type, space, radius, springs, easings, haptics map), ThemeProvider,
                          motion helpers, reduced-motion mapper, countdown formatting; all unit tested
 src/features/            per-screen logic with no React Native imports, so it is unit tested
-  auth/                  safe `next` redirect, email validation, magic-link error copy
+  auth/                  safe `next` redirect, email validation, magic-link error copy, the Sign in with Apple nonce
+  legal/                 privacy policy and terms as data (+ the screen that renders them)
   checkin/               the button state machine, verdict panel copy, clock copy, CheckinButton/VerdictPanel/WindowClock
   feed/                  day grouping, money sentences, review and vote copy
   group/                 today-card copy and status lines, nav-bar icon button
@@ -223,10 +231,24 @@ The client needs these, which are not in CONTRACT.md yet:
 9. Notification kind `place_changed` (payload `event` = created / acknowledged / objected / effective, `url` = `/pacts/<id>`); the push function needs a renderer for it.
 8. The view `unverified_month_counts(pact_id, user_id, month, count)` (`20261108000200`), read by `features/checkin/useUnverifiedBudget.ts`; `reviews.system_opened` marks the automatic challenge the third unverified day of a pact-month opens (CONTRACT.md "Unverified budget"). Neither is in `api/types.ts` yet.
 
+## Reliability
+
+**Local notifications.** The phone schedules its own reminders for the windows it knows about: "Boarding for <pact>" when a window opens and "Final call: 15 minutes left for <pact>" before the deadline, both deep-linking to the check-in screen. `src/lib/localNotifications.ts` is a pure planner (tested): given the instances already in the TanStack cache (today's items of every loaded group home, the upcoming list of every opened pact, the success flag of every opened check-in screen) and the identifiers pending on the device, it returns what to schedule and what to cancel. Identifiers are deterministic (`boarding:<instance id>`, `final:<instance id>`), so re-running is idempotent; cancellations cover instances that vanished, were voided or paused, got frozen, or are already in the circle; the horizon is 7 days and at most 60 are pending (iOS caps at 64). `src/lib/localNotificationsRuntime.ts` applies the plan with expo-notifications 1.5 s after any group / pact / instance query settles and on every return to the foreground. It never prompts: push registration owns the one permission prompt, and without the grant the sync is a no-op. A server push for the same moment (`window_open`, `deadline_soon`) that arrives while the app is open cancels the local twin, so one moment gets one banner; local payloads carry `local: true`. Web and demo builds do nothing. `lib/auth.tsx#signOut` (and account deletion) calls `cancelAllLocalNotifications()` first.
+
+**Clock skew.** `src/lib/serverTime.ts` keeps an estimate of `server - device` from the `Date` header of Supabase responses (median of the last five; tested). When the phone is more than two minutes off, the check-in screen shows a quiet footnote under the clock: "Your phone's clock is 4 min behind the server. Deadlines use server time." plus where the deadline stands by the server's clock. `src/api/supabase.ts` wraps the client's `global.fetch` and feeds every response's `Date` header to `recordServerDate`. Demo: `?skew=300`.
+
+**Sentry.** Off unless `EXPO_PUBLIC_SENTRY_DSN` is set; never on in demo mode or in the web build. `src/lib/sentry.ts` initialises with `tracesSampleRate: 0.1`, `sendDefaultPii: false`, and runs every event and breadcrumb through `src/lib/sentryScrub.ts` (tested), which strips any key named like a coordinate or its precision and redacts coordinate pairs inside strings: location never leaves the phone this way. `captureException(error, context)` is safe to call anywhere (a no-op when off) and is used on the check-in screen's unexpected-error path, the local-notification sync and the offline queue's transport (a `send` that throws is reported, then rethrown so the queue's retry logic is unchanged). The root layout is `Sentry.wrap`ped only when enabled. Source maps: set `SENTRY_ORG`, `SENTRY_PROJECT` and `SENTRY_AUTH_TOKEN` as EAS secrets; `app.config.ts` then adds the `@sentry/react-native/expo` plugin (rebuild needed). For readable stack traces in release builds also add `metro.config.js` with `getSentryExpoConfig` from `@sentry/react-native/metro` (not added yet; nothing breaks without it). The Edge Function has the same switch: `supabase secrets set SENTRY_DSN=...` and `supabase/functions/push-outbox/sentry.ts` loads `npm:@sentry/deno` lazily.
+
+**Heartbeat and ops alerts (server).** Every cron job writes `job_heartbeats` at the end of each run and the push function beats through `record_push_heartbeat`; the view `job_health` says which job is overdue (no success inside 3x its cadence) and how many `job_failures` rows it collected in the last hour. `check_job_health` runs every 10 minutes and sends one `ops_alert` notification per job per hour to the user named in `ops_settings.ops_user_id` (null by default: set it once with `update public.ops_settings set ops_user_id = '<your auth user id>'` in the SQL editor). Details and signatures: `docs/CONTRACT.md` "Heartbeat and ops alerts". The push function renders `ops_alert` as "Final Call job <job>" with the reason, deep-linking to Settings.
+
+## Account deletion and legal pages
+
+Settings → **Delete account** (App Store 5.1.1(v)) confirms with the consequences, calls `delete_my_account()` (`api/rpc.ts`; CONTRACT.md "Account deletion": leaves every group under the normal leave rules, anonymizes the profile to "Deleted member", drops push tokens, pending places, open-review votes and raw coordinates, keeps results/ledger/obligations, erases the auth identity), then signs out locally and returns to the sign-in screen. The one refusal the server can give (on the roster of an open check-in window, `23514`) is shown as its own message. Demo mode anonymizes the fixture profile and drops to the signed-out state.
+
+`legal/privacy` and `legal/terms` render `src/features/legal/content.ts`; `docs/legal/PRIVACY.md` and `TERMS.md` are generated from the same data (`node --experimental-strip-types` one-liner in `docs/APP_STORE.md`'s source note, or copy from the test's expectation) and `content.test.ts` fails when they drift. App Store Connect answers (privacy label, review notes, checklist) live in `../docs/APP_STORE.md`.
+
 ## Known limitations
 
 - No NetInfo module, so "network regained" is detected by the foreground event and the backoff timer, not by a connectivity callback. Queued check-ins don't send while the app is backgrounded.
 - A timed-out check-in may have reached the server; the retry then records a second tap. That is harmless (first in-fence tap wins) but the contract has no client idempotency key.
-- Sign in with Apple doesn't pass a nonce (would need a SHA-256 implementation or expo-crypto).
-- expo-updates isn't installed, so "ship over the air" means reloading from Metro in the dev client; add expo-updates and `eas update` before TestFlight.
 - No address search for places (v1.1); the place picker uses your current location plus a radius.

@@ -1,0 +1,29 @@
+# Maestro workspace for the Final Call iOS client (docs/TESTING.md).
+#
+# Every flow drives the DEMO build (EXPO_PUBLIC_DEMO=1, eas.json profile `demo-simulator`): no
+# Supabase, no real location, deterministic fixtures from app/src/api/demo. Flows reach screens by
+# deep link (`${APP_SCHEME}://...`) so demo params (`?verdict=`, `?settle=`, ...) select the state.
+#
+#   maestro test .maestro/                     # the four flows below, in order
+#   maestro test .maestro/smoke-all.yaml       # the same four as one flow (what EAS runs)
+#   maestro test -e APP_SCHEME=<other> .maestro/   # a build with another scheme (IOS_BUNDLE_ID override)
+#
+# `_*.yaml` are helpers called with runFlow (they need parameters), `smoke-all.yaml` is the EAS entry
+# point; both are excluded here so a directory run does not execute them twice.
+flows:
+  - '*.yaml'
+  - '!_*.yaml'
+  - '!smoke-all.yaml'
+
+executionOrder:
+  continueOnFailure: false
+  flowsOrder:
+    - sign-in
+    - check-in
+    - settle-up
+    - appeal
+
+platform:
+  ios:
+    # Reduce Motion on the simulator (cloud only): the check-in ring and verdict panel settle at once.
+    disableAnimations: true

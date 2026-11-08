@@ -550,6 +550,7 @@ const CLIENT_RPCS: [string, string[]][] = [
   ['mark_obligation_paid', ['uuid']], ['confirm_obligation', ['uuid']], ['dispute_obligation', ['uuid']],
   ['register_push_token', ['text', 'text']],
   ['acknowledge_place', ['uuid']], ['object_place', ['uuid', 'text']], ['pact_place_distances', ['uuid']],
+  ['delete_my_account', []],
 ];
 const callSql = (fn: string, types: string[]) => `select public.${fn}(${types.map((t) => `null::${t}`).join(', ')})`;
 

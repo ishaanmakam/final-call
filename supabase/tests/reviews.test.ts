@@ -158,12 +158,12 @@ describe('cast_vote', () => {
     expect(await code(vote(d, id, false))).toBe('23514'); // already resolved
   });
 
-  it('accepted challenge turns success into failed; the opener may vote', async () => {
+  it('accepted challenge turns success into failed; the opener does not vote (RT-1)', async () => {
     const { inst, u } = await closedInstance(['success', 'success', 'failed']);
     const [a, b, c] = u;
     const id = await open(a, inst, b, 'challenge');
-    await vote(a, id, true);
-    expect(await reviewStatus(id)).toBe('open'); // 1 of 2 eligible (a, c)
+    expect(await code(vote(a, id, true))).toBe('42501'); // the opener profits from acceptance
+    expect(await reviewStatus(id)).toBe('open'); // c is the only eligible voter
     await vote(c, id, true);
     expect(await reviewStatus(id)).toBe('accepted');
     expect(await resultOf(inst, b)).toEqual({ status: 'failed', first: null });
@@ -207,8 +207,8 @@ describe('cast_vote', () => {
     const { inst, u } = await closedInstance(['success', 'success', 'unverified']);
     const [a, b, c] = u;
     const id = await open(a, inst, c, 'challenge');
-    await vote(a, id, true);
-    await vote(b, id, true);
+    expect(await code(vote(a, id, true))).toBe('42501'); // the opener does not vote (RT-1)
+    await vote(b, id, true); // b is the only eligible voter
     expect(await resultOf(inst, c)).toEqual({ status: 'failed', first: null });
     await db.query(`select public.check_in_at($1, $2, 47.6753, -122.3035, 10, $3::timestamptz, false, null, $4::timestamptz)`, [
       c, inst, at(MON_DEADLINE, -5), at(MON_DEADLINE, 30),

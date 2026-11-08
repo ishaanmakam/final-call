@@ -76,7 +76,7 @@ export default function GroupHome() {
 
   const share = () =>
     void Share.share({
-      message: `Join "${group.name}" on Show Up: ${inviteLink(group.invite_code)}\nOr enter code ${group.invite_code} in the app.`,
+      message: `Join "${group.name}" on Final Call: ${inviteLink(group.invite_code)}\nOr enter code ${group.invite_code} in the app.`,
     });
 
   const copyCode = () => {

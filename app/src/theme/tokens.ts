@@ -1,5 +1,5 @@
 /**
- * Design tokens for Show Up. Pure data: no React Native imports, so this file is unit-testable
+ * Design tokens for Final Call. Pure data: no React Native imports, so this file is unit-testable
  * (contrast, motion invariants) and is the single source `app/DESIGN.md` documents.
  *
  * Colors are semantic. Code never reaches for a raw hex: it asks for `colors.label`,

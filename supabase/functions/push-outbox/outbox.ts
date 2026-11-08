@@ -125,11 +125,15 @@ export function deepLinkUrl(kind: string, p: Record<string, unknown>): string | 
     case "review_opened":
       return group ? `/groups/${group}/feed` : undefined;
     case "settlement":
-      return group ? `/groups/${group}/ledger` : undefined;
+    case "obligation_marked_paid":
+    case "obligation_disputed":
+      return str(p.url) ?? (group ? `/groups/${group}/ledger` : undefined);
     case "place_changed": {
       const pact = str(p.pact_id);
       return str(p.url) ?? (pact ? `/pacts/${pact}` : undefined);
     }
+    case "ops_alert":
+      return str(p.url) ?? "/settings";
     default:
       return undefined;
   }
@@ -311,6 +315,30 @@ function renderCopy(row: OutboxRow, p: Record<string, unknown>, now: Date): { ti
           ? `You're owed ${formatCents(net)}. Your group will pay you on Venmo.`
           : "You're square this week.",
       };
+    }
+    // RT-3: to the payee. Until they confirm or dispute, the next settlement treats it as paid.
+    case "obligation_marked_paid": {
+      const payer = str(p.from_name) ?? "Someone";
+      const amount = num(p.amount_cents);
+      return {
+        title: amount !== undefined ? `${payer} marked ${formatCents(amount)} as paid` : `${payer} marked a payment as paid`,
+        body: "Confirm it once it lands on Venmo, or dispute it if nothing arrived.",
+      };
+    }
+    // RT-3: to the payer.
+    case "obligation_disputed": {
+      const payee = str(p.to_name) ?? "Someone";
+      const amount = num(p.amount_cents);
+      return {
+        title: amount !== undefined ? `${payee} says ${formatCents(amount)} did not arrive` : `${payee} disputed a payment`,
+        body: "Check Venmo and mark it paid again, or sort it out together.",
+      };
+    }
+    // check_job_health (20261108000500): to the ops user only; a cron job is overdue or failing.
+    case "ops_alert": {
+      const job = str(p.job) ?? "unknown";
+      const body = str(p.reason) ?? str(p.message) ?? "Open the dashboard and check job_health.";
+      return { title: `Final Call job ${job}`, body };
     }
     default:
       return null;

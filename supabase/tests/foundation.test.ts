@@ -719,7 +719,7 @@ describe('RLS and grants', () => {
       // CONTRACT.md client RPCs
       'create_group', 'join_group', 'leave_group', 'create_pact', 'join_pact', 'set_pact_paused',
       'check_in', 'declare_freeze', 'open_review', 'cast_vote', 'mark_obligation_paid', 'confirm_obligation', 'dispute_obligation',
-      'register_push_token', 'acknowledge_place', 'object_place', 'pact_place_distances',
+      'register_push_token', 'acknowledge_place', 'object_place', 'pact_place_distances', 'delete_my_account',
       // RLS helpers (must be executable by the querying role)
       'is_group_member', 'is_pact_participant', 'is_pact_group_member', 'is_instance_group_member', 'shares_group_with',
     ]);

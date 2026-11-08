@@ -8,6 +8,7 @@ import { useToast } from '@/components';
 import { useAuth } from '@/lib/auth';
 import type { QueueEvent } from '@/lib/checkinQueue';
 import { useCheckinQueueRunner } from '@/lib/checkinQueueRuntime';
+import { useLocalNotificationSync } from '@/lib/localNotificationsRuntime';
 import { registerForPush, useNotificationRouting } from '@/lib/push';
 import { queueNotice } from '@/lib/queueNotice';
 import { useReducedMotion, useTheme } from '@/theme';
@@ -26,6 +27,8 @@ function SignedIn({ userId }: { userId: string }) {
   }, [userId]);
 
   useNotificationRouting();
+  // Boarding / Final call reminders on the phone itself, re-planned as the group and pact queries settle
+  useLocalNotificationSync(userId);
 
   const onQueueEvent = useCallback(
     (event: QueueEvent<CheckinRow>) => {

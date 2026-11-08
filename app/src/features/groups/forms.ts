@@ -29,5 +29,5 @@ export const canJoin = (input: string): boolean => 'code' in parseInviteInput(in
 
 /** Codes are shown upper-case; links keep their spelling. */
 export function normalizeInviteInput(raw: string): string {
-  return /^showup:\/\//i.test(raw.trim()) ? raw : raw.toUpperCase();
+  return /^finalcall:\/\//i.test(raw.trim()) ? raw : raw.toUpperCase();
 }

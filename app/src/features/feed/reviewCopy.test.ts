@@ -66,13 +66,21 @@ describe('outcomes', () => {
 
 describe('canVoteOn', () => {
   const roster = ['me', 'priya', 'maya'];
+  const appeal = { status: 'open', subject_user_id: 'priya', kind: 'appeal', opened_by: 'priya' } as const;
   it('lets other participants vote while open, and change their vote', () => {
-    expect(canVoteOn({ review: { status: 'open', subject_user_id: 'priya' }, userId: 'me', roster })).toBe(true);
+    expect(canVoteOn({ review: appeal, userId: 'me', roster })).toBe(true);
   });
   it('refuses the subject, outsiders and closed reviews', () => {
-    expect(canVoteOn({ review: { status: 'open', subject_user_id: 'me' }, userId: 'me', roster })).toBe(false);
-    expect(canVoteOn({ review: { status: 'open', subject_user_id: 'priya' }, userId: 'diego', roster })).toBe(false);
-    expect(canVoteOn({ review: { status: 'accepted', subject_user_id: 'priya' }, userId: 'me', roster })).toBe(false);
+    expect(canVoteOn({ review: { ...appeal, subject_user_id: 'me', opened_by: 'me' }, userId: 'me', roster })).toBe(false);
+    expect(canVoteOn({ review: appeal, userId: 'diego', roster })).toBe(false);
+    expect(canVoteOn({ review: { ...appeal, status: 'accepted' }, userId: 'me', roster })).toBe(false);
+  });
+  it('refuses the opener of a challenge but not other voters, nor the subject of an automatic one voting elsewhere (RT-1)', () => {
+    const challenge = { status: 'open', subject_user_id: 'priya', kind: 'challenge', opened_by: 'me' } as const;
+    expect(canVoteOn({ review: challenge, userId: 'me', roster })).toBe(false);
+    expect(canVoteOn({ review: challenge, userId: 'maya', roster })).toBe(true);
+    // the automatic (unverified-budget) challenge is opened in the subject's name: the others vote
+    expect(canVoteOn({ review: { ...challenge, opened_by: 'priya' }, userId: 'me', roster })).toBe(true);
   });
 });
 

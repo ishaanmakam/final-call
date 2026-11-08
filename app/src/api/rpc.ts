@@ -167,6 +167,9 @@ const acknowledgePlaceReal = (placeId: string) => call('acknowledge_place', { p_
 const objectPlaceReal = (placeId: string, reason: string) =>
   call('object_place', { p_place: placeId, p_reason: reason.trim() });
 
+/** Settings → Delete account. Refused (23514) while the caller is on an open check-in roster. */
+const deleteMyAccountReal = () => call('delete_my_account', {});
+
 // ---------- demo-mode switch ----------
 // With EXPO_PUBLIC_DEMO=1 every RPC resolves against the in-memory fixtures (see ./demo).
 
@@ -187,3 +190,4 @@ export const disputeObligation = DEMO ? demo.disputeObligation : disputeObligati
 export const registerPushToken = DEMO ? demo.registerPushToken : registerPushTokenReal;
 export const acknowledgePlace = DEMO ? demo.acknowledgePlace : acknowledgePlaceReal;
 export const objectPlace = DEMO ? demo.objectPlace : objectPlaceReal;
+export const deleteMyAccount = DEMO ? demo.deleteMyAccount : deleteMyAccountReal;

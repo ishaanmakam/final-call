@@ -4,8 +4,9 @@ import { AppState } from 'react-native';
 import { sendQueuedCheckin } from '../api/rpc';
 import type { CheckinRow } from '../api/types';
 import { CheckinQueue, type QueueEvent, type QueueStorage } from './checkinQueue';
+import { captureException } from './sentry';
 
-const STORAGE_KEY = 'showup.checkinQueue.v1';
+const STORAGE_KEY = 'finalcall.checkinQueue.v1';
 
 const asyncStorage: QueueStorage = {
   load: () => AsyncStorage.getItem(STORAGE_KEY),
@@ -17,7 +18,15 @@ const listeners = new Set<Listener>();
 
 export const checkinQueue = new CheckinQueue<CheckinRow>({
   storage: asyncStorage,
-  send: sendQueuedCheckin,
+  // the transport maps rejections and transport failures to outcomes; anything that still throws is a bug worth a report
+  send: async (attempt) => {
+    try {
+      return await sendQueuedCheckin(attempt);
+    } catch (e) {
+      captureException(e, { where: 'checkinQueue.send', instanceId: attempt.instanceId });
+      throw e;
+    }
+  },
   onEvent: (event) => listeners.forEach((l) => l(event)),
 });
 

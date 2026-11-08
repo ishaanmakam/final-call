@@ -8,6 +8,7 @@ import {
   type RowError,
   sendExpoBatch,
 } from "./outbox.ts";
+import { captureException } from "./sentry.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -41,6 +42,12 @@ function groupByErrorAndRetry(rows: RowError[]): { error: string; retryAt: strin
 
 function check(error: { message: string } | null, what: string): void {
   if (error) throw new Error(`${what}: ${error.message}`);
+}
+
+/** Heartbeat for job_health (CONTRACT.md "Server jobs"). Best effort: never fails the run. */
+async function heartbeat(ok: boolean, error: string | null): Promise<void> {
+  const { error: rpcError } = await db.rpc("record_push_heartbeat", { p_ok: ok, p_error: error });
+  if (rpcError) console.error(JSON.stringify({ fn: "push-outbox", heartbeat: "failed", error: rpcError.message }));
 }
 
 Deno.serve(async (req) => {
@@ -97,10 +104,13 @@ Deno.serve(async (req) => {
       },
     });
     console.log(JSON.stringify({ fn: "push-outbox", ...summary }));
+    await heartbeat(true, null).catch(() => undefined);
     return json(200, summary);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     console.error(JSON.stringify({ fn: "push-outbox", error: message }));
+    await captureException(e, { fn: "push-outbox" });
+    await heartbeat(false, message).catch(() => undefined);
     return json(500, { error: message });
   }
 });

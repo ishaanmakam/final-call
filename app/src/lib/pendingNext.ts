@@ -1,6 +1,6 @@
 /**
- * Where to go after a magic link completes (A5). The invite flow is: open `showup://join/CODE` →
- * sign-in?next=/join/CODE → email → `showup://auth-callback?code=…`. The callback URL cannot carry
+ * Where to go after a magic link completes (A5). The invite flow is: open `finalcall://join/CODE` →
+ * sign-in?next=/join/CODE → email → `finalcall://auth-callback?code=…`. The callback URL cannot carry
  * `next` (Supabase only keeps allow-listed redirect URLs), so the sign-in screen parks it here
  * before sending the link and the callback takes it back out, once.
  *
@@ -15,7 +15,7 @@ export interface KeyValueStore {
   removeItem(key: string): Promise<void>;
 }
 
-export const PENDING_NEXT_KEY = 'showup.pendingNext';
+export const PENDING_NEXT_KEY = 'finalcall.pendingNext';
 
 /** How long a parked destination stays valid: a magic link itself expires after an hour. */
 export const PENDING_NEXT_TTL_MS = 60 * 60_000;

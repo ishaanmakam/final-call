@@ -1,0 +1,59 @@
+# Feed → a Missed row of yours this week → Appeal → reason → Send → the open review.
+#
+# PRECONDITION (DECISIONS.md P4-3): the demo history must contain a Missed result of yours in an
+# unsettled (this week's) instance with no appeal yet. Today's fixtures generate history from a hash
+# of the date, so that row exists only on some dates; the lead's fixture patch in P4-3 makes it
+# permanent. Until then this flow is the last in smoke-all so the others still report.
+#
+# A feed row is one accessible element labelled "<name>, <detail>" (iOS flattens the row, so the
+# "Appeal" footnote inside it is not addressable). For your own Missed day the label starts with
+# "You, Forfeited" (features/feed/groupFeed.ts personDetail) and tapping the row opens the sheet.
+appId: com.ishaanmakam.finalcall
+name: appeal
+tags:
+  - smoke
+env:
+  APP_SCHEME: ${APP_SCHEME || "finalcall"}
+---
+- launchApp:
+    clearState: true
+- runFlow:
+    file: _open.yaml
+    env:
+      ROUTE: 'groups/g1/feed'
+- extendedWaitUntil:
+    visible: 'Feed'
+    timeout: 15000
+# today's closed instance ("Sunrise run", i-closed) is always the first block
+- assertVisible: 'Sunrise run'
+
+- scrollUntilVisible:
+    element: 'You, Forfeit.*'
+    direction: DOWN
+    timeout: 30000
+- tapOn: 'You, Forfeit.*'
+
+# The appeal sheet: title "Appeal <date>", field "What happened?" (autoFocus on native, so the
+# keyboard is already up), "Add a photo" (skipped: the simulator library prompt is out of scope).
+- extendedWaitUntil:
+    visible: 'Appeal .*'
+    timeout: 10000
+- assertVisible: 'What happened?'
+- assertVisible: 'Add a photo'
+- assertVisible: '.*If nobody votes by Monday noon, the miss stands and the pledge is forfeited.*'
+# UNSURE: autoFocus should leave the reason field focused; if inputText lands nowhere, add
+# `- tapOn: 'I was in the back row, GPS put me in the courtyard.'` (the placeholder) before it, or the
+# testID fallback in DECISIONS.md P4-4.
+- inputText: 'Back row of the lecture hall, GPS put me in the courtyard.'
+- hideKeyboard
+- tapOn: 'Send'
+
+# Toast, then the review thread under your row: "You appealed", pill "Voting open", your reason.
+- extendedWaitUntil:
+    visible: 'Appeal sent. The others can vote until Monday noon.'
+    timeout: 10000
+- extendedWaitUntil:
+    visible: 'You appealed'
+    timeout: 10000
+- assertVisible: 'Voting open'
+- assertVisible: 'Back row of the lecture hall, GPS put me in the courtyard.'

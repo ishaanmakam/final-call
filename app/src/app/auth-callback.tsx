@@ -7,7 +7,7 @@ import { completeMagicLink } from '@/lib/auth';
 import { pendingNext } from '@/lib/pendingNextRuntime';
 import { space, useTheme } from '@/theme';
 
-/** Target of the magic link: showup://auth-callback?code=... (PKCE). */
+/** Target of the magic link: finalcall://auth-callback?code=... (PKCE). */
 export default function AuthCallback() {
   const params: CallbackParams = useLocalSearchParams<{ code?: string; error?: string; error_code?: string; error_description?: string }>();
   const { colors } = useTheme();

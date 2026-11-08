@@ -56,15 +56,24 @@ export function reviewOutcomeText(review: Pick<ReviewRow, 'kind' | 'status'>): s
 export const reviewStatusIsFinal = (status: ReviewStatus): boolean => status !== 'open';
 
 export interface VoteEligibilityInput {
-  review: Pick<ReviewRow, 'status' | 'subject_user_id'>;
+  review: Pick<ReviewRow, 'status' | 'subject_user_id' | 'kind' | 'opened_by'>;
   userId: string;
   /** users with a result row on the instance: who the server lets vote */
   roster: readonly string[];
 }
 
-/** Voting stays open to every other participant while the review is open, and a vote can be changed. */
+/**
+ * Voting stays open to every other participant while the review is open, and a vote can be changed.
+ * The opener of a challenge does not vote on it (RT-1: they profit from acceptance); the server's
+ * `_review_voters` refuses them with 42501, so the buttons are not shown.
+ */
 export function canVoteOn(i: VoteEligibilityInput): boolean {
-  return i.review.status === 'open' && i.review.subject_user_id !== i.userId && i.roster.includes(i.userId);
+  return (
+    i.review.status === 'open' &&
+    i.review.subject_user_id !== i.userId &&
+    !(i.review.kind === 'challenge' && i.review.opened_by === i.userId) &&
+    i.roster.includes(i.userId)
+  );
 }
 
 export function tally(votes: readonly ReviewVoteRow[]): { yes: number; no: number } {

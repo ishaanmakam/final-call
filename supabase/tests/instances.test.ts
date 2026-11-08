@@ -296,10 +296,11 @@ describe('tick_instances', () => {
     await checkInAt(db, c, mon, { ...inFence(2), acc: 201 }, at(MON_OPEN, 5));
     await tick(db, MON_DEADLINE);
     expect(await scalar(db, `select status::text from public.pact_instances where id = $1`, [mon])).toBe('voided');
+    // RT-2: a's success is voided; b's and c's unjudgeable attempts stay unverified (budget, challengeable)
     expect(await resultsOf(db, mon)).toEqual({
       [a]: { status: 'void', first: null },
-      [b]: { status: 'void', first: null },
-      [c]: { status: 'void', first: null },
+      [b]: { status: 'unverified', first: null },
+      [c]: { status: 'unverified', first: null },
       [d]: { status: 'frozen', first: null },
     });
     expect(await spyCalls(db, 'payout', mon)).toBe(0);

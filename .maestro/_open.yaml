@@ -1,0 +1,18 @@
+# Helper: open a route in the app by deep link and dismiss iOS's one-time "Open in ...?" prompt.
+# params: ROUTE APP_SCHEME
+# ROUTE: path + query after the scheme, e.g. groups/g1?freeze=1. APP_SCHEME is inherited from the
+# calling flow's env (default finalcall).
+appId: com.ishaanmakam.finalcall
+name: _open
+tags:
+  - helper
+---
+- openLink:
+    link: ${APP_SCHEME}://${ROUTE}
+# Some iOS versions ask once per simulator before launching an app from a custom scheme (the choice
+# sticks, clearState does not reset it). Button text is "Open"; the title names the app.
+- runFlow:
+    when:
+      visible: 'Open in .*'
+    commands:
+      - tapOn: 'Open'

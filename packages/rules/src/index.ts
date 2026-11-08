@@ -7,8 +7,10 @@ export type ReviewStatus = "open" | "accepted" | "rejected" | "defaulted";
 /**
  * Bumped whenever a verdict, result, review, payout or settlement rule changes.
  * 1: launch rules. 2: a defaulted appeal leaves the original result standing (N3-1), was `excluded`.
+ * 3: on a voided instance only success/failed become `void`; unverified (and frozen) stay on record
+ *    (RT-2). The opener of a challenge is not one of its voters (RT-1; SQL `_review_voters`).
  */
-export const RULES_VERSION = 2;
+export const RULES_VERSION = 3;
 
 export const MAX_ACCURACY_M = 200;
 const EARTH_RADIUS_M = 6371008.8;
@@ -87,9 +89,13 @@ export function computeResults(input: {
   });
   const active = results.filter((r) => r.status === "success" || r.status === "failed").length;
   if (active < 2) {
+    // RT-2: the active statuses are voided; an unverified attempt stays on record (it counts toward
+    // the unverified budget and can be challenged), as does a freeze.
     return {
       voided: true,
-      results: results.map((r) => (r.status === "frozen" ? r : { userId: r.userId, status: "void", firstSuccessAt: null })),
+      results: results.map((r) =>
+        r.status === "success" || r.status === "failed" ? { userId: r.userId, status: "void", firstSuccessAt: null } : r,
+      ),
     };
   }
   return { voided: false, results };

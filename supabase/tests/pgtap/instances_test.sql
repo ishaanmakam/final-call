@@ -5,7 +5,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set local search_path = public, extensions;
 
-select plan(26);
+select plan(27);
 
 -- Fixtures (as postgres): a, b, c, d participants; o outsider.
 -- Pact p1: Mon-Fri 08:00-09:00 America/Los_Angeles. Monday 2030-01-07 = 16:00Z..17:00Z (PST).
@@ -130,13 +130,17 @@ select public.open_review_at('00000000-0000-0000-0000-0000000001a1',
 select throws_ok($$ select public.cast_vote_at('00000000-0000-0000-0000-0000000001b1',
   (select id from public.reviews where subject_user_id = '00000000-0000-0000-0000-0000000001b1'), true, '2030-01-07T18:01:00Z') $$,
   '42501', null, 'the subject cannot vote');
-select public.cast_vote_at('00000000-0000-0000-0000-0000000001a1',
-  (select id from public.reviews where subject_user_id = '00000000-0000-0000-0000-0000000001b1'), true, '2030-01-07T18:01:00Z');
+-- 21b (RT-1: the opener of a challenge is not one of its voters)
+select throws_ok($$ select public.cast_vote_at('00000000-0000-0000-0000-0000000001a1',
+  (select id from public.reviews where subject_user_id = '00000000-0000-0000-0000-0000000001b1'), true, '2030-01-07T18:01:00Z') $$,
+  '42501', null, 'the opener of a challenge cannot vote on it');
 select public.cast_vote_at('00000000-0000-0000-0000-0000000001c1',
   (select id from public.reviews where subject_user_id = '00000000-0000-0000-0000-0000000001b1'), true, '2030-01-07T18:02:00Z');
+select public.cast_vote_at('00000000-0000-0000-0000-0000000001d1',
+  (select id from public.reviews where subject_user_id = '00000000-0000-0000-0000-0000000001b1'), true, '2030-01-07T18:03:00Z');
 -- 22
 select is((select status::text from public.reviews where subject_user_id = '00000000-0000-0000-0000-0000000001b1'),
-          'accepted', 'two of three eligible voters accept the challenge early');
+          'accepted', 'the two eligible voters (not the opener) accept the challenge early');
 -- 23
 select is((select r.status::text from public.results r join public.pact_instances i on i.id = r.instance_id
             where i.pact_id = '20000000-0000-0000-0000-0000000001a1' and i.local_date = '2030-01-07'

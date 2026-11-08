@@ -113,7 +113,7 @@ describe('other panels', () => {
     expect(p.headline).toBe('Precise Location is off');
     expect(p.action).toBe('openSettings');
     expect(p.body).toMatch(/nothing was sent/);
-    expect(p.body).toMatch(/Settings → Show Up → Location/);
+    expect(p.body).toMatch(/Settings → Final Call → Location/);
     expect(p.body).toMatch(/Precise Location/);
     expect(p.footnote).toMatch(/counts as missed/);
     expect(p.footnote).toMatch(/not unverified/);

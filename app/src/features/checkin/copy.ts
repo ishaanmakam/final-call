@@ -123,14 +123,14 @@ export function panelForQueued(tappedAtIso: string, deadlineAt: string, tz: stri
 export function panelForPermission(blocked: boolean): VerdictPanel {
   return blocked
     ? {
-        headline: 'Location is off for Show Up',
+        headline: 'Location is off for Final Call',
         body: 'Turn it on in iOS Settings, then come back and tap Check in. Without location a tap can\'t be judged.',
         tone: 'neutral',
         haptic: 'error',
         action: 'openSettings',
       }
     : {
-        headline: 'Location is off for Show Up',
+        headline: 'Location is off for Final Call',
         body: 'Without location, a tap can\'t be judged and today counts as missed. Allow "While Using the App" to check in.',
         tone: 'neutral',
         haptic: 'error',
@@ -159,11 +159,11 @@ export function panelForApproximate(): VerdictPanel {
 export const APPROXIMATE_LOCATION_HEADLINE = 'Precise Location is off';
 
 /**
- * "Show Up only gets your approximate location (about a kilometre), which {consequence}. In Settings
- * → Show Up → Location, turn on Precise Location, then come back and {next}."
+ * "Final Call only gets your approximate location (about a kilometre), which {consequence}. In Settings
+ * → Final Call → Location, turn on Precise Location, then come back and {next}."
  */
 export function approximateLocationBody(p: { consequence: string; next: string }): string {
-  return `Show Up only gets your approximate location (about a kilometre), which ${p.consequence}. In Settings → Show Up → Location, turn on Precise Location, then come back and ${p.next}.`;
+  return `Final Call only gets your approximate location (about a kilometre), which ${p.consequence}. In Settings → Final Call → Location, turn on Precise Location, then come back and ${p.next}.`;
 }
 
 /**

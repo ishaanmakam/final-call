@@ -162,7 +162,23 @@ describe("computeResults", () => {
       checkins: [ci("b", "in_fence", "2026-11-09T16:00:00Z"), ci("c", "unjudgeable", "2026-11-09T16:00:00Z")],
     });
     expect(r.voided).toBe(true);
-    expect(r.results.map((x) => x.status)).toEqual(["frozen", "void", "void"]);
+    // RT-2: only the active status (b's success) is voided; c's unjudgeable attempt stays unverified
+    expect(r.results.map((x) => x.status)).toEqual(["frozen", "void", "unverified"]);
+    expect(r.results[1]!.firstSuccessAt).toBeNull();
+  });
+
+  it("voids every active participant and nothing else (RT-2)", () => {
+    const r = computeResults({
+      deadlineAt: deadline,
+      participants: [
+        { userId: "a", frozen: false },
+        { userId: "b", frozen: false },
+        { userId: "c", frozen: false },
+      ],
+      checkins: [ci("b", "unjudgeable", "2026-11-09T16:00:00Z"), ci("c", "unjudgeable", "2026-11-09T16:00:00Z")],
+    });
+    expect(r.voided).toBe(true);
+    expect(r.results.map((x) => x.status)).toEqual(["void", "unverified", "unverified"]);
   });
 
   it("sorts results by user id", () => {
@@ -423,7 +439,7 @@ describe("reviews", () => {
     }
   });
 
-  it("exposes a rules version that moved for the appeal-default change", () => {
-    expect(RULES_VERSION).toBeGreaterThanOrEqual(2);
+  it("exposes a rules version that moved for the appeal-default and red-team changes", () => {
+    expect(RULES_VERSION).toBeGreaterThanOrEqual(3);
   });
 });

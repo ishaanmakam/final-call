@@ -25,7 +25,8 @@ Per invocation it:
 5. Each message's `data` carries `kind`, `outbox_id`, the ids from the payload, and `url`, the
    in-app path the client opens on tap: `/checkin/<instance_id>` for `window_open` /
    `deadline_soon`, `/groups/<group_id>/feed` for `result` / `review_opened`,
-   `/groups/<group_id>/ledger` for `settlement`.
+   `/groups/<group_id>/ledger` for `settlement`, `obligation_marked_paid` and `obligation_disputed`,
+   `/settings` for `ops_alert`.
 
 Expo push receipts (the second-stage delivery check) are not polled in the MVP; see
 `docs/REVIEW.md` (F5) for what that means and the proposed `push_tickets` follow-up.
@@ -67,13 +68,20 @@ through in the push `data` for deep links, along with `kind` and `outbox_id`.
 | `result` | `status` (`success`/`failed`/`unverified`/`frozen`/`void`/`excluded`), `pact_title`, `stake_cents`, `net_cents` (winnings for success), `rolled_over` (bool, all-fail) |
 | `review_opened` | `review_kind` (`appeal`/`challenge`), `subject_user_id`, `subject_name`, `opener_name`, `pact_title` |
 | `settlement` | `group_name`, `net_cents` (negative = recipient owes, positive = owed) |
+| `obligation_marked_paid` (to the payee) / `obligation_disputed` (to the payer) | `from_name`, `to_name`, `amount_cents`, `obligation_id`, `settlement_id`, `group_id`, `url` (`/groups/<group_id>/ledger`) |
+| `ops_alert` (to `ops_settings.ops_user_id` only; `check_job_health`) | `job`, `reason` (the body; falls back to `message`), `url` (default `/settings`). Title "Final Call job <job>" |
 
 Example copy: `deadline_soon` gives "Kane Hall by 9:00 — 15 min left" / "Check in now or forfeit your $5 pledge."
 
 ### Deploy
 
-```
+Full sequence for a new project (CLI install, link, `db push`, Vault secrets, cron checks, this
+deploy, the smoke test) in [`docs/DEPLOY.md`](../../docs/DEPLOY.md) §6–§7. The deploy itself:
+
+```powershell
+supabase secrets set EXPO_ACCESS_TOKEN=<token>        # optional, see below
 supabase functions deploy push-outbox --no-verify-jwt
+Invoke-RestMethod -Method Post -Uri "https://<ref>.supabase.co/functions/v1/push-outbox" -Headers @{ Authorization = "Bearer <service_role key>" }
 ```
 
 `--no-verify-jwt` is fine because the function itself rejects any request whose

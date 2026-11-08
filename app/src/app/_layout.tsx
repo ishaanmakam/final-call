@@ -10,7 +10,11 @@ import { isSupabaseConfigured } from '@/api/supabase';
 import { Screen, Text } from '@/components';
 import { ToastProvider } from '@/components/Toast';
 import { AuthProvider } from '@/lib/auth';
+import { initSentry, wrapRoot } from '@/lib/sentry';
 import { ThemeProvider, useTheme } from '@/theme';
+
+// Crash reporting first, so a failure anywhere below is reported. No-op without EXPO_PUBLIC_SENTRY_DSN.
+initSentry();
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -61,6 +65,9 @@ function ThemedStack() {
         <Stack.Screen name="(app)" options={{ headerShown: false }} />
         <Stack.Screen name="sign-in" options={{ headerShown: false }} />
         <Stack.Screen name="auth-callback" options={{ headerShown: false }} />
+        {/* legal pages live outside the signed-in group: the sign-in footer links to them */}
+        <Stack.Screen name="legal/privacy" options={{ title: 'Privacy policy', headerBackButtonDisplayMode: 'minimal' }} />
+        <Stack.Screen name="legal/terms" options={{ title: 'Terms of use', headerBackButtonDisplayMode: 'minimal' }} />
       </Stack>
     </>
   );
@@ -78,7 +85,7 @@ function Providers({ children }: { children: ReactNode }) {
   );
 }
 
-export default function RootLayout() {
+function RootLayout() {
   useAppFocus();
   const configured = isSupabaseConfigured || DEMO;
   return (
@@ -96,3 +103,6 @@ export default function RootLayout() {
     </Providers>
   );
 }
+
+// Sentry.wrap only when enabled: touch breadcrumbs and the app-start span; otherwise the plain component.
+export default wrapRoot(RootLayout);

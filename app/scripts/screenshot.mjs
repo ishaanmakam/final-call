@@ -97,6 +97,7 @@ const ROUTES = [
   { name: 'checkin.permission.denied', path: CHECKIN('?freeze=1&perm=denied'), actions: [tap('Check in'), wait(500)] },
   { name: 'checkin.approximate', path: CHECKIN('?freeze=1&precise=0'), actions: [tap('Check in'), wait(500)] },
   { name: 'checkin.budget', path: CHECKIN('?freeze=1&budget=2') },
+  { name: 'checkin.skew', path: CHECKIN('?freeze=1&skew=300') },
   { name: 'checkin.before', path: '/checkin/i-before?freeze=1' },
   { name: 'checkin.frozen', path: '/checkin/i-frozen?freeze=1' },
   { name: 'checkin.closed', path: '/checkin/i-closed?freeze=1' },
@@ -114,7 +115,10 @@ const ROUTES = [
   { name: 'settle-up.owed', path: `/groups/${G}/ledger?settle=owed` },
   { name: 'settle-up.empty', path: `/groups/${G}/ledger?empty=1` },
   { name: 'settings', path: '/settings' },
+  { name: 'settings.about', path: '/settings', actions: [{ scrollTo: 'Delete account' }, wait(300)] },
   { name: 'settings.offline', path: '/settings?state=offline' },
+  { name: 'legal.privacy', path: '/legal/privacy?signedOut=1' },
+  { name: 'legal.terms', path: '/legal/terms?signedOut=1' },
   // last of all: it leaves an attempt in the offline queue, which the next signed-in route would
   // flush (a toast and an extra tap would then show on an unrelated capture)
   { name: 'checkin.queued', path: CHECKIN('?freeze=1&state=queued'), actions: [tap('Check in'), wait(2300)] },
@@ -281,7 +285,7 @@ function writeContactSheet() {
     })
     .join('\n');
   const html = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Show Up screenshots</title>
+<html lang="en"><head><meta charset="utf-8"><title>Final Call screenshots</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root { color-scheme: light dark; --fg: #101418; --muted: #5E6773; --bg: #F5F6F8; --card: #fff; --line: #D9DEE5; }
@@ -296,7 +300,7 @@ function writeContactSheet() {
   img, .missing div { width: 100%; aspect-ratio: 393 / 852; border-radius: 12px; border: 1px solid var(--line); display: block; object-fit: cover; object-position: top; background: #000; }
 </style></head>
 <body>
-<h1>Show Up screenshots</h1>
+<h1>Final Call screenshots</h1>
 <p>${names.length} routes, light and dark, 393x852 @3x, reduced motion, demo fixtures. Generated ${new Date().toISOString()}.</p>
 <main>
 ${cards}

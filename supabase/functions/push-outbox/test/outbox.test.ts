@@ -270,6 +270,45 @@ describe("renderNotification", () => {
     expect(t(0).data).toMatchObject({ kind: "settlement", settlement_id: "s1" });
   });
 
+  it("obligation_marked_paid goes to the payee, obligation_disputed to the payer (RT-3)", () => {
+    const p = { group_id: "g1", settlement_id: "s1", from_name: "Maya", to_name: "Diego", amount_cents: 725, url: "/groups/g1/ledger" };
+    const marked = renderNotification(row("obligation_marked_paid", p), NOW)!;
+    expect(marked.title).toBe("Maya marked $7.25 as paid");
+    expect(marked.body).toBe("Confirm it once it lands on Venmo, or dispute it if nothing arrived.");
+    expect(marked.data).toMatchObject({ kind: "obligation_marked_paid", group_id: "g1", settlement_id: "s1", url: "/groups/g1/ledger" });
+    const disputed = renderNotification(row("obligation_disputed", p), NOW)!;
+    expect(disputed.title).toBe("Diego says $7.25 did not arrive");
+    expect(disputed.body).toBe("Check Venmo and mark it paid again, or sort it out together.");
+    expect(disputed.data.url).toBe("/groups/g1/ledger");
+    // thin payloads still render and still deep-link by group
+    expect(renderNotification(row("obligation_marked_paid", { group_id: "g1" }), NOW)).toMatchObject({
+      title: "Someone marked a payment as paid",
+      data: { url: "/groups/g1/ledger" },
+    });
+    expect(renderNotification(row("obligation_disputed", {}), NOW)!.title).toBe("Someone disputed a payment");
+  });
+
+  it("ops_alert names the job, carries the reason and opens Settings (P2-4 / P3)", () => {
+    const p = {
+      job: "tick_instances",
+      reason: "overdue: last ok 2026-11-09 16:00 UTC (expected every 00:01:00)",
+      message: "Final Call job tick_instances needs a look: overdue ...",
+      url: "/settings",
+      overdue: true,
+    };
+    const out = renderNotification(row("ops_alert", p), NOW)!;
+    expect(out.title).toBe("Final Call job tick_instances");
+    expect(out.body).toBe(p.reason);
+    expect(out.data).toMatchObject({ kind: "ops_alert", url: "/settings" });
+    // reason missing: the message, then a generic line; url defaults to /settings
+    expect(renderNotification(row("ops_alert", { job: "push_outbox", message: "3 failures in the last hour" }), NOW)).toMatchObject({
+      title: "Final Call job push_outbox",
+      body: "3 failures in the last hour",
+      data: { url: "/settings" },
+    });
+    expect(renderNotification(row("ops_alert", {}), NOW)!.body).toMatch(/job_health/);
+  });
+
   it("uses fallbacks when names are missing and tolerates null payload", () => {
     expect(renderNotification(row("window_open", {}), NOW)!.title).toBe("Check-in open: your pact");
     expect(renderNotification({ ...row("settlement", {}), payload: null }, NOW)!.title).toBe("Your group: weekly settlement");
@@ -291,6 +330,8 @@ describe("renderNotification", () => {
       row("review_opened", { review_kind: "appeal" }),
       row("review_opened", { review_kind: "challenge", subject_user_id: "u1" }),
       row("review_opened", { review_kind: "challenge", subject_user_id: "u2" }),
+      row("obligation_marked_paid", { from_name: "M", to_name: "D", amount_cents: 500, group_id: "g1" }),
+      row("obligation_disputed", { from_name: "M", to_name: "D", amount_cents: 500, group_id: "g1" }),
       row("review_opened", { review_kind: "challenge", subject_user_id: "u1", system_opened: true, unverified_this_month: 3 }),
       row("review_opened", { review_kind: "challenge", subject_user_id: "u2", system_opened: true, unverified_this_month: 3 }),
       ...["created", "acknowledged", "objected", "effective"].map((event) =>

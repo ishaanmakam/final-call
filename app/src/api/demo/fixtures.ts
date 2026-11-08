@@ -414,6 +414,27 @@ todayInstances.push(
 todayCheckins.push(checkin('c5', EXTRA_INSTANCES.notJoined, USERS.maya, DEMO_T0 - 6 * MIN, 'in_fence', 15, 9));
 freezes.push({ id: 'f2', pact_id: PACTS.run, user_id: USERS.you, instance_id: EXTRA_INSTANCES.frozen, declared_at: ago(5 * HOUR), iso_week: '2026-W45' });
 
+/**
+ * A Missed day of yours today with no review yet (P3-6): the Maestro appeal flow and the feed's
+ * "You, Forfeited $2.00 to the pool" row no longer depend on the date-hashed history. Two-person
+ * pact (you + Maya), closed 3 h ago: you missed, Maya showed up.
+ */
+export const PACT_MISSED = 'p6';
+export const INSTANCE_MISSED = 'i-missed';
+pacts.push({ id: PACT_MISSED, group_id: GROUP_ID, title: 'Lab notebook by noon', days_of_week: [1, 2, 3, 4, 5, 6, 7], window_open_local: '11:00:00', deadline_local: '12:00:00', stake_cents: 200, tz: TZ, paused: false, created_by: USERS.you, created_at: ago(9 * DAY) });
+const missedParticipants = [
+  place(PACT_MISSED, USERS.you, 47.6532, -122.3086, 80, 'Bagley Hall', 9 * DAY),
+  place(PACT_MISSED, USERS.maya, 47.6532, -122.3086, 80, 'Bagley Hall', 8 * DAY),
+];
+participants.push(...missedParticipants);
+placeHistory.push(...missedParticipants.map((p) => historyRow(p)));
+todayInstances.push({ id: INSTANCE_MISSED, pact_id: PACT_MISSED, local_date: TODAY, window_open_at: ago(4 * HOUR), deadline_at: ago(3 * HOUR), status: 'closed', carry_in_cents: 0, closed_at: ago(3 * HOUR - MIN), deadline_soon_sent_at: ago(3 * HOUR + 15 * MIN) });
+todayCheckins.push(checkin('c6', INSTANCE_MISSED, USERS.maya, DEMO_T0 - 3 * HOUR - 25 * MIN, 'in_fence', 11, 7));
+todayResults.push(
+  { instance_id: INSTANCE_MISSED, user_id: USERS.you, status: 'failed', first_success_at: null, decided_at: ago(3 * HOUR - MIN) },
+  { instance_id: INSTANCE_MISSED, user_id: USERS.maya, status: 'success', first_success_at: ago(3 * HOUR + 25 * MIN), decided_at: ago(3 * HOUR - MIN) },
+);
+
 // ---------- ledger ----------
 
 export const balances: MemberBalanceRow[] = [

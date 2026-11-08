@@ -50,7 +50,7 @@ const PROFILE_DEPENDENT_KEYS = (userId: string) => [['profile', userId], ['group
 export function useDemoSettings(): DemoSettings {
   const params = useGlobalSearchParams<Record<string, string | string[]>>();
   const settings = demoSettingsFromParams(params as Record<string, string | string[] | undefined>);
-  useEffect(() => setDemoSettings(settings), [settings.verdict, settings.empty, settings.state, settings.perm, settings.signedOut, settings.freeze, settings.settle, settings.fix, settings.precise, settings.budget]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => setDemoSettings(settings), [settings.verdict, settings.empty, settings.state, settings.perm, settings.signedOut, settings.freeze, settings.settle, settings.fix, settings.precise, settings.budget, settings.skew]); // eslint-disable-line react-hooks/exhaustive-deps
   return settings;
 }
 
@@ -423,6 +423,18 @@ export const leaveGroup = async (groupId: string): Promise<undefined> => {
   await gate(getDemoSettings());
   const m = store.members.find((x) => x.group_id === groupId && x.user_id === DEMO_USER_ID);
   if (m) m.left_at = new Date().toISOString();
+  return undefined;
+};
+
+/** Demo account deletion: leaves every group and anonymizes the fixture profile (relaunch resets it). */
+export const deleteMyAccount = async (): Promise<undefined> => {
+  await gate(getDemoSettings());
+  const now = new Date().toISOString();
+  for (const m of store.members) if (m.user_id === DEMO_USER_ID && !m.left_at) m.left_at = now;
+  for (const pp of store.participants) if (pp.user_id === DEMO_USER_ID && !pp.left_at) pp.left_at = now;
+  const me = store.profiles.find((x) => x.id === DEMO_USER_ID);
+  if (me) Object.assign(me, { display_name: 'Deleted member', venmo_username: null });
+  setDemoSettings({ ...getDemoSettings(), signedOut: true });
   return undefined;
 };
 

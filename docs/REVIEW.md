@@ -263,7 +263,7 @@ Classification matches what PostgREST returns through supabase-js: `status` is a
 1. Create Vault secrets `project_url` and `service_role_key` in each environment; confirm `select * from cron.job_run_details` shows `push-outbox` succeeding and `net._http_response` shows 200s.
 2. Deploy `push-outbox` with `--no-verify-jwt`; set `EXPO_ACCESS_TOKEN` if Expo "enhanced push security" is on.
 3. Decide on API keys (legacy JWT vs `sb_secret_`) and keep the Vault value and the function's env var identical (C4).
-4. Add `showup://auth-callback` to Auth → Redirect URLs; enable the Apple provider with the bundle id.
+4. Add `finalcall://auth-callback` to Auth → Redirect URLs; enable the Apple provider with the bundle id.
 5. Implement push receipts (F5) before the user count makes dead tokens matter.
 6. ~~Apply the phase-3 app patches (A3–A7) and fix the README path (C5).~~ Done in phase 3.
 7. Run `/security-review` and get the legal opinion before any real money (CLAUDE.md).

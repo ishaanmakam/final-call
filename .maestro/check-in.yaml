@@ -1,0 +1,54 @@
+# Group g1 → "9am in Kane Hall" (today's open instance i-open) → Check in → in-fence verdict.
+#
+# Demo location is a fake fix after ~1.2 s; the demo RPC returns the `?verdict=` value, default
+# in_fence. Navigating away from the deep-linked route drops its query, so the check-in screen runs
+# on defaults (verdict in_fence, clock live); the open window has ~22 minutes left after launch.
+appId: com.ishaanmakam.finalcall
+name: check-in
+tags:
+  - smoke
+env:
+  APP_SCHEME: ${APP_SCHEME || "finalcall"}
+---
+- launchApp:
+    clearState: true
+    permissions:
+      location: allow
+- runFlow:
+    file: _open.yaml
+    env:
+      ROUTE: 'groups/g1?freeze=1'
+- extendedWaitUntil:
+    visible: 'Morning crew'
+    timeout: 15000
+- assertVisible: 'Today'
+
+# The TodayCard is one accessible element (iOS flattens its children, so the inner "Check in" button
+# is not addressable); its label is "<title>, <deadline> deadline, <status>" and tapping it opens
+# the check-in screen.
+- scrollUntilVisible:
+    element: '9am in Kane Hall.*'
+    direction: DOWN
+- tapOn: '9am in Kane Hall.*'
+
+# The check-in screen titles itself with the pact name, so "Check in" below is the big button only.
+- extendedWaitUntil:
+    visible: 'Check in'
+    timeout: 15000
+- assertVisible: '9am in Kane Hall'
+- assertVisible: "Today's taps"
+- tapOn: 'Check in'
+
+# Locating (~1.2 s fake fix) → sending → verdict panel. Headline + body for in_fence (features/checkin/copy.ts).
+- extendedWaitUntil:
+    visible: "You're in"
+    timeout: 20000
+- assertVisible: 'Counted at .*'
+- assertVisible: 'Showed up'
+
+# The taps list now has your row (pill "Checked in") under "Today's taps".
+- scrollUntilVisible:
+    element: "Today's taps"
+    direction: DOWN
+- assertVisible: "Today's taps"
+- assertVisible: 'Checked in'

@@ -1,5 +1,5 @@
 import * as AppleAuthentication from 'expo-apple-authentication';
-import { Redirect, useLocalSearchParams } from 'expo-router';
+import { Redirect, router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Linking, Platform, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -86,7 +86,7 @@ export default function SignIn() {
         >
           <View style={styles.hero}>
             <Text variant="largeTitle" accessibilityRole="header">
-              Show Up
+              Final Call
             </Text>
             <Text variant="body" color="secondary">
               {PITCH}
@@ -180,6 +180,14 @@ export default function SignIn() {
               {userMessage(error)}
             </Text>
           ) : null}
+
+          <View style={styles.legal}>
+            <Button title="Privacy" variant="tertiary" size="small" onPress={() => router.push('/legal/privacy')} accessibilityHint="Opens the privacy policy" />
+            <Text variant="footnote" color="tertiary" accessibilityElementsHidden importantForAccessibility="no">
+              ·
+            </Text>
+            <Button title="Terms" variant="tertiary" size="small" onPress={() => router.push('/legal/terms')} accessibilityHint="Opens the terms of use" />
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -201,4 +209,5 @@ const styles = StyleSheet.create({
   sent: { alignItems: 'center', gap: space.sm, paddingVertical: space.lg },
   iconWell: { width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center', marginBottom: space.xs },
   sentActions: { marginTop: space.md, alignItems: 'center', gap: space.xs },
+  legal: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: space.xs, marginTop: -space.lg },
 });

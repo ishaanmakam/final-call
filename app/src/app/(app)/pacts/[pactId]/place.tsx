@@ -215,12 +215,12 @@ export default function PlacePicker() {
             <Card>
               <EmptyState
                 icon="location"
-                title={problem.outcome === 'approximate' ? APPROXIMATE_LOCATION_HEADLINE : 'Location is off for Show Up'}
+                title={problem.outcome === 'approximate' ? APPROXIMATE_LOCATION_HEADLINE : 'Location is off for Final Call'}
                 body={
                   problem.outcome === 'approximate'
                     ? APPROXIMATE_PLACE_BODY
                     : problem.outcome === 'blocked'
-                      ? 'Location is turned off for Show Up in iOS Settings. Turn it on, then come back and capture your place.'
+                      ? 'Location is turned off for Final Call in iOS Settings. Turn it on, then come back and capture your place.'
                       : 'Setting a place needs your location once. Allow "While Using the App".'
                 }
                 action={

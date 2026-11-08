@@ -1,5 +1,5 @@
 ---
-name: Show Up
+name: Final Call
 description: A quiet, trustworthy utility about keeping your word to friends. The one loud moment is the check-in.
 colors:
   bg: "#F5F6F8"
@@ -206,7 +206,7 @@ components:
     size: "220pt"
 ---
 
-# Design System: Show Up
+# Design System: Final Call
 
 Tokens live in `src/theme/tokens.ts` (the normative source; the frontmatter mirrors it and `src/theme/tokens.test.ts` verifies the contrast claims below). Mode on every surface is **Operate**: the person is in a task, the interface is a working product of its category first, and the world shows through type, palette, density and one signature move.
 

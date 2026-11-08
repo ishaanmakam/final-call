@@ -1,0 +1,24 @@
+# The EAS entry point: the four smoke flows in order, one report. Each subflow relaunches the app
+# with clearState, so they do not share state. `appeal` runs last (see its precondition).
+#
+#   maestro test .maestro/smoke-all.yaml
+appId: com.ishaanmakam.finalcall
+name: smoke-all
+tags:
+  - all
+env:
+  APP_SCHEME: ${APP_SCHEME || "finalcall"}
+  APP_NAME: ${APP_NAME || "Final Call"}
+---
+- runFlow:
+    file: sign-in.yaml
+    label: Sign in (demo)
+- runFlow:
+    file: check-in.yaml
+    label: Check in, in-fence verdict
+- runFlow:
+    file: settle-up.yaml
+    label: Settle up, both sides
+- runFlow:
+    file: appeal.yaml
+    label: Appeal a missed day

@@ -20,7 +20,8 @@ obligation_status: 'pending' | 'marked_paid' | 'confirmed' | 'superseded'
 ## Tables
 
 ```
-profiles(id uuid pk references auth.users, display_name text not null, created_at)
+profiles(id uuid pk, display_name text not null, venmo_username text null, deleted_at timestamptz null, created_at)
+   -- id = the auth.users id; the FK was dropped in 20261108000600 so the auth row can be deleted while history stays
 groups(id uuid pk, name text, invite_code text unique, settlement_tz text not null, created_by uuid, created_at)
 group_members(group_id, user_id, role text check in ('owner','member'), joined_at, left_at null, pk(group_id,user_id))
    -- at most 8 current members per group
@@ -74,7 +75,7 @@ Views: `account_balances(account_id, group_id, kind, user_id, pact_id, instance_
 - success: some `in_fence` check-in with `server_received_at <= deadline_at`. `first_success_at` = earliest such.
 - unverified: no success, and there is a check-in that is `unjudgeable`, OR an `in_fence` check-in with `server_received_at > deadline_at` and `client_captured_at <= deadline_at` (a late offline tap). Late `out_of_fence` / `rejected_simulated` check-ins stay failed.
 - failed: otherwise (no check-in, or only out_of_fence / rejected_simulated).
-- void (instance-level): if fewer than 2 participants are active (success or failed), every non-frozen participant's result is `void` and the instance status is `voided`. Unverified participants are not active.
+- void (instance-level): if fewer than 2 participants are active (success or failed), every `success` / `failed` result becomes `void` and the instance status is `voided` (`closed_at` set). Unverified participants are not active; since RT-2 (`20261108000400`) their result stays `unverified` on the voided day (it counts toward the unverified budget and can be challenged; see Review), and `frozen` stays `frozen`. A late offline tap on such a day is recomputed like on a closed one (no money moves unless the day is revived by an accepted challenge).
 - excluded: reserved. No rule sets it since `20261108000300_appeal_default.sql` (N3-1); the enum value stays because history may hold it.
 Reviews then override, in resolution order: appeal accepted → success (first_success_at = deadline_at); appeal rejected/defaulted (no votes) → unchanged; challenge accepted → failed; challenge rejected/defaulted → unchanged. A defaulted appeal therefore posts no correction and changes no obligation (`_refresh_result`, oracle `applyReview`, `RULES_VERSION` 2).
 
@@ -100,13 +101,13 @@ Reviews then override, in resolution order: appeal accepted → success (first_s
 
 **Freeze**: `declared_at < window_open_at`; one per (pact, user, ISO week of the instance's local_date).
 
-**Review**: subject appeals their own `failed`; any other roster member challenges `success` or `unverified`. At most one appeal and one challenge per (instance, subject), ever. Voters = the instance roster except the subject, limited to current group members; the opener of a challenge may vote. Former members may appeal their own result but not challenge. A settled instance accepts only a challenge of a result that a late tap changed after settlement (`results.decided_at > pact_instances.settled_at`). Majority of votes cast decides (`supports` = true means agree with the opener); ties → rejected. Reviews still open at settlement time → `defaulted`, which leaves the result standing for both kinds (an unvoted appeal keeps the `failed`; it is not `excluded`).
+**Review**: subject appeals their own `failed`; any other roster member challenges `success` or `unverified`. At most one appeal and one challenge per (instance, subject), ever. Voters = the instance roster except the subject, limited to current group members, **and except the opener of a challenge** (RT-1, `20261108000400`: they profit from acceptance; in a 2-person pact a human challenge therefore has no voters and defaults, while the automatic unverified-budget challenge, opened in the subject's name, is decided by the other member). Former members may appeal their own result but not challenge. A settled instance accepts only a challenge of a result that a late tap changed after settlement (`results.decided_at > pact_instances.settled_at`). A day **voided at close** (`status = 'voided'`, `closed_at` set) accepts only a challenge of an `unverified` result (RT-2); accepting it recomputes every result on the day and, if that leaves 2 or more active, revives the day: `status = 'closed'` (same `closed_at`), payout posted with `carry_in_cents = 0` (a revived day never draws carry deposited after it), `result` pushes queued. Majority of votes cast decides (`supports` = true means agree with the opener); ties → rejected. Reviews still open at settlement time → `defaulted`, which leaves the result standing for both kinds (an unvoted appeal keeps the `failed`; it is not `excluded`). When any review of a result resolves, the unverified budget is re-checked for that result (RT-4).
 
-**Unverified budget** (`20261108000200`): when a participant's result is set to `unverified` (at close, or by a recompute such as a late offline tap) and that makes more than 2 `unverified` results for them in the same pact in the same calendar month (the instances' `local_date`, i.e. the pact's zone), the system opens a `challenge` on that result: `reviews.system_opened = true`, `opened_by` = the subject, `reason` 'Automatic: more than 2 unverified days this month'. Voters, votes, defaults and the correction on acceptance are those of any challenge (nobody voting leaves the result standing). Never more than one per (instance, subject) however often results are recomputed; never while another review of that result is open; a human challenge, open or resolved, suppresses it; never on voided instances. Fired by triggers (`results_unverified_budget` after update of `results`, `instances_unverified_budget` when `pact_instances.status` becomes `closed`), so overriding `_close_instance` / `_refresh_result` does not disable it. Posts `review_opened` to the whole roster (payload adds `system_opened: true`, `unverified_this_month`; no `opener_name`).
+**Unverified budget** (`20261108000200`): when a participant's result is set to `unverified` (at close, or by a recompute such as a late offline tap) and that makes more than 2 `unverified` results for them in the same pact in the same calendar month (the instances' `local_date`, i.e. the pact's zone), the system opens a `challenge` on that result: `reviews.system_opened = true`, `opened_by` = the subject, `reason` 'Automatic: more than 2 unverified days this month'. Voters, votes, defaults and the correction on acceptance are those of any challenge (nobody voting leaves the result standing). Never more than one per (instance, subject) however often results are recomputed; never while another review of that result is open; a human challenge, open or resolved, suppresses it; never on a day cancelled by a pause (no results), but days voided at close count and are challenged like closed ones (RT-2). Fired by triggers (`results_unverified_budget` after update of `results`, `instances_unverified_budget` when `pact_instances.status` becomes `closed`, `instances_unverified_budget_void` when it becomes `voided` with `closed_at` set) and re-run by `_resolve_review` once a review of the result resolves (RT-4: an open appeal no longer hides a late tap's third unverified day for good), so overriding `_close_instance` / `_refresh_result` does not disable it. Posts `review_opened` to the whole roster (payload adds `system_opened: true`, `unverified_this_month`; no `opener_name`).
 
 **Settlement**: weekly per group, Mondays 12:00 in `settlement_tz`, for the week Mon–Sun just ended (plus a 12h review grace is implied by noon). Steps: default open reviews for instances in the week, apply corrections, mark previous `pending` obligations `superseded` (`marked_paid` ones survive and count as provisionally paid), compute obligations from `billable_member_balances` (lines of settled instances plus settlement payments only) by greedy largest-debtor-to-largest-creditor (ties by user_id), insert `settlements` row (idempotent per group+week). Money still in carry is not owed to anyone yet.
 
-**Settle-up**: payer calls `mark_obligation_paid`; payee calls `confirm_obligation`, or `dispute_obligation` to send a `marked_paid` one back to `pending`. `confirm_obligation` posts a `settlement_payment` entry (payee member −amount, payer member +amount) keyed `payment:<obligation_id>`.
+**Settle-up**: payer calls `mark_obligation_paid`; payee calls `confirm_obligation`, or `dispute_obligation` to send a `marked_paid` one back to `pending`. `confirm_obligation` posts a `settlement_payment` entry (payee member −amount, payer member +amount) keyed `payment:<obligation_id>`. `mark_obligation_paid` queues `notification_outbox` kind `obligation_marked_paid` for the payee and `dispute_obligation` queues `obligation_disputed` for the payer (RT-3; payload `{obligation_id, settlement_id, group_id, group_name, from_user, from_name, to_user, to_name, amount_cents, url: /groups/<group_id>/ledger}`); repeat calls that change nothing queue nothing.
 
 ## RPCs (client-callable; SECURITY DEFINER; must verify `auth.uid()` membership)
 
@@ -128,7 +129,21 @@ dispute_obligation(p_obligation uuid) returns void
 acknowledge_place(p_place uuid) returns void          -- another current member; not the owner (42501); pending gated places only (23514)
 object_place(p_place uuid, p_reason text) returns void -- another current member; reason required (22023); within 24 h, not confirmed (23514)
 pact_place_distances(p_pact uuid) returns table(...)   -- members of the pact's group (42501); see Places
+delete_my_account() returns void                       -- the caller only; see Account deletion
 ```
+
+### Account deletion (`20261108000600_account_deletion.sql`)
+
+`delete_my_account()` (SECURITY DEFINER, no arguments: it only ever acts on `auth.uid()`), in one transaction:
+
+1. calls `leave_group` for every current membership (oldest first). The leave rules apply unchanged: on the roster of an instance whose window is open or due, the whole call is refused with `23514` and the message "You're in an open check-in window; try again after the deadline." (nothing changes);
+2. `profiles`: `display_name = 'Deleted member'`, `venmo_username = null`, `deleted_at = now()`. The `profiles_update_own` policy now also requires `deleted_at is null`, so a stale JWT cannot edit it back;
+3. deletes `push_tokens`, unsent `notification_outbox` rows, pending `pact_participant_places` (`effective_from > now()`) and `review_votes` on reviews still `open`; nulls `checkins.lat/lng` (verdict, distance and accuracy stay);
+4. keeps `results`, `ledger_entries`/`ledger_lines`, `obligations`, `reviews` (including ones they opened), votes on resolved reviews and historical places. Balances are still derived; the counterparty still sees the obligation, with the name "Deleted member" (`shares_group_with` matches former co-members);
+5. inserts one `account_audit(user_id, kind = 'account_deleted', groups_left, created_at)` row (service-only table);
+6. deletes the `auth.users` row (identities, sessions and refresh tokens cascade inside the auth schema). `profiles.id` no longer references `auth.users`.
+
+A second call for an already-deleted profile returns without error. The client (Settings → Delete account) confirms, calls the RPC, signs out and returns to the sign-in screen.
 
 ## Server jobs (service role / pg_cron only; revoke from anon, authenticated)
 
@@ -140,7 +155,27 @@ purge_old_locations(p_now timestamptz default now()) returns int -- null lat/lng
 ```
 All jobs take `p_now` so tests can control time. Re-running any job is a no-op. `tick_instances` and `settle_due_groups` process each instance/group in its own subtransaction; failures go to `job_failures` and are retried next run. Global lock order (deadlock avoidance) is documented at the top of `20261107000300_payouts_settlement.sql`.
 
-Notification outbox rows are inserted by: instance opening (kind `window_open`), 15 min before deadline for participants without a success (`deadline_soon`), result posted (`result`), review opened (`review_opened`), settlement (`settlement`), place set / confirmed / objected / counting by timeout (`place_changed`, see Place events).
+### Heartbeat and ops alerts (`20261108000500_heartbeat.sql`)
+
+Every job above (plus `purge_old_outbox` from `20261107000600`) is wrapped: the previous body is renamed (`_tick_instances_v2`, `_generate_instances_v1`, `_settle_due_groups_v1`, `_purge_old_locations_v1`, `_purge_old_outbox_v1`) and the public name keeps its exact signature, return value and grants. The wrapper runs the body, and on an error that escaped the body's own subtransactions writes a `job_failures` row (`job` = the public name, `group_id` null) and returns (`void` / `0`) instead of raising, so the heartbeat below is never rolled back with the run.
+
+```
+job_heartbeats(job text pk, last_started_at, last_finished_at, last_ok_at timestamptz, last_error text, runs bigint)
+_heartbeat(p_job text, p_ok boolean, p_error text) returns void              -- upsert; called at the end of every run
+record_push_heartbeat(p_ok boolean, p_error text default null) returns void  -- the push-outbox Edge Function's beat (job 'push_outbox')
+_job_health_at(p_now timestamptz default now()) returns table (job, expected_every interval, last_ok_at, last_error, runs, overdue boolean, never_ran boolean, recent_failures int)
+job_health                                                                   -- view: _job_health_at(now())
+ops_settings(one boolean pk, ops_user_id uuid null references profiles)      -- exactly one row; who gets alerts (null = nobody)
+check_job_health(p_now timestamptz default now()) returns int                -- alerts inserted; cron every 10 min ('check-job-health')
+```
+
+Expected cadences: `tick_instances` 1 min, `generate_instances` 15 min, `settle_due_groups` 60 min, `purge_old_locations` and `purge_old_outbox` 1 day, `push_outbox` 1 min. `overdue` = the job has run at least once and has no success inside 3x its cadence (a job that has only ever failed is overdue at once); a job with no heartbeat row yet is `never_ran` and not overdue (a fresh deploy must not alert for the daily purges before 03:23 UTC). `recent_failures` = `job_failures` rows of the last hour for that job (`place_timeouts` counts towards `tick_instances`).
+
+`check_job_health(p_now)`: when `ops_settings.ops_user_id` is set, for every job that is `overdue` or has `recent_failures >= 5`, insert one `notification_outbox` row of kind `ops_alert` for that user, at most one per job per hour (keyed on `payload->>'job'` and `created_at`). Payload: `job`, `reason` ("overdue: last ok ... (expected every ...)" and/or "N failures in the last hour"), `message` ("Final Call job <job> needs a look: <reason>"), `overdue`, `last_ok_at`, `last_error`, `recent_failures`, `url` (`/settings`). Setting the ops user: `update public.ops_settings set ops_user_id = '<auth user id>'` (service role / SQL editor; the row is service-only).
+
+Everything in this section is service-role only (RLS on, nothing granted to `anon`/`authenticated`, functions revoked from `public`).
+
+Notification outbox rows are inserted by: instance opening (kind `window_open`), 15 min before deadline for participants without a success (`deadline_soon`), result posted or a voided day revived (`result`), review opened (`review_opened`), settlement (`settlement`), place set / confirmed / objected / counting by timeout (`place_changed`, see Place events), an obligation marked paid (`obligation_marked_paid`, to the payee) or disputed (`obligation_disputed`, to the payer).
 
 ## File ownership (parallel agents must stay in their lane)
 

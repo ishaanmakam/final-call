@@ -20,7 +20,7 @@ Everyone is a peer. The person who created the group is an owner only for pausin
 
 ## Product Purpose
 
-Show Up turns "I'll be there" into a small pledge among friends. Each person sets their own place for a pact; one tap during the check-in window takes a single GPS fix; whoever shows up splits the forfeits of whoever doesn't. No real money moves: the app keeps the ledger and gives Venmo links at the weekly settle-up.
+Final Call turns "I'll be there" into a small pledge among friends. Each person sets their own place for a pact; one tap during the check-in window takes a single GPS fix; whoever shows up splits the forfeits of whoever doesn't. No real money moves: the app keeps the ledger and gives Venmo links at the weekly settle-up.
 
 Success is a group that keeps using it: check-in rate holds week over week, settle-ups complete, disputes stay rare, and nobody feels cheated by the app itself.
 
@@ -47,7 +47,7 @@ The mechanism a neighbor cannot copy honestly: **a tracking failure never costs 
 
 ## Brand Commitments
 
-- Name: **Show Up**. No logo or wordmark beyond the name has been made; the icon in `assets/` is a placeholder.
+- Name: **Final Call** (renamed from Show Up on 2026-11-07; bundle id `com.ishaanmakam.finalcall`, scheme `finalcall://`). No logo or wordmark beyond the name has been made; the icon in `assets/` is a placeholder.
 - Voice: plain, short, friendly, factual. It tells people what happened and what they can do; it never scolds, never celebrates with confetti, never hides a rule.
 - The reassurance that tracking failures do not cost money is part of the product's promise and must be visible in every failure state.
 

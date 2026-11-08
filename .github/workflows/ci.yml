@@ -3,7 +3,9 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
+# A newer push to the same ref cancels the run it supersedes.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -88,3 +90,78 @@ jobs:
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npx vitest run
+
+  maestro-lint:
+    # Maestro itself runs on EAS (app/.eas/workflows/maestro.yml); here every flow must at least
+    # parse and use known commands, declared ${VARS} and existing runFlow files (docs/TESTING.md).
+    name: .maestro flows (lint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install js-yaml outside the repo
+        run: |
+          mkdir -p "$RUNNER_TEMP/yaml-lint"
+          cd "$RUNNER_TEMP/yaml-lint"
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund js-yaml@4.1.0
+      - run: node .maestro/lint.mjs
+        env:
+          NODE_PATH: ${{ runner.temp }}/yaml-lint/node_modules
+
+  scripts-typecheck:
+    # Root `scripts/` (Supabase smoke scripts) lands separately; a job-level `if: hashFiles(...)`
+    # is evaluated before checkout and always skips, so the folder is detected in a step.
+    name: scripts (typecheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - id: present
+        run: |
+          if [ -f scripts/package.json ]; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; echo "no scripts/package.json: nothing to check"; fi
+      - if: steps.present.outputs.exists == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: scripts/package-lock.json
+      - if: steps.present.outputs.exists == 'true'
+        run: npm ci
+        working-directory: scripts
+      - if: steps.present.outputs.exists == 'true'
+        run: npx tsc --noEmit
+        working-directory: scripts
+
+  web:
+    # The web simulator (`web/`) lands separately; same step-level detection as above. Runs whichever
+    # of typecheck / test / build the package defines.
+    name: web (simulator)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - id: present
+        run: |
+          if [ -f web/package.json ]; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; echo "no web/package.json: nothing to build"; fi
+      - if: steps.present.outputs.exists == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - if: steps.present.outputs.exists == 'true'
+        run: npm ci
+        working-directory: web
+      - if: steps.present.outputs.exists == 'true'
+        run: npm run --if-present typecheck
+        working-directory: web
+      - if: steps.present.outputs.exists == 'true'
+        run: npm test --if-present
+        working-directory: web
+      - if: steps.present.outputs.exists == 'true'
+        run: npm run --if-present build
+        working-directory: web

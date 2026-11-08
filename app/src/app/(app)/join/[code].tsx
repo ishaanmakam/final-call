@@ -7,7 +7,7 @@ import { EmptyState, Screen, Text } from '@/components';
 import { userMessage } from '@/lib/errors';
 import { space } from '@/theme';
 
-/** Deep link target: showup://join/<code>. The group's name is not readable before joining (RLS). */
+/** Deep link target: finalcall://join/<code>. The group's name is not readable before joining (RLS). */
 export default function JoinFromLink() {
   const params = useLocalSearchParams<{ code: string | string[] }>();
   const code = (Array.isArray(params.code) ? params.code[0] : params.code) ?? '';

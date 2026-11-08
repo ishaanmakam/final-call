@@ -8,6 +8,7 @@ import { RpcError, checkIn, declareFreeze } from '@/api/rpc';
 import type { CheckinRow } from '@/api/types';
 import { EmptyState, Icon, ListGroup, ListRow, Screen, Skeleton, StatusPill, Text, resultLabel } from '@/components';
 import { CheckinButton, RING_SIZE, type RingTone } from '@/features/checkin/CheckinButton';
+import { ClockSkewNotice } from '@/features/checkin/ClockSkewNotice';
 import { VerdictPanel } from '@/features/checkin/VerdictPanel';
 import { WindowClock } from '@/features/checkin/WindowClock';
 import {
@@ -31,6 +32,7 @@ import { enqueueCheckin, kickQueue } from '@/lib/checkinQueueRuntime';
 import { captureAttempt } from '@/lib/checkinAttempt';
 import { userMessage } from '@/lib/errors';
 import { ensurePreciseForegroundPermission, takeHighAccuracyFix } from '@/lib/location';
+import { captureException } from '@/lib/sentry';
 import { formatDateInZone, formatTimeInZone } from '@/lib/time';
 import { durations, easing, haptic, space } from '@/theme';
 
@@ -154,6 +156,8 @@ function Loaded({
         await enqueueCheckin(attempt);
         show(panelForQueued(attempt.clientCapturedAt, instance.deadline_at, pact.tz));
       } else {
+        // a server refusal is a rule, not a bug; anything else is worth a report (no coordinates: scrubbed)
+        if (!(e instanceof RpcError)) captureException(e, { where: 'checkin.submit', instanceId });
         show(panelForError(e));
       }
     }
@@ -234,6 +238,7 @@ function Loaded({
         {dateLine}
       </Text>
       <WindowClock phase={windowPhase} windowOpenAt={instance.window_open_at} deadlineAt={instance.deadline_at} tz={pact.tz} />
+      <ClockSkewNotice deadlineAt={instance.deadline_at} tz={pact.tz} />
 
       {!myPlace ? (
         <EmptyState

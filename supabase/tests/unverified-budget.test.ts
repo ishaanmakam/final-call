@@ -314,18 +314,28 @@ describe('unverified budget: the third unverified day in a pact-month opens an a
     await expectError(asAnon(db, (d) => rows(d, `select * from public.unverified_month_counts`)), /permission denied/i);
   });
 
-  it('a voided instance (fewer than two active) never opens one', async () => {
+  it('a day voided at close (fewer than two active) still counts its unverified results and opens one on the third (RT-2)', async () => {
     const fx = await setup(2);
     const subject = fx.participantIds[0]!;
     await gen(GEN_NOW);
+    let last = '';
     for (const d of ['2030-01-07', '2030-01-08', '2030-01-09']) {
       const inst = await instanceOf(fx.pactId, d);
       await tick(openOf(d));
       await checkInAt(subject, inst, { ...placeOf(0), acc: 250 }, at(openOf(d), 10));
       await tick(deadlineOf(d));
       expect(await scalar(db, `select status::text from public.pact_instances where id = $1`, [inst])).toBe('voided');
+      expect(await resultOf(inst, subject)).toBe('unverified');
+      last = inst;
     }
-    expect(await reviewsOf(subject)).toEqual([]);
-    expect((await monthCount(fx.pactId, subject, '2030-01-01')) ?? null).toBeNull();
+    expect(await monthCount(fx.pactId, subject, '2030-01-01')).toBe(3);
+    const reviews = await reviewsOf(subject);
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]).toMatchObject({ instance_id: last, kind: 'challenge', status: 'open', system_opened: true });
+    // a day cancelled by a pause (no results) never counts
+    await asUser(db, fx.ownerId, (d) => d.query(`select public.set_pact_paused($1, true)`, [fx.pactId]));
+    await tick(at(openOf('2030-01-10'), -60));
+    expect(await scalar(db, `select status::text from public.pact_instances where pact_id = $1 and local_date = '2030-01-10'`, [fx.pactId])).toBe('voided');
+    expect(await monthCount(fx.pactId, subject, '2030-01-01')).toBe(3);
   });
 });

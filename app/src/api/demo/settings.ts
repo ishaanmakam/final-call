@@ -15,6 +15,8 @@
  *   ?fix=none       the GPS fix times out on the check-in tap (fail-open: sent without coordinates)
  *   ?precise=0      iOS Approximate Location: the check-in tap refuses to send and points to Settings
  *   ?budget=N       N unverified days this month in this pact (0-9; the check-in screen's budget line)
+ *   ?skew=S         the phone's clock is S seconds off the server (negative = ahead); the check-in screen's
+ *                   clock-skew notice shows past 120 s
  */
 import type { CheckinVerdict } from '../types';
 
@@ -39,6 +41,8 @@ export interface DemoSettings {
   precise: boolean;
   /** unverified days this month in the open instance's pact (the check-in screen's budget line) */
   budget: number;
+  /** seconds the server is ahead of the phone (negative = phone ahead); the clock-skew notice */
+  skew: number;
 }
 
 export const DEFAULT_DEMO_SETTINGS: DemoSettings = {
@@ -52,6 +56,7 @@ export const DEFAULT_DEMO_SETTINGS: DemoSettings = {
   fix: 'ok',
   precise: true,
   budget: 0,
+  skew: 0,
 };
 
 const VERDICTS: readonly CheckinVerdict[] = ['in_fence', 'out_of_fence', 'unjudgeable', 'rejected_simulated'];
@@ -71,6 +76,10 @@ const digit = (v: string | string[] | undefined, fallback: number): number => {
   const s = one(v);
   return s !== undefined && /^[0-9]$/.test(s) ? Number(s) : fallback;
 };
+const seconds = (v: string | string[] | undefined, fallback: number): number => {
+  const s = one(v);
+  return s !== undefined && /^-?[0-9]{1,6}$/.test(s) ? Number(s) : fallback;
+};
 const pick = <T extends string>(v: string | string[] | undefined, allowed: readonly T[], fallback: T): T => {
   const s = one(v);
   return s !== undefined && (allowed as readonly string[]).includes(s) ? (s as T) : fallback;
@@ -88,6 +97,7 @@ export function demoSettingsFromParams(params: Params): DemoSettings {
     fix: pick(params.fix, FIXES, DEFAULT_DEMO_SETTINGS.fix),
     precise: one(params.precise) !== '0' && one(params.precise) !== 'false',
     budget: digit(params.budget, DEFAULT_DEMO_SETTINGS.budget),
+    skew: seconds(params.skew, DEFAULT_DEMO_SETTINGS.skew),
   };
 }
 
@@ -108,7 +118,8 @@ export function setDemoSettings(next: DemoSettings): void {
     next.settle === current.settle &&
     next.fix === current.fix &&
     next.precise === current.precise &&
-    next.budget === current.budget
+    next.budget === current.budget &&
+    next.skew === current.skew
   ) {
     return;
   }

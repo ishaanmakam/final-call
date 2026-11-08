@@ -17,6 +17,8 @@ describe('routeFromData', () => {
     expect(routeFromData({ kind: 'result', group_id: 'g1' })).toBe('/groups/g1/feed');
     expect(routeFromData({ kind: 'review_opened', group_id: 'g1' })).toBe('/groups/g1/feed');
     expect(routeFromData({ kind: 'settlement', group_id: 'g1' })).toBe('/groups/g1/ledger');
+    expect(routeFromData({ kind: 'obligation_marked_paid', group_id: 'g1' })).toBe('/groups/g1/ledger');
+    expect(routeFromData({ kind: 'obligation_disputed', group_id: 'g1' })).toBe('/groups/g1/ledger');
     expect(routeFromData({ kind: 'window_open', instance_id: 'i1', group_id: 'g1' })).toBe('/checkin/i1');
     expect(routeFromData({ kind: 'anything', group_id: 'g1' })).toBe('/groups/g1');
     expect(routeFromData(undefined)).toBeNull();

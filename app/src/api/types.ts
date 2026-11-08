@@ -22,6 +22,8 @@ export type ProfileRow = {
   display_name: string;
   /** added in 20261107000500_app_support.sql; 5 to 30 of [A-Za-z0-9_-] when set */
   venmo_username: string | null;
+  /** 20261108000600_account_deletion.sql: set when the account was deleted (name reads "Deleted member") */
+  deleted_at?: string | null;
   created_at: string;
 };
 
@@ -385,6 +387,8 @@ export type RpcFunctions = {
   /** another current member blocks a place set in the last 24 h; the owner must set a new one */
   object_place: Fn<{ p_place: string; p_reason: string }, undefined>;
   pact_place_distances: Fn<{ p_pact: string }, PlaceDistanceRow[]>;
+  /** the caller only: leaves every group (leave rules apply), anonymizes the profile, erases the auth identity */
+  delete_my_account: Fn<Record<string, never>, undefined>;
 };
 
 export type RpcName = keyof RpcFunctions;

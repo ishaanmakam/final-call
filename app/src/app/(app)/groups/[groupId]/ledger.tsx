@@ -109,7 +109,7 @@ function Obligation({
       await openVenmoPayment({
         recipient: payeeVenmo!,
         amountCents: ob.amount_cents,
-        note: weekOf ? `Show Up pool, week of ${weekOf}` : 'Show Up pool',
+        note: weekOf ? `Final Call pool, week of ${weekOf}` : 'Final Call pool',
       });
       setVenmoOpened(true);
     });
