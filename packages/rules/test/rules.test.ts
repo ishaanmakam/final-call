@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  RULES_VERSION,
+  applyReview,
+  applyReviews,
   checkinVerdict,
   computeInstancePayout,
   computeResults,
   distanceMeters,
+  settlementReviewStatus,
   simplifyDebts,
   type CheckinRecord,
 } from "../src/index";
@@ -158,7 +162,23 @@ describe("computeResults", () => {
       checkins: [ci("b", "in_fence", "2026-11-09T16:00:00Z"), ci("c", "unjudgeable", "2026-11-09T16:00:00Z")],
     });
     expect(r.voided).toBe(true);
-    expect(r.results.map((x) => x.status)).toEqual(["frozen", "void", "void"]);
+    // RT-2: only the active status (b's success) is voided; c's unjudgeable attempt stays unverified
+    expect(r.results.map((x) => x.status)).toEqual(["frozen", "void", "unverified"]);
+    expect(r.results[1]!.firstSuccessAt).toBeNull();
+  });
+
+  it("voids every active participant and nothing else (RT-2)", () => {
+    const r = computeResults({
+      deadlineAt: deadline,
+      participants: [
+        { userId: "a", frozen: false },
+        { userId: "b", frozen: false },
+        { userId: "c", frozen: false },
+      ],
+      checkins: [ci("b", "unjudgeable", "2026-11-09T16:00:00Z"), ci("c", "unjudgeable", "2026-11-09T16:00:00Z")],
+    });
+    expect(r.voided).toBe(true);
+    expect(r.results.map((x) => x.status)).toEqual(["void", "unverified", "unverified"]);
   });
 
   it("sorts results by user id", () => {
@@ -349,5 +369,77 @@ describe("simplifyDebts", () => {
 
   it("rejects balances whose total is positive, which would mean money appeared from nowhere", () => {
     expect(() => simplifyDebts({ a: 100, b: -50 })).toThrow(/positive/);
+  });
+});
+
+describe("reviews", () => {
+  const failed = { userId: "a", status: "failed" as const, firstSuccessAt: null };
+  const success = { userId: "a", status: "success" as const, firstSuccessAt: "2026-11-09T16:20:00Z" };
+  const unverified = { userId: "a", status: "unverified" as const, firstSuccessAt: null };
+  const deadlineAt = "2026-11-09T17:00:00Z";
+
+  it("resolves a review at settlement by majority of votes cast; a tie is rejected; no votes is defaulted", () => {
+    expect(settlementReviewStatus(0, 0)).toBe("defaulted");
+    expect(settlementReviewStatus(1, 0)).toBe("accepted");
+    expect(settlementReviewStatus(2, 1)).toBe("accepted");
+    expect(settlementReviewStatus(1, 1)).toBe("rejected");
+    expect(settlementReviewStatus(0, 1)).toBe("rejected");
+  });
+
+  it("an accepted appeal is a success at the deadline (D1)", () => {
+    expect(applyReview(failed, { kind: "appeal", status: "accepted" }, deadlineAt)).toEqual({
+      userId: "a",
+      status: "success",
+      firstSuccessAt: deadlineAt,
+    });
+  });
+
+  it("a defaulted appeal leaves the original result standing, never excluded (N3-1)", () => {
+    expect(applyReview(failed, { kind: "appeal", status: "defaulted" }, deadlineAt)).toEqual(failed);
+    expect(applyReview(failed, { kind: "appeal", status: "rejected" }, deadlineAt)).toEqual(failed);
+  });
+
+  it("an accepted challenge is a failure; a rejected or defaulted one changes nothing", () => {
+    expect(applyReview(success, { kind: "challenge", status: "accepted" }, deadlineAt)).toEqual(failed);
+    expect(applyReview(unverified, { kind: "challenge", status: "accepted" }, deadlineAt)).toEqual(failed);
+    expect(applyReview(success, { kind: "challenge", status: "rejected" }, deadlineAt)).toEqual(success);
+    expect(applyReview(success, { kind: "challenge", status: "defaulted" }, deadlineAt)).toEqual(success);
+    expect(applyReview(unverified, { kind: "challenge", status: "defaulted" }, deadlineAt)).toEqual(unverified);
+  });
+
+  it("an open review changes nothing", () => {
+    expect(applyReview(failed, { kind: "appeal", status: "open" }, deadlineAt)).toEqual(failed);
+    expect(applyReview(success, { kind: "challenge", status: "open" }, deadlineAt)).toEqual(success);
+  });
+
+  it("applies resolved reviews in resolution order", () => {
+    // appeal accepted (failed -> success), then the success is challenged and the challenge accepted
+    expect(
+      applyReviews(failed, deadlineAt, [
+        { kind: "appeal", status: "accepted" },
+        { kind: "challenge", status: "accepted" },
+      ]),
+    ).toEqual(failed);
+    // defaulted appeal first, then nothing else: still the base result
+    expect(applyReviews(failed, deadlineAt, [{ kind: "appeal", status: "defaulted" }])).toEqual(failed);
+    expect(applyReviews(success, deadlineAt, [])).toEqual(success);
+  });
+
+  it("never produces excluded from any combination of review outcomes", () => {
+    const kinds = ["appeal", "challenge"] as const;
+    const statuses = ["open", "accepted", "rejected", "defaulted"] as const;
+    for (const base of [failed, success, unverified]) {
+      for (const k1 of kinds) for (const s1 of statuses) for (const k2 of kinds) for (const s2 of statuses) {
+        const r = applyReviews(base, deadlineAt, [
+          { kind: k1, status: s1 },
+          { kind: k2, status: s2 },
+        ]);
+        expect(r.status).not.toBe("excluded");
+      }
+    }
+  });
+
+  it("exposes a rules version that moved for the appeal-default and red-team changes", () => {
+    expect(RULES_VERSION).toBeGreaterThanOrEqual(3);
   });
 });

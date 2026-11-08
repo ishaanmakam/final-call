@@ -23,9 +23,9 @@ describe('normalizeVenmoUsername', () => {
 
 describe('buildVenmoPayLinks', () => {
   it('builds app and web links with exact decimal amount', () => {
-    const links = buildVenmoPayLinks({ recipient: '@jane_doe', amountCents: 1234, note: 'Show Up' });
-    expect(links.app).toBe('venmo://paycharge?txn=pay&recipients=jane_doe&amount=12.34&note=Show%20Up');
-    expect(links.web).toBe('https://venmo.com/jane_doe?txn=pay&amount=12.34&note=Show%20Up');
+    const links = buildVenmoPayLinks({ recipient: '@jane_doe', amountCents: 1234, note: 'Final Call' });
+    expect(links.app).toBe('venmo://paycharge?txn=pay&recipients=jane_doe&amount=12.34&note=Final%20Call');
+    expect(links.web).toBe('https://venmo.com/jane_doe?txn=pay&amount=12.34&note=Final%20Call');
   });
 
   it('formats amounts without float error', () => {

@@ -2,6 +2,8 @@ import 'react-native-url-polyfill/auto';
 import { createClient } from '@supabase/supabase-js';
 import * as SecureStore from 'expo-secure-store';
 import { AppState, Platform } from 'react-native';
+import { createChunkedStore } from '../lib/secureChunks';
+import { recordServerDate } from '../lib/serverTime';
 import type { Database } from './types';
 
 const url = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
@@ -9,18 +11,33 @@ const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
 
 export const isSupabaseConfigured = url.startsWith('http') && anonKey.length > 0;
 
-/** Session (and PKCE verifier) live in the iOS Keychain via expo-secure-store. */
-const secureStorage = {
-  getItem: (key: string) => SecureStore.getItemAsync(key),
-  setItem: (key: string, value: string) =>
-    SecureStore.setItemAsync(key, value, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK }),
-  removeItem: (key: string) => SecureStore.deleteItemAsync(key),
+/**
+ * Session (and PKCE verifier) live in the iOS Keychain via expo-secure-store. SecureStore caps a
+ * value at 2048 bytes and a session JSON is bigger, so values are split into <= 1900-byte chunks
+ * (see lib/secureChunks.ts). Keychain writes have no cross-item transaction; a torn write reads
+ * back as "no session", never as a corrupt one.
+ */
+const secureStorage = createChunkedStore({
+  getItem: (key) => SecureStore.getItemAsync(key),
+  setItem: (key, value) => SecureStore.setItemAsync(key, value, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK }),
+  removeItem: (key) => SecureStore.deleteItemAsync(key),
+});
+
+/**
+ * Every response's `Date` header feeds the clock-skew estimate (lib/serverTime.ts), so the
+ * check-in screen can say when the phone's clock is minutes off the server's. Same fetch otherwise.
+ */
+const fetchWithServerDate: typeof fetch = async (input, init) => {
+  const res = await fetch(input, init);
+  recordServerDate(res.headers.get('date'), Date.now());
+  return res;
 };
 
 export const supabase = createClient<Database>(
   isSupabaseConfigured ? url : 'http://localhost:54321',
   isSupabaseConfigured ? anonKey : 'missing-anon-key',
   {
+    global: { fetch: fetchWithServerDate },
     auth: {
       storage: Platform.OS === 'web' ? undefined : secureStorage,
       autoRefreshToken: true,

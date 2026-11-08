@@ -1,0 +1,40 @@
+# Maestro smoke on an iOS Simulator build of the demo app (docs/TESTING.md).
+#
+# Lives in app/.eas/workflows because EAS resolves .eas/workflows from the Expo project root (the
+# folder with eas.json); the GitHub integration's "base directory" for this repo must be `app`.
+# Run by hand from app/:   eas workflow:run maestro.yml
+#
+# The build profile `demo-simulator` (eas.json) bakes EXPO_PUBLIC_DEMO=1 into the bundle, so the
+# flows run against the in-memory fixtures: no Supabase, no real location, no network.
+name: Maestro smoke (iOS Simulator, demo)
+
+on:
+  push:
+    branches:
+      - main
+      - night-1
+  pull_request:
+    branches:
+      - '*'
+  workflow_dispatch:
+
+jobs:
+  build_ios_sim:
+    name: Build iOS Simulator (demo-simulator)
+    type: build
+    params:
+      platform: ios
+      profile: demo-simulator
+
+  maestro:
+    name: Maestro smoke-all
+    type: maestro
+    needs: [build_ios_sim]
+    runs_on: macos-medium
+    params:
+      build_id: ${{ needs.build_ios_sim.outputs.build_id }}
+      # relative to the Expo project root (app/); the flows live at the repo root
+      flow_path:
+        - ../.maestro/smoke-all.yaml
+      record_screen: true
+      retries: 1

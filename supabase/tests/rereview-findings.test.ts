@@ -168,9 +168,9 @@ describe('fix 1: challenges of results changed by a late tap after settlement', 
     await checkInAt(db, c, sun, 2, at(S_SETTLE, 60), at(S_OPEN, 30));
     expect(await resultOf(sun, c)).toBe('unverified');
     const rev = await openReview(a, sun, c, 'challenge', at(S_SETTLE, 90));
-    await vote(a, rev, true, at(S_SETTLE, 91));
+    expect((await expectError(vote(a, rev, true, at(S_SETTLE, 91)))).code).toBe('42501'); // the opener does not vote (RT-1)
     expect(await reviewStatus(rev)).toBe('open');
-    await vote(b, rev, true, at(S_SETTLE, 92));
+    await vote(b, rev, true, at(S_SETTLE, 92)); // b is the only eligible voter
     expect(await reviewStatus(rev)).toBe('accepted');
     expect(await resultOf(sun, c)).toBe('failed');
     expect(await net(db, sun, c)).toBe(-500);
@@ -181,12 +181,12 @@ describe('fix 1: challenges of results changed by a late tap after settlement', 
   });
 
   it('an unresolved late challenge is resolved at the next settlement and its correction billed then', async () => {
-    const { fx, sun, u } = await sundayClosed(3, [true, true, false]);
-    const [a, , c] = u;
+    const { fx, sun, u } = await sundayClosed(4, [true, true, true, false]);
+    const [a, b, , c] = u;
     await settle(db, S_SETTLE);
-    await checkInAt(db, c, sun, 2, at(S_SETTLE, 60), at(S_OPEN, 30));
+    await checkInAt(db, c, sun, 3, at(S_SETTLE, 60), at(S_OPEN, 30));
     const rev = await openReview(a, sun, c, 'challenge', at(S_SETTLE, 90));
-    await vote(a, rev, true, at(S_SETTLE, 91)); // 1 of 2 eligible: not a majority yet
+    await vote(b, rev, true, at(S_SETTLE, 91)); // 1 of 2 eligible (b, d; the opener a does not vote): not a majority yet
     expect(await reviewStatus(rev)).toBe('open');
     expect(await net(db, sun, c)).toBe(0);
 
@@ -235,20 +235,22 @@ describe('fix 3: voters who left the group', () => {
     await asUser(db, d, (x) => x.query(`select public.leave_group($1)`, [fx.groupId]));
     const e = await expectError(vote(d, rev, true, at(S_DEADLINE, 11)));
     expect(e.code).toBe('42501');
-    // eligible = a, c, e (d left): two yes votes are a majority
-    await vote(a, rev, true, at(S_DEADLINE, 12));
-    await vote(c, rev, true, at(S_DEADLINE, 13));
+    // eligible = c, e (d left; the opener a does not vote, RT-1): two yes votes are a majority
+    expect((await expectError(vote(a, rev, true, at(S_DEADLINE, 12)))).code).toBe('42501');
+    await vote(c, rev, true, at(S_DEADLINE, 12));
+    expect(await reviewStatus(rev)).toBe('open');
+    await vote(u[4], rev, true, at(S_DEADLINE, 13));
     expect(await reviewStatus(rev)).toBe('accepted');
     expect(await resultOf(sun, b)).toBe('failed');
   });
 
   it('a vote cast before leaving is not counted when the review is defaulted at settlement', async () => {
     const { fx, sun, u } = await sundayClosed(5, [true, true, false, false, false]);
-    const [a, b, , d] = u;
+    const [a, b, c, d] = u;
     const rev = await openReview(a, sun, b, 'challenge', at(S_DEADLINE, 10));
     await vote(d, rev, false, at(S_DEADLINE, 11));
     await asUser(db, d, (x) => x.query(`select public.leave_group($1)`, [fx.groupId]));
-    await vote(a, rev, true, at(S_DEADLINE, 12));
+    await vote(c, rev, true, at(S_DEADLINE, 12)); // 1 of 2 eligible (c, e)
     expect(await reviewStatus(rev)).toBe('open');
     await settle(db, S_SETTLE);
     expect(await reviewStatus(rev)).toBe('accepted'); // d's "no" no longer ties it
@@ -258,19 +260,24 @@ describe('fix 3: voters who left the group', () => {
 
 describe('fix 6: a late tap that leaves fewer than 2 active participants', () => {
   it('keeps the instance closed (not voided) with no money moved, so the late result can still be challenged', async () => {
-    const { sun, u } = await sundayClosed(2, [true, false]);
-    const [a, c] = u;
-    expect(await net(db, sun, a)).toBe(500);
-    await checkInAt(db, c, sun, 1, at(S_DEADLINE, 120), at(S_OPEN, 30));
+    // a wins; b and c both send late "offline" taps, leaving a as the only active participant
+    const { sun, u } = await sundayClosed(3, [true, false, false]);
+    const [a, b, c] = u;
+    expect(await net(db, sun, a)).toBe(1000);
+    await checkInAt(db, b, sun, 1, at(S_DEADLINE, 110), at(S_OPEN, 30));
+    await checkInAt(db, c, sun, 2, at(S_DEADLINE, 120), at(S_OPEN, 30));
+    expect(await resultOf(sun, b)).toBe('unverified');
     expect(await resultOf(sun, c)).toBe('unverified');
     expect(await resultOf(sun, a)).toBe('success');
     expect(await scalar(db, `select status::text from public.pact_instances where id = $1`, [sun])).toBe('closed');
     expect(await net(db, sun, a)).toBe(0);
+    expect(await net(db, sun, b)).toBe(0);
     expect(await net(db, sun, c)).toBe(0);
     const rev = await openReview(a, sun, c, 'challenge', at(S_DEADLINE, 130));
-    await vote(a, rev, true, at(S_DEADLINE, 131));
+    await vote(b, rev, true, at(S_DEADLINE, 131)); // b is the only eligible voter (the opener a does not vote, RT-1)
     expect(await reviewStatus(rev)).toBe('accepted');
     expect(await net(db, sun, a)).toBe(500);
     expect(await net(db, sun, c)).toBe(-500);
+    expect(await net(db, sun, b)).toBe(0);
   });
 });

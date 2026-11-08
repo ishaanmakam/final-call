@@ -45,6 +45,8 @@ export interface PlannedMessage {
 export interface RowError {
   id: number;
   error: string;
+  /** ISO instant before which the row must not be re-claimed (retryable failures only). */
+  retryAt?: string;
 }
 
 export interface DeadToken {
@@ -109,7 +111,42 @@ export function formatLocalTime(p: { deadline_local?: unknown; deadline_at?: unk
 
 // ---------- rendering ----------
 
-const DATA_KEYS = ["group_id", "pact_id", "instance_id", "review_id", "settlement_id"] as const;
+const DATA_KEYS = ["group_id", "pact_id", "instance_id", "review_id", "settlement_id", "place_id"] as const;
+
+/** In-app path the client opens when the notification is tapped (app/src/lib/push.ts prefers data.url). */
+export function deepLinkUrl(kind: string, p: Record<string, unknown>): string | undefined {
+  const instance = str(p.instance_id);
+  const group = str(p.group_id);
+  switch (kind) {
+    case "window_open":
+    case "deadline_soon":
+      return instance ? `/checkin/${instance}` : undefined;
+    case "result":
+    case "review_opened":
+      return group ? `/groups/${group}/feed` : undefined;
+    case "settlement":
+    case "obligation_marked_paid":
+    case "obligation_disputed":
+      return str(p.url) ?? (group ? `/groups/${group}/ledger` : undefined);
+    case "place_changed": {
+      const pact = str(p.pact_id);
+      return str(p.url) ?? (pact ? `/pacts/${pact}` : undefined);
+    }
+    case "ops_alert":
+      return str(p.url) ?? "/settings";
+    default:
+      return undefined;
+  }
+}
+
+/** Reminders about a window that has already closed must not go out late. */
+export function isStale(row: OutboxRow, p: Record<string, unknown>, now: Date): boolean {
+  if (row.kind !== "window_open" && row.kind !== "deadline_soon") return false;
+  const at = str(p.deadline_at);
+  if (!at) return false;
+  const ms = new Date(at).getTime();
+  return Number.isFinite(ms) && now.getTime() > ms;
+}
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" && v.trim() !== "" ? v : undefined;
@@ -117,6 +154,18 @@ function str(v: unknown): string | undefined {
 
 function num(v: unknown): number | undefined {
   return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+function ordinal(n: number): string {
+  const i = Math.trunc(n);
+  const mod100 = i % 100;
+  const suffix = mod100 >= 11 && mod100 <= 13 ? "th" : i % 10 === 1 ? "st" : i % 10 === 2 ? "nd" : i % 10 === 3 ? "rd" : "th";
+  return `${i}${suffix}`;
+}
+
+function formatDistance(m: number): string {
+  const metres = Math.max(0, Math.round(m));
+  return metres < 1000 ? `${metres} m` : `${(metres / 1000).toFixed(1)} km`;
 }
 
 function minutesLeft(p: Record<string, unknown>, now: Date): number {
@@ -135,49 +184,51 @@ function renderCopy(row: OutboxRow, p: Record<string, unknown>, now: Date): { ti
   const stake = num(p.stake_cents);
   const pledge = stake !== undefined && stake > 0 ? `${formatCents(stake)} pledge` : undefined;
 
+  // The airport voice (app/DESIGN.md "Voice"): exactly three moments, Boarding / Final call / Gate
+  // closed, are named in the title. Everything else stays plain.
   switch (row.kind) {
     case "window_open": {
-      const where = place ?? pact ?? "Your spot";
-      const when = time ? `${where} by ${time}.` : `${where}.`;
+      const at = place ? ` at ${place}` : "";
+      const when = time ? `Check in${at} by ${time}.` : place ? `Check in${at}.` : "Check in now.";
       return {
-        title: `Check-in open: ${pact ?? "your pact"}`,
+        title: `Boarding: ${pact ?? "your pact"}`,
         body: pledge ? `${when} ${pledge} on the line.` : when,
       };
     }
     case "deadline_soon": {
-      const where = place ?? pact ?? "Your pact";
-      const head = time ? `${where} by ${time}` : where;
+      const n = minutesLeft(p, now);
+      const left = `${n} minute${n === 1 ? "" : "s"} left to check in${place ? ` at ${place}` : ""}.`;
       return {
-        title: `${head} — ${minutesLeft(p, now)} min left`,
-        body: pledge ? `Check in now or forfeit your ${pledge}.` : "Check in now.",
+        title: `Final call: ${pact ?? "your pact"}`,
+        body: pledge ? `${left} Miss it and you forfeit your ${pledge}.` : left,
       };
     }
     case "result": {
-      const name = pact ?? "Your pact";
+      const title = `Gate closed: ${pact ?? "your pact"}`;
       const pledgeOr = pledge ?? "Your pledge";
       switch (p.status) {
         case "success": {
           const net = num(p.net_cents) ?? 0;
           return {
-            title: `${name}: you made it`,
-            body: net > 0 ? `You won ${formatCents(net)} from the pool.` : "Your pledge is safe.",
+            title,
+            body: net > 0 ? `You made it. +${formatCents(net)} from the pool.` : "You made it. Your pledge is safe.",
           };
         }
         case "failed":
           return {
-            title: `${name}: missed`,
+            title,
             body: p.rolled_over === true
-              ? `${pledgeOr} forfeited. Nobody made it, so the pool rolls over.`
-              : `${pledgeOr} forfeited to the pool. Appeal before settlement if that's wrong.`,
+              ? `Missed. ${pledgeOr} forfeited. Nobody made it, so the pool rolls over.`
+              : `Missed. ${pledgeOr} forfeited to the pool. Appeal before settlement if that's wrong.`,
           };
         case "unverified":
-          return { title: `${name}: couldn't verify`, body: "No forfeit. Your check-in couldn't be judged." };
+          return { title, body: "Unverified. No forfeit: your check-in couldn't be judged." };
         case "frozen":
-          return { title: `${name}: frozen`, body: "No pledge today." };
+          return { title, body: "Frozen. No pledge today." };
         case "void":
-          return { title: `${name}: void`, body: "Fewer than 2 active, so no pledges today." };
+          return { title, body: "Didn't count. Fewer than 2 were in it, so no pledges today." };
         case "excluded":
-          return { title: `${name}: excluded`, body: "Your pledge was returned." };
+          return { title, body: "Excluded. Your pledge was returned." };
         default:
           return null;
       }
@@ -186,6 +237,19 @@ function renderCopy(row: OutboxRow, p: Record<string, unknown>, now: Date): { ti
       const subject = str(p.subject_name) ?? "Someone";
       const opener = str(p.opener_name) ?? "Someone";
       const vote = `${pact ?? "Your pact"}: vote before settlement.`;
+      if (p.system_opened === true) {
+        // the unverified budget: nobody opened it, so no opener is named
+        const n = num(p.unverified_this_month);
+        const toSubject = str(p.subject_user_id) === row.user_id;
+        const who = toSubject ? "Your" : `${subject}'s`;
+        const what = n !== undefined && n > 0
+          ? `${ordinal(n)} unverified day this month goes to a vote`
+          : "unverified days this month go to a vote";
+        return {
+          title: `${who} ${what}`,
+          body: toSubject ? `${pact ?? "Your pact"}: the group votes before settlement.` : vote,
+        };
+      }
       if (p.review_kind === "appeal") return { title: `${subject} appealed a miss`, body: vote };
       if (p.review_kind === "challenge") {
         if (str(p.subject_user_id) === row.user_id) {
@@ -198,6 +262,51 @@ function renderCopy(row: OutboxRow, p: Record<string, unknown>, now: Date): { ti
       }
       return null;
     }
+    case "place_changed": {
+      const user = str(p.user_name) ?? "Someone";
+      const actor = str(p.actor_name) ?? "Someone";
+      const name = pact ?? "pact";
+      const label = str(p.label);
+      const prev = str(p.prev_label);
+      const dist = num(p.distance_from_prev_m);
+      switch (p.event) {
+        case "created": {
+          const isChange = prev !== undefined || dist !== undefined || p.requires_ack === true;
+          if (!isChange) {
+            return {
+              title: `${user} joined ${name}`,
+              body: `Their place is ${label ?? "not named"}. Object within 24 hours if that is not right.`,
+            };
+          }
+          const from = prev !== undefined && dist !== undefined
+            ? `, ${formatDistance(dist)} from ${prev}`
+            : prev !== undefined
+            ? `, was ${prev}`
+            : "";
+          const gate = p.requires_ack === true ? "Confirm it or object within 24 hours." : "It counts in 12 hours.";
+          return { title: `${user} changed their ${name} place`, body: `${label ?? "A new place"}${from}. ${gate}` };
+        }
+        case "acknowledged":
+          return {
+            title: `${actor} confirmed your new place`,
+            body: `${label ?? "It"} counts for ${name} from the next window at least 12 hours after you set it.`,
+          };
+        case "objected": {
+          const reason = str(p.reason);
+          return {
+            title: `${actor} objected to your new place`,
+            body: `${label ?? "It"} will not count for ${name}${reason ? `: "${reason}"` : ""}. Set a new place.`,
+          };
+        }
+        case "effective":
+          return {
+            title: "Your new place now counts",
+            body: `Nobody objected within 24 hours: ${label ?? "it"} is your ${name} place.`,
+          };
+        default:
+          return null;
+      }
+    }
     case "settlement": {
       const net = num(p.net_cents) ?? 0;
       return {
@@ -208,6 +317,30 @@ function renderCopy(row: OutboxRow, p: Record<string, unknown>, now: Date): { ti
           ? `You're owed ${formatCents(net)}. Your group will pay you on Venmo.`
           : "You're square this week.",
       };
+    }
+    // RT-3: to the payee. Until they confirm or dispute, the next settlement treats it as paid.
+    case "obligation_marked_paid": {
+      const payer = str(p.from_name) ?? "Someone";
+      const amount = num(p.amount_cents);
+      return {
+        title: amount !== undefined ? `${payer} marked ${formatCents(amount)} as paid` : `${payer} marked a payment as paid`,
+        body: "Confirm it once it lands on Venmo, or dispute it if nothing arrived.",
+      };
+    }
+    // RT-3: to the payer.
+    case "obligation_disputed": {
+      const payee = str(p.to_name) ?? "Someone";
+      const amount = num(p.amount_cents);
+      return {
+        title: amount !== undefined ? `${payee} says ${formatCents(amount)} did not arrive` : `${payee} disputed a payment`,
+        body: "Check Venmo and mark it paid again, or sort it out together.",
+      };
+    }
+    // check_job_health (20261108000500): to the ops user only; a cron job is overdue or failing.
+    case "ops_alert": {
+      const job = str(p.job) ?? "unknown";
+      const body = str(p.reason) ?? str(p.message) ?? "Open the dashboard and check job_health.";
+      return { title: `Final Call job ${job}`, body };
     }
     default:
       return null;
@@ -220,6 +353,8 @@ export function renderNotification(row: OutboxRow, now: Date = new Date()): Rend
   if (!copy) return null;
   const data: Record<string, unknown> = { kind: row.kind, outbox_id: row.id };
   for (const k of DATA_KEYS) if (p[k] !== undefined && p[k] !== null) data[k] = p[k];
+  const url = deepLinkUrl(row.kind, p);
+  if (url) data.url = url;
   return { ...copy, data };
 }
 
@@ -246,6 +381,11 @@ export function planMessages(
   const messages: PlannedMessage[] = [];
   const drops: RowError[] = [];
   for (const row of rows) {
+    const payload = row.payload && typeof row.payload === "object" ? row.payload : {};
+    if (isStale(row, payload, now)) {
+      drops.push({ id: row.id, error: "stale: deadline passed" });
+      continue;
+    }
     const rendered = renderNotification(row, now);
     if (!rendered) {
       drops.push({ id: row.id, error: `cannot render kind '${row.kind}'` });
@@ -347,6 +487,16 @@ export async function sendExpoBatch(
   return json.data as ExpoTicket[];
 }
 
+// ---------- retry backoff ----------
+
+/** Minutes to wait before re-claiming a row after its n-th failed attempt (attempts as bumped by claim_outbox). */
+const RETRY_DELAY_MINUTES = [1, 5, 15, 60] as const;
+
+export function retryDelayMs(attempts: number): number {
+  const idx = Math.min(Math.max(Math.trunc(attempts) - 1, 0), RETRY_DELAY_MINUTES.length - 1);
+  return RETRY_DELAY_MINUTES[idx]! * 60_000;
+}
+
 // ---------- orchestration ----------
 
 export interface OutboxDeps {
@@ -389,6 +539,11 @@ export async function processOutbox(
   }
 
   const outcomes = resolveOutcomes(messages, tickets);
+  const attemptsById = new Map(rows.map((r) => [r.id, r.attempts]));
+  const retry: RowError[] = outcomes.retry.map((r) => ({
+    ...r,
+    retryAt: new Date(now.getTime() + retryDelayMs(attemptsById.get(r.id) ?? 1)).toISOString(),
+  }));
   const dropped = [...drops, ...outcomes.drop];
   const seen = new Set<string>();
   const dead = outcomes.deadTokens.filter((t) => {
@@ -399,14 +554,14 @@ export async function processOutbox(
   });
 
   if (outcomes.sent.length) await deps.markSent(outcomes.sent);
-  if (outcomes.retry.length) await deps.markFailed(outcomes.retry);
+  if (retry.length) await deps.markFailed(retry);
   if (dropped.length) await deps.markDropped(dropped);
   if (dead.length) await deps.deleteTokens(dead);
 
   return {
     claimed: rows.length,
     sent: outcomes.sent.length,
-    retried: outcomes.retry.length,
+    retried: retry.length,
     dropped: dropped.length,
     tokensDeleted: dead.length,
   };

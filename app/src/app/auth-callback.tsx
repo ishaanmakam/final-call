@@ -1,31 +1,56 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Body, Button, ErrorText, Loading, Screen } from '@/components/ui';
+import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { EmptyState, Screen, Text } from '@/components';
+import { callbackErrorFromParams, exchangeErrorMessage, type CallbackParams } from '@/features/auth/magicLink';
 import { completeMagicLink } from '@/lib/auth';
+import { pendingNext } from '@/lib/pendingNextRuntime';
+import { space, useTheme } from '@/theme';
 
-/** Target of the magic link: showup://auth-callback?code=... (PKCE). */
+/** Target of the magic link: finalcall://auth-callback?code=... (PKCE). */
 export default function AuthCallback() {
-  const params = useLocalSearchParams<{ code?: string; error_description?: string }>();
-  const [error, setError] = useState<unknown>(
-    params.error_description ? new Error(params.error_description) : null,
-  );
+  const params: CallbackParams = useLocalSearchParams<{ code?: string; error?: string; error_code?: string; error_description?: string }>();
+  const { colors } = useTheme();
+  const code = Array.isArray(params.code) ? params.code[0] : params.code;
+  const [error, setError] = useState<string | null>(() => callbackErrorFromParams(params));
 
   useEffect(() => {
-    if (!params.code) {
-      if (!params.error_description) setError(new Error('This sign-in link is missing its code. Request a new one.'));
-      return;
-    }
-    completeMagicLink(params.code)
-      .then(() => router.replace('/groups'))
-      .catch(setError);
-  }, [params.code, params.error_description]);
+    if (error || !code) return;
+    completeMagicLink(code)
+      // the invite (or any deep link) that sent the person to sign in comes back here (A5)
+      .then(() => pendingNext.take().catch(() => '/groups'))
+      .then((next) => router.replace(next as never))
+      .catch((e: unknown) => setError(exchangeErrorMessage(e)));
+    // `error` is intentionally not a dependency: a failed exchange must not re-run on re-render
+  }, [code]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!error) return <Loading />;
+  if (!error) {
+    return (
+      <Screen scroll={false} contentStyle={styles.center} testID="auth-callback-busy">
+        <View style={styles.busy} accessibilityLiveRegion="polite" accessibilityLabel="Signing you in" accessibilityState={{ busy: true }}>
+          <ActivityIndicator color={colors.secondary} />
+          <Text variant="subheadline" color="secondary">
+            Signing you in…
+          </Text>
+        </View>
+      </Screen>
+    );
+  }
+
   return (
-    <Screen>
-      <Body>We couldn't finish signing you in.</Body>
-      <ErrorText error={error} />
-      <Button title="Back to sign in" onPress={() => router.replace('/sign-in')} />
+    <Screen scroll={false}>
+      <EmptyState
+        layout="screen"
+        icon="envelope"
+        title="Couldn't finish signing in"
+        body={error}
+        action={{ label: 'Back to sign in', onPress: () => router.replace('/sign-in') }}
+      />
     </Screen>
   );
 }
+
+const styles = StyleSheet.create({
+  center: { justifyContent: 'center', alignItems: 'center' },
+  busy: { alignItems: 'center', gap: space.md },
+});

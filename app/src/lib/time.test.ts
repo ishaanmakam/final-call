@@ -130,3 +130,13 @@ describe('DST', () => {
     expect(nextOccurrence(sat, [], '09:00', LA)).toBeNull();
   });
 });
+
+describe('DST ambiguity matches the server (_local_to_utc)', () => {
+  it('a wall time repeated by fall-back resolves to the earlier instant, like Postgres least(c1, c2)', () => {
+    // 2026-11-01 01:30 happens twice in Los Angeles: 01:30 PDT (08:30Z) and 01:30 PST (09:30Z).
+    expect(new Date(zonedLocalToUtc('2026-11-01', '01:30', LA)).toISOString()).toBe('2026-11-01T08:30:00.000Z');
+    // unambiguous times on the same day are unaffected
+    expect(new Date(zonedLocalToUtc('2026-11-01', '00:30', LA)).toISOString()).toBe('2026-11-01T07:30:00.000Z');
+    expect(new Date(zonedLocalToUtc('2026-11-01', '02:30', LA)).toISOString()).toBe('2026-11-01T10:30:00.000Z');
+  });
+});

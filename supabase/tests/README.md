@@ -60,6 +60,10 @@ Notes:
 
 - No `pg_cron` / `pg_net` / `vault`: `20261107000400_cron.sql` is guarded by `pg_available_extensions` and is
   a no-op here (asserted by a test). Cron jobs are tested by calling the job functions with `p_now` directly.
+- No Supabase Storage: the `storage.*` blocks in `20261107000500` / `20261107000600` are guarded by
+  `to_regclass('storage.buckets')` and skipped here. Bucket policies are only exercised on a real stack.
+- `review-fixes.test.ts` guards the indexes, RLS initplan rewrite and `purge_old_outbox` from
+  `20261107000600_review_fixes.sql` (see `docs/REVIEW.md`).
 - No `pgcrypto`: not needed. Invite codes use `gen_random_uuid()` bytes (built in, strong RNG).
 - No pgTAP: see the shim dry run above.
 - Constraint triggers (`DEFERRABLE INITIALLY DEFERRED`), RLS, `SET ROLE`, SECURITY DEFINER, `security_invoker`

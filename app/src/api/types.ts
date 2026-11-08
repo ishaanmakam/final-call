@@ -22,6 +22,8 @@ export type ProfileRow = {
   display_name: string;
   /** added in 20261107000500_app_support.sql; 5 to 30 of [A-Za-z0-9_-] when set */
   venmo_username: string | null;
+  /** 20261108000600_account_deletion.sql: set when the account was deleted (name reads "Deleted member") */
+  deleted_at?: string | null;
   created_at: string;
 };
 
@@ -55,6 +57,9 @@ export type PactRow = {
   paused: boolean;
   created_by: string;
   created_at: string;
+  /** 20261108000700_seasons.sql: an optional season, both set or both null (1..12 weeks from this local date) */
+  season_start?: string | null;
+  season_weeks?: number | null;
 };
 
 export type PactParticipantRow = {
@@ -69,10 +74,14 @@ export type PactParticipantRow = {
 };
 
 /**
- * Place history: a change takes effect for windows opening 12+ hours after it is saved.
- * The place that applies to an instance is the row with the latest effective_from <= window_open_at.
+ * Place history (20261108000100_place_accountability.sql). A first place counts at once. A change
+ * counts from `effective_from`: 24 h after it was saved, moved earlier (never before 12 h) when
+ * another member confirms it (`acknowledged_*`); an objection (`objected_*`) blocks it for good.
+ * The place that applies to an instance is the latest row with effective_from <= window_open_at
+ * that was not objected to by then.
  */
 export type PactParticipantPlaceRow = {
+  id: string;
   pact_id: string;
   user_id: string;
   lat: number;
@@ -81,6 +90,86 @@ export type PactParticipantPlaceRow = {
   label: string | null;
   effective_from: string;
   created_at: string;
+  /** true when another member had to confirm it (a change while others are in the group) */
+  requires_ack: boolean;
+  acknowledged_at: string | null;
+  acknowledged_by: string | null;
+  objected_at: string | null;
+  objected_by: string | null;
+  objection_reason: string | null;
+  /** when the tick posted the "now counts" feed event for an unconfirmed, unobjected change */
+  effective_event_at: string | null;
+};
+
+export type PlaceState = 'effective' | 'pending' | 'objected' | 'superseded';
+
+/** View `pact_places_visible`: every current participant's place rows, readable by the group. */
+export type PactPlaceVisibleRow = {
+  place_id: string;
+  pact_id: string;
+  group_id: string;
+  user_id: string;
+  user_name: string | null;
+  lat: number;
+  lng: number;
+  radius_m: number;
+  label: string | null;
+  created_at: string;
+  effective_from: string;
+  requires_ack: boolean;
+  acknowledged_at: string | null;
+  acknowledged_by: string | null;
+  acknowledged_by_name: string | null;
+  objected_at: string | null;
+  objected_by: string | null;
+  objected_by_name: string | null;
+  objection_reason: string | null;
+  /** the row in force right now */
+  is_current: boolean;
+  state: PlaceState;
+  /** another member may confirm it now (not the owner) */
+  acknowledgeable: boolean;
+  /** another member may object now (24 h after it was set, unless confirmed) */
+  objectable: boolean;
+};
+
+export type PlaceEventKind = 'created' | 'acknowledged' | 'objected' | 'effective';
+
+/** Table `place_events`: the feed rows for places (snapshots; `place_id` is null once a pending place was replaced). */
+export type PlaceEventRow = {
+  id: number;
+  group_id: string;
+  pact_id: string;
+  place_id: string | null;
+  /** whose place */
+  user_id: string;
+  /** who did it: the setter, the confirmer or the objector */
+  actor_id: string;
+  kind: PlaceEventKind;
+  label: string | null;
+  lat: number | null;
+  lng: number | null;
+  radius_m: number | null;
+  prev_label: string | null;
+  prev_lat: number | null;
+  prev_lng: number | null;
+  prev_radius_m: number | null;
+  distance_from_prev_m: number | null;
+  reason: string | null;
+  created_at: string;
+};
+
+/** RPC `pact_place_distances`: metres from each place (in force or pending) to the others' places in force. */
+export type PlaceDistanceRow = {
+  pact_id: string;
+  place_id: string;
+  user_id: string;
+  label: string | null;
+  state: 'effective' | 'pending';
+  other_user_id: string;
+  other_place_id: string;
+  other_label: string | null;
+  distance_m: number;
 };
 
 export type PactInstanceRow = {
@@ -138,6 +227,17 @@ export type ReviewRow = {
   status: ReviewStatus;
   opened_at: string;
   resolved_at: string | null;
+  /** true for the unverified-budget challenge the server opens itself (opened_by = subject) */
+  system_opened: boolean;
+};
+
+/** `unverified_month_counts` view: unverified results per person, pact and calendar month (pact zone). */
+export type UnverifiedMonthCountRow = {
+  pact_id: string;
+  user_id: string;
+  /** first day of the month, 'YYYY-MM-01' */
+  month: string;
+  count: number;
 };
 
 export type ReviewVoteRow = {
@@ -227,6 +327,57 @@ export type MemberBalanceRow = {
   balance_cents: number;
 };
 
+/**
+ * `instance_member_nets` (20261108000800): what one instance did to each member's ledger, straight
+ * from `ledger_lines`. Only members whose lines sum to a non-zero amount have a row; `pot_cents` is
+ * everything paid into that instance's pot (forfeits plus carry drawn) and repeats on every row.
+ */
+export type InstanceMemberNetRow = {
+  instance_id: string;
+  group_id: string;
+  user_id: string;
+  net_cents: number;
+  pot_cents: number;
+};
+
+/**
+ * `pact_season_recaps` (20261108000700): per member, the closed/settled days whose local_date falls in
+ * the pact's season window, and that member's ledger net on those days (members + carry sum to zero).
+ */
+export type PactSeasonRecapRow = {
+  pact_id: string;
+  user_id: string;
+  season_start: string;
+  /** the last local date of the season (inclusive) */
+  season_end: string;
+  days: number;
+  showed_up: number;
+  missed: number;
+  unverified: number;
+  frozen: number;
+  net_cents: number;
+};
+
+/** `pact_streaks`: consecutive days showed up (frozen is neutral; missed / unverified break; voided days ignored). */
+export type PactStreakRow = {
+  pact_id: string;
+  user_id: string;
+  current_streak: number;
+  best_streak: number;
+};
+
+/** `group_settlement_stats`: obligations confirmed on Venmo out of those created (superseded rows excluded). */
+export type GroupSettlementStatsRow = {
+  group_id: string;
+  obligations_created: number;
+  obligations_confirmed: number;
+  /** confirmed / created to 4 places, null until an obligation exists; PostgREST may send numeric as a string */
+  completion_rate: number | string | null;
+  weeks_settled: number;
+  /** Monday of the last settled week, 'YYYY-MM-DD' */
+  last_settled_week: string | null;
+};
+
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 
 type Table<Row, Insert = Partial<Row>, Update = Partial<Row>> = {
@@ -285,6 +436,15 @@ export type RpcFunctions = {
   /** payee only: moves a marked_paid obligation back to pending ("I didn't receive this") */
   dispute_obligation: Fn<{ p_obligation: string }, undefined>;
   register_push_token: Fn<{ p_token: string; p_platform: string }, undefined>;
+  /** another current member confirms a changed place (counts from then, never before 12 h after the change) */
+  acknowledge_place: Fn<{ p_place: string }, undefined>;
+  /** another current member blocks a place set in the last 24 h; the owner must set a new one */
+  object_place: Fn<{ p_place: string; p_reason: string }, undefined>;
+  pact_place_distances: Fn<{ p_pact: string }, PlaceDistanceRow[]>;
+  /** the caller only: leaves every group (leave rules apply), anonymizes the profile, erases the auth identity */
+  delete_my_account: Fn<Record<string, never>, undefined>;
+  /** owner or pact creator: start a season (both set) or end it (both null); 1..12 weeks */
+  set_pact_season: Fn<{ p_pact: string; p_start: string | null; p_weeks: number | null }, undefined>;
 };
 
 export type RpcName = keyof RpcFunctions;
@@ -300,6 +460,7 @@ export type Database = {
       pacts: Table<PactRow>;
       pact_participants: Table<PactParticipantRow>;
       pact_participant_places: Table<PactParticipantPlaceRow>;
+      place_events: Table<PlaceEventRow>;
       pact_instances: Table<PactInstanceRow>;
       checkins: Table<CheckinRow>;
       freezes: Table<FreezeRow>;
@@ -319,6 +480,12 @@ export type Database = {
       member_balances: View<MemberBalanceRow>;
       /** what settlement bills: settled instances plus settlement payments only */
       billable_member_balances: View<MemberBalanceRow>;
+      pact_places_visible: View<PactPlaceVisibleRow>;
+      unverified_month_counts: View<UnverifiedMonthCountRow>;
+      instance_member_nets: View<InstanceMemberNetRow>;
+      pact_season_recaps: View<PactSeasonRecapRow>;
+      pact_streaks: View<PactStreakRow>;
+      group_settlement_stats: View<GroupSettlementStatsRow>;
     };
     Functions: RpcFunctions;
     Enums: {

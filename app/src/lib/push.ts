@@ -4,11 +4,13 @@ import * as SecureStore from 'expo-secure-store';
 import { router } from 'expo-router';
 import { useEffect } from 'react';
 import { Platform } from 'react-native';
+import { DEMO } from '../api/demo/settings';
 import { registerPushToken } from '../api/rpc';
 import { supabase } from '../api/supabase';
+import { routeFromData } from './pushRoute';
 
-const PREF_KEY = 'showup.notificationsEnabled';
-const TOKEN_KEY = 'showup.expoPushToken';
+const PREF_KEY = 'finalcall.notificationsEnabled';
+const TOKEN_KEY = 'finalcall.expoPushToken';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -34,6 +36,7 @@ export type PushRegistration =
 
 /** Ask for permission, fetch the Expo push token and store it server-side. */
 export async function registerForPush(): Promise<PushRegistration> {
+  if (DEMO) return { status: 'unavailable', reason: 'Push is off in demo mode.' };
   if (!(await getNotificationsEnabled())) return { status: 'disabled' };
   let perms = await Notifications.getPermissionsAsync();
   if (!perms.granted && perms.canAskAgain) perms = await Notifications.requestPermissionsAsync();
@@ -79,21 +82,23 @@ export async function clearPushOnSignOut(): Promise<void> {
   }
 }
 
-function routeFromData(data: Record<string, unknown> | undefined): string | null {
-  if (!data) return null;
-  if (typeof data.url === 'string' && data.url.startsWith('/')) return data.url;
-  if (typeof data.instance_id === 'string') return `/checkin/${data.instance_id}`;
-  if (typeof data.group_id === 'string') return `/groups/${data.group_id}`;
-  return null;
-}
+export { routeFromData };
 
-/** Tapping a notification opens the matching screen (payload keys: url | instance_id | group_id). */
+/** The last notification tap this process acted on, so a remount never replays it (A4). */
+let handledResponseId: string | null = null;
+
+/** Tapping a notification opens the matching screen (payload keys: url | kind + ids). */
 export function useNotificationRouting(): void {
   useEffect(() => {
     const open = (response: Notifications.NotificationResponse | null) => {
-      const target = routeFromData(response?.notification.request.content.data as Record<string, unknown> | undefined);
+      if (!response) return;
+      const id = response.notification.request.identifier;
+      if (id === handledResponseId) return;
+      handledResponseId = id;
+      const target = routeFromData(response.notification.request.content.data as Record<string, unknown> | undefined);
       if (target) router.push(target as never);
     };
+    // cold start from a notification: the response that launched the app (once per process)
     open(Notifications.getLastNotificationResponse());
     const sub = Notifications.addNotificationResponseReceivedListener(open);
     return () => sub.remove();

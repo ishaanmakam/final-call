@@ -94,7 +94,7 @@ select is((select balance_cents from public.account_balances where kind = 'carry
           0::bigint, 'the carry is emptied');
 
 -- ---------------------------------------------------------------------
--- Correction: c's failure on instance 1 becomes excluded (appeal defaulted)
+-- Correction: c's failure on instance 1 becomes excluded (historical status; no rule sets it since night-1)
 -- ---------------------------------------------------------------------
 update public.results set status = 'excluded'
  where instance_id = '30000000-0000-0000-0000-000000000001' and user_id = '00000000-0000-0000-0000-0000000000c1';

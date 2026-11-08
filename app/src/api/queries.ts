@@ -3,25 +3,35 @@ import { DbError } from '../lib/errors';
 import { OPEN_OBLIGATION_STATUSES } from '../lib/obligations';
 import { effectivePlaceAt, nextWindow, placeForWindow, type WindowPlace } from '../lib/places';
 import { summarizeInstance, type InstanceSummary, type MemberDayState } from '../lib/instanceStatus';
+import { gateClosePollInterval } from '../lib/gatePoll';
 import { localDateInZone, windowState } from '../lib/time';
+import * as demo from './demo';
+import { DEMO } from './demo/settings';
 import { supabase } from './supabase';
 import type {
   CheckinRow,
   FreezeRow,
   GroupMemberRow,
   GroupRow,
+  InstanceMemberNetRow,
   MemberBalanceRow,
   ObligationRow,
   PactInstanceRow,
   PactParticipantPlaceRow,
   PactParticipantRow,
+  PactPlaceVisibleRow,
   PactRow,
+  PlaceDistanceRow,
+  PlaceEventRow,
   ProfileRow,
   ResultRow,
   ReviewRow,
   ReviewVoteRow,
   SettlementRow,
 } from './types';
+
+/** Queries that cache a person's display name next to their own data; a profile edit refreshes them. */
+export const PROFILE_DEPENDENT_KEYS = (userId: string): QueryKey[] => [['profile', userId], ['group'], ['groups']];
 
 export const queryKeys = {
   myGroups: (userId: string) => ['groups', userId] as const,
@@ -53,21 +63,22 @@ export const displayName = (profiles: Map<string, ProfileRow>, userId: string): 
 
 // ---------- profile ----------
 
-export function useProfile(userId: string) {
+function useProfileReal(userId: string) {
   return useQuery({
     queryKey: queryKeys.profile(userId),
     queryFn: async () => await supabase.from('profiles').select('*').eq('id', userId).single().then(must),
   });
 }
 
-export function useUpdateProfile(userId: string) {
+function useUpdateProfileReal(userId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (patch: { display_name?: string; venmo_username?: string | null }) => {
       const { error } = await supabase.from('profiles').update(patch).eq('id', userId);
       if (error) throw new DbError(error);
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.profile(userId) }),
+    // the name is embedded in every group, feed and ledger query (A6), and in the groups list
+    onSuccess: () => Promise.all(PROFILE_DEPENDENT_KEYS(userId).map((queryKey) => qc.invalidateQueries({ queryKey }))),
   });
 }
 
@@ -79,7 +90,7 @@ export interface MyGroup {
   memberCount: number;
 }
 
-export function useMyGroups(userId: string) {
+function useMyGroupsReal(userId: string) {
   return useQuery({
     queryKey: queryKeys.myGroups(userId),
     queryFn: async (): Promise<MyGroup[]> => {
@@ -123,9 +134,10 @@ export interface GroupHome {
   today: TodayItem[];
 }
 
-export function useGroupHome(groupId: string, userId: string) {
+function useGroupHomeReal(groupId: string, userId: string, enabled = true) {
   return useQuery({
     queryKey: queryKeys.groupHome(groupId),
+    enabled,
     queryFn: async (): Promise<GroupHome> => {
       const now = Date.now();
       const [group, members, pacts] = await Promise.all([
@@ -203,14 +215,18 @@ export interface PactDetail {
   profiles: Map<string, ProfileRow>;
   upcoming: PactInstanceRow[];
   myFreezes: FreezeRow[];
+  /** every current participant's place rows (in force, pending, objected), as the group sees them */
+  places: PactPlaceVisibleRow[];
+  /** metres from each place to the other participants' places in force */
+  distances: PlaceDistanceRow[];
 }
 
-export function usePactDetail(pactId: string, userId: string) {
+function usePactDetailReal(pactId: string, userId: string) {
   return useQuery({
     queryKey: queryKeys.pact(pactId),
     queryFn: async (): Promise<PactDetail> => {
       const since = new Date(Date.now() - 86_400_000).toISOString();
-      const [pact, participants, upcoming, myFreezes] = await Promise.all([
+      const [pact, participants, upcoming, myFreezes, places, distances] = await Promise.all([
         supabase.from('pacts').select('*').eq('id', pactId).single().then(must),
         supabase.from('pact_participants').select('*').eq('pact_id', pactId).is('left_at', null).then(must),
         supabase
@@ -222,9 +238,11 @@ export function usePactDetail(pactId: string, userId: string) {
           .limit(10)
           .then(must),
         supabase.from('freezes').select('*').eq('pact_id', pactId).eq('user_id', userId).then(must),
+        supabase.from('pact_places_visible').select('*').eq('pact_id', pactId).order('created_at').then(must),
+        supabase.rpc('pact_place_distances', { p_pact: pactId }).then(must),
       ]);
       const profiles = await fetchProfiles(participants.map((p) => p.user_id));
-      return { pact, participants, profiles, upcoming, myFreezes };
+      return { pact, participants, profiles, upcoming, myFreezes, places, distances };
     },
   });
 }
@@ -241,7 +259,7 @@ export interface PlaceSchedule {
   latestSaved: PactParticipantPlaceRow | null;
 }
 
-export function usePlaceSchedule(pactId: string, userId: string, enabled = true) {
+function usePlaceScheduleReal(pactId: string, userId: string, enabled = true) {
   return useQuery({
     queryKey: [...queryKeys.pact(pactId), 'places', userId] as const,
     enabled,
@@ -293,14 +311,35 @@ export interface InstanceDetail {
   myCheckins: CheckinRow[];
   myResult: ResultRow | null;
   myFreeze: FreezeRow | null;
+  /** everyone's posted result for this day (empty until the gate closes); the roster once closed */
+  results: ResultRow[];
+  /** names for the people in `results` */
+  profiles: Map<string, ProfileRow>;
+  /** what this day did to each member's ledger, from `instance_member_nets` (empty = no pledge moved) */
+  nets: InstanceMemberNetRow[];
 }
 
-export function useInstanceDetail(instanceId: string, userId: string) {
+async function fetchInstanceNets(instanceId: string): Promise<InstanceMemberNetRow[]> {
+  return must(await supabase.from('instance_member_nets').select('*').eq('instance_id', instanceId));
+}
+
+/** The ledger effect of one closed day, for the group home's compact gate-close line. */
+function useInstanceNetsReal(instanceId: string, enabled = true) {
+  return useQuery({
+    queryKey: [...queryKeys.instance(instanceId), 'nets'],
+    enabled,
+    queryFn: () => fetchInstanceNets(instanceId),
+    staleTime: 60_000,
+  });
+}
+
+function useInstanceDetailReal(instanceId: string, userId: string) {
   return useQuery({
     queryKey: queryKeys.instance(instanceId),
+    refetchInterval: (query) => gateClosePollInterval(query.state.data, Date.now()),
     queryFn: async (): Promise<InstanceDetail> => {
       const instance = await supabase.from('pact_instances').select('*').eq('id', instanceId).single().then(must);
-      const [pact, places, history, myCheckins, results, freezes] = await Promise.all([
+      const [pact, places, history, myCheckins, results, freezes, nets] = await Promise.all([
         supabase.from('pacts').select('*').eq('id', instance.pact_id).single().then(must),
         supabase
           .from('pact_participants')
@@ -322,17 +361,22 @@ export function useInstanceDetail(instanceId: string, userId: string) {
           .eq('user_id', userId)
           .order('server_received_at')
           .then(must),
-        supabase.from('results').select('*').eq('instance_id', instanceId).eq('user_id', userId).then(must),
+        supabase.from('results').select('*').eq('instance_id', instanceId).then(must),
         supabase.from('freezes').select('*').eq('instance_id', instanceId).eq('user_id', userId).then(must),
+        fetchInstanceNets(instanceId),
       ]);
+      const profiles = await fetchProfiles(results.map((r) => r.user_id));
       return {
         instance,
         pact,
         myPlace: places[0] ?? null,
         judgedPlace: places[0] ? placeForWindow(history, instance.window_open_at, places[0]) : null,
         myCheckins,
-        myResult: results[0] ?? null,
+        myResult: results.find((r) => r.user_id === userId) ?? null,
         myFreeze: freezes[0] ?? null,
+        results,
+        profiles,
+        nets,
       };
     },
   });
@@ -357,13 +401,16 @@ export interface Feed {
   profiles: Map<string, ProfileRow>;
   /** roster per instance (users with a result row): who may challenge and vote, as the server checks */
   rosterByInstance: Map<string, string[]>;
-  /** Excluded results this calendar month per user: visible so it can't be farmed quietly. */
-  excludedThisMonth: Map<string, number>;
+  /** place set / confirmed / objected / now-counts rows of the last FEED_DAYS, newest first */
+  placeEvents: PlaceEventRow[];
+  pacts: PactRow[];
+  /** today's state of every place row the events point at (actions come from here) */
+  placesById: Map<string, PactPlaceVisibleRow>;
 }
 
 export const FEED_DAYS = 28;
 
-export function useFeed(groupId: string) {
+function useFeedReal(groupId: string) {
   return useQuery({
     queryKey: queryKeys.feed(groupId),
     queryFn: async (): Promise<Feed> => {
@@ -373,17 +420,37 @@ export function useFeed(groupId: string) {
         supabase.from('group_members').select('user_id').eq('group_id', groupId).then(must),
       ]);
       const profiles = await fetchProfiles(members.map((m) => m.user_id));
-      const empty: Feed = { items: [], profiles, rosterByInstance: new Map(), excludedThisMonth: new Map() };
+      const empty: Feed = {
+        items: [],
+        profiles,
+        rosterByInstance: new Map(),
+        placeEvents: [],
+        pacts,
+        placesById: new Map(),
+      };
       if (pacts.length === 0) return empty;
       const pactIds = pacts.map((p) => p.id);
       const since = new Date(now - FEED_DAYS * 86_400_000).toISOString();
-      const instances = await supabase
-        .from('pact_instances')
-        .select('*')
-        .in('pact_id', pactIds)
-        .gte('deadline_at', since)
-        .in('status', ['closed', 'settled', 'voided'])
-        .then(must);
+      const [instances, placeEvents, places] = await Promise.all([
+        supabase
+          .from('pact_instances')
+          .select('*')
+          .in('pact_id', pactIds)
+          .gte('deadline_at', since)
+          .in('status', ['closed', 'settled', 'voided'])
+          .then(must),
+        supabase
+          .from('place_events')
+          .select('*')
+          .eq('group_id', groupId)
+          .gte('created_at', since)
+          .order('created_at', { ascending: false })
+          .limit(200)
+          .then(must),
+        supabase.from('pact_places_visible').select('*').in('pact_id', pactIds).then(must),
+      ]);
+      empty.placeEvents = placeEvents;
+      empty.placesById = new Map(places.map((p) => [p.place_id, p]));
       const instanceIds = instances.map((i) => i.id);
       if (instanceIds.length === 0) return empty;
       const [results, reviews] = await Promise.all([
@@ -413,20 +480,45 @@ export function useFeed(groupId: string) {
           a.result.user_id.localeCompare(b.result.user_id),
       );
 
-      const monthPrefix = new Date(now).toISOString().slice(0, 7);
-      const excludedThisMonth = new Map<string, number>();
-      for (const item of items) {
-        if (item.result.status === 'excluded' && item.instance.local_date.startsWith(monthPrefix)) {
-          excludedThisMonth.set(item.result.user_id, (excludedThisMonth.get(item.result.user_id) ?? 0) + 1);
-        }
-      }
       const rosterByInstance = new Map<string, string[]>();
       for (const r of results) {
         rosterByInstance.set(r.instance_id, [...(rosterByInstance.get(r.instance_id) ?? []), r.user_id]);
       }
-      return { items, profiles, rosterByInstance, excludedThisMonth };
+      return { ...empty, items, rosterByInstance };
     },
   });
+}
+
+// ---------- unverified budget ----------
+
+/** First day of the calendar month of a pact-local date ('2030-01-09' -> '2030-01-01'). */
+export const monthOf = (localDate: string): string => `${localDate.slice(0, 7)}-01`;
+
+/**
+ * How many of this person's days in this pact are unverified this calendar month (pact zone), from
+ * the `unverified_month_counts` view (CONTRACT.md). The third opens an automatic group vote, so the
+ * check-in screen shows the count from the first one (features/checkin/copy.ts#budgetLine). 0 while
+ * loading or on error: the line is a courtesy, never a gate.
+ */
+function useUnverifiedBudgetReal(pactId: string, userId: string, localDate: string): number {
+  const month = monthOf(localDate);
+  const query = useQuery({
+    queryKey: ['unverified-budget', pactId, userId, month],
+    enabled: !!pactId && !!userId,
+    staleTime: 60_000,
+    queryFn: async (): Promise<number> => {
+      const { data, error } = await supabase
+        .from('unverified_month_counts')
+        .select('count')
+        .eq('pact_id', pactId)
+        .eq('user_id', userId)
+        .eq('month', month)
+        .maybeSingle();
+      if (error) throw error;
+      return typeof data?.count === 'number' ? data.count : 0;
+    },
+  });
+  return query.data ?? 0;
 }
 
 // ---------- ledger ----------
@@ -446,7 +538,7 @@ export interface Ledger {
   profiles: Map<string, ProfileRow>;
 }
 
-export function useLedger(groupId: string) {
+function useLedgerReal(groupId: string) {
   return useQuery({
     queryKey: queryKeys.ledger(groupId),
     queryFn: async (): Promise<Ledger> => {
@@ -503,3 +595,19 @@ export function useRpcMutation<TVars, TResult>(
   });
 }
 
+
+// ---------- demo-mode switch ----------
+// With EXPO_PUBLIC_DEMO=1 every hook resolves against in-memory fixtures (see ./demo). The real
+// implementations above are untouched; the switch is a module constant, so hook order is stable.
+
+export const useProfile = DEMO ? demo.useProfile : useProfileReal;
+export const useUpdateProfile = DEMO ? demo.useUpdateProfile : useUpdateProfileReal;
+export const useMyGroups = DEMO ? demo.useMyGroups : useMyGroupsReal;
+export const useGroupHome = DEMO ? demo.useGroupHome : useGroupHomeReal;
+export const usePactDetail = DEMO ? demo.usePactDetail : usePactDetailReal;
+export const usePlaceSchedule = DEMO ? demo.usePlaceSchedule : usePlaceScheduleReal;
+export const useInstanceDetail = DEMO ? demo.useInstanceDetail : useInstanceDetailReal;
+export const useInstanceNets = DEMO ? demo.useInstanceNets : useInstanceNetsReal;
+export const useFeed = DEMO ? demo.useFeed : useFeedReal;
+export const useLedger = DEMO ? demo.useLedger : useLedgerReal;
+export const useUnverifiedBudget = DEMO ? demo.useUnverifiedBudget : useUnverifiedBudgetReal;

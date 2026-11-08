@@ -129,8 +129,9 @@ function parseLocalDate(localDate: string): [number, number, number] {
 
 /**
  * Convert a wall-clock time on a local date in an IANA zone to a UTC instant (ms).
- * Mirrors Postgres: a nonexistent time (spring-forward gap) uses the offset before the
- * transition; an ambiguous time (fall-back) uses the offset after it (standard time).
+ * Mirrors the server's `_local_to_utc` (20261107000200): a nonexistent time (spring-forward
+ * gap) uses the offset before the transition, so the clock moves forward by the gap; an
+ * ambiguous time (fall-back) resolves to the EARLIER instant (the first occurrence).
  */
 export function zonedLocalToUtc(localDate: string, localTime: string, tz: string): number {
   const [y, mo, d] = parseLocalDate(localDate);
@@ -141,9 +142,12 @@ export function zonedLocalToUtc(localDate: string, localTime: string, tz: string
   const before = tzOffsetMs(naive - DAY, tz);
   const after = tzOffsetMs(naive + DAY, tz);
   const consistent = (off: number): boolean => tzOffsetMs(naive - off, tz) === off;
-  if (consistent(after)) return naive - after;
-  if (consistent(before)) return naive - before;
-  // In a gap neither offset reproduces the wall time.
+  const okBefore = consistent(before);
+  const okAfter = consistent(after);
+  if (okBefore && okAfter) return Math.min(naive - before, naive - after); // ambiguous: earlier instant
+  if (okAfter) return naive - after;
+  if (okBefore) return naive - before;
+  // In a gap neither offset reproduces the wall time: pre-transition offset, like Postgres.
   return naive - before;
 }
 

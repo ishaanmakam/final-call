@@ -1,0 +1,65 @@
+# Group → Settle up; payer side "I paid" → Marked paid; payee side "Confirm received" → Confirmed.
+#
+# Fixture variants (app/src/api/demo/fixtures.ts SETTLE_VARIANTS): the default (mixed) week puts
+# the only row you pay under the collapsed "Earlier weeks", so the two halves use `?settle=owe`
+# (you owe Maya $5.00 and Diego $3.00) and `?settle=owed` (Diego $8.25 and Priya $4.25 pay you).
+# The demo store is mutable within one app process; clearState + relaunch resets it.
+appId: com.ishaanmakam.finalcall
+name: settle-up
+tags:
+  - smoke
+env:
+  APP_SCHEME: ${APP_SCHEME || "finalcall"}
+---
+- launchApp:
+    clearState: true
+
+# 1. From the group home, the "Settle up" row (ListRow label = "title, subtitle").
+- runFlow:
+    file: _open.yaml
+    env:
+      ROUTE: 'groups/g1?freeze=1'
+- extendedWaitUntil:
+    visible: 'Morning crew'
+    timeout: 15000
+- tapOn: 'Settle up, Who owes whom, with Venmo links'
+- extendedWaitUntil:
+    visible: "You're owed $10.50"
+    timeout: 15000
+- assertVisible: 'Settle up'
+
+# 2. Payer side: "I paid" on a pending obligation → iOS alert "Mark $5.00 to Maya as paid?" → Mark paid.
+- runFlow:
+    file: _open.yaml
+    env:
+      ROUTE: 'groups/g1/ledger?settle=owe'
+- extendedWaitUntil:
+    visible: 'You owe $8.00'
+    timeout: 15000
+- assertVisible: 'Maya Chen'
+- assertVisible: 'Pay $5.00 on Venmo'
+- tapOn: 'I paid'
+- extendedWaitUntil:
+    visible: 'Mark $5.00 to Maya as paid?'
+    timeout: 5000
+- tapOn: 'Mark paid'
+- extendedWaitUntil:
+    visible: 'Marked paid. Maya confirms when it lands.'
+    timeout: 10000
+- assertVisible: 'Marked paid'
+- assertVisible: 'Waiting for Maya to confirm it landed.'
+
+# 3. Payee side: "Confirm received" on Diego's pending $8.25 → toast + pill "Confirmed".
+- runFlow:
+    file: _open.yaml
+    env:
+      ROUTE: 'groups/g1/ledger?settle=owed'
+- extendedWaitUntil:
+    visible: "You're owed $12.50"
+    timeout: 15000
+- assertVisible: 'Diego Alvarez'
+- tapOn: 'Confirm received'
+- extendedWaitUntil:
+    visible: 'Confirmed $8.25 from Diego.'
+    timeout: 10000
+- assertVisible: 'Confirmed'
