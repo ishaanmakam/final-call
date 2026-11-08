@@ -37,6 +37,12 @@ export function netWord(cents: number): string {
   return formatCents(cents, { signed: true });
 }
 
+/** In a sentence: "$12.50 ahead" / "$3.00 behind" / "even". */
+export function standingWord(cents: number): string {
+  if (cents === 0) return 'even';
+  return `${formatCents(Math.abs(cents))} ${cents > 0 ? 'ahead' : 'behind'}`;
+}
+
 /**
  * Whose best streak is the longest (ties broken by name so the sentence is stable); null when nobody
  * has shown up twice in a row.
@@ -53,7 +59,7 @@ export function longestStreak(streaks: readonly StreakRow[], nameOf: (id: string
 
 /**
  * "You showed up 17 of 20 days and came out +$12.50. Maya had the longest streak: 14."
- * While the season runs: "So far you've shown up 6 of 8 days and are +$2.50."
+ * While the season runs: "So far you've shown up 6 of 8 days and are $2.50 ahead."
  */
 export function recapSentence(mine: RecapRow | null, longest: LongestStreak | null, finished: boolean, userId: string): string {
   const parts: string[] = [];
@@ -62,7 +68,7 @@ export function recapSentence(mine: RecapRow | null, longest: LongestStreak | nu
   } else if (finished) {
     parts.push(`You showed up ${mine.showed_up} of ${daysWord(mine.days)} and came out ${netWord(mine.net_cents)}.`);
   } else {
-    parts.push(`So far you've shown up ${mine.showed_up} of ${daysWord(mine.days)} and are ${netWord(mine.net_cents)}.`);
+    parts.push(`So far you've shown up ${mine.showed_up} of ${daysWord(mine.days)} and are ${standingWord(mine.net_cents)}.`);
   }
   if (longest) {
     const you = longest.userId === userId;
@@ -87,5 +93,8 @@ export function sortRecaps<T extends RecapRow>(rows: readonly T[], nameOf: (id: 
   return [...rows].sort((a, b) => b.showed_up - a.showed_up || b.net_cents - a.net_cents || nameOf(a.user_id).localeCompare(nameOf(b.user_id)));
 }
 
-/** The tone for a net amount: ahead / behind / even. */
-export const netTone = (cents: number): 'success' | 'forfeit' | 'secondary' => (cents > 0 ? 'success' : cents < 0 ? 'forfeit' : 'secondary');
+/**
+ * The tone for a net amount: ahead is green, behind is the plain label colour (UB2: a negative
+ * balance is neutral; red is only for Missed and destructive actions), even is secondary.
+ */
+export const netTone = (cents: number): 'success' | 'label' | 'secondary' => (cents > 0 ? 'success' : cents < 0 ? 'label' : 'secondary');

@@ -105,7 +105,7 @@ function ScreenPicker() {
   }, [screen]);
   return (
     <div className="segmented" role="tablist" aria-label="Phone screen" style={{ width: '100%', maxWidth: 393 }}>
-      {pos ? <motion.span className="indicator" aria-hidden="true" initial={false} animate={{ x: pos.x, width: pos.w }} transition={{ duration: 0.25, ease: [0.77, 0, 0.175, 1] }} style={{ left: 0 }} /> : null}
+      {pos ? <motion.span className="indicator" aria-hidden="true" initial={false} animate={{ x: pos.x, width: pos.w }} transition={{ duration: 0.18, ease: [0.77, 0, 0.175, 1] }} style={{ left: 0 }} /> : null}
       {SCREENS.map((s) => (
         <button
           key={s.value}

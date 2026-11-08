@@ -459,7 +459,7 @@ From `tokens.ts` (`springs`, `easings`, `durations`); `motion.ts` turns them int
 | spring `sheet` | duration 300, dampingRatio 0.8, velocity | sheet returning to its detent (momentum) |
 | spring `sheetDismiss` | duration 300, dampingRatio 1, velocity, overshootClamping | sheet leaving the screen |
 | easing `out` | cubic-bezier(0.23, 1, 0.32, 1) | entering, exiting, default |
-| easing `inOut` | cubic-bezier(0.77, 0, 0.175, 1) | moving on screen (segment pill) |
+| easing `inOut` | cubic-bezier(0.77, 0, 0.175, 1) | moving on screen (the segment pill, at `state` 180 ms: a switch happens tens of times a day) |
 | easing `sheet` | cubic-bezier(0.32, 0.72, 0, 1) | timed sheet motion when a spring is not available |
 | easing `linear` | cubic-bezier(0, 0, 1, 1) | the GPS sweep only |
 | duration `press` 120 ms, `state` 180, `enter` 250, `exit` 200, `move` 250, `sheet` 300, `sweep` 1200 | | exits are faster than entries |

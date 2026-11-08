@@ -36,8 +36,9 @@ export function SegmentedControl({ segments, index, onChange, accessibilityLabel
       ready.set(1);
       return;
     }
-    x.set(withTiming(l.x, timing('move', 'inOut')));
-    w.set(withTiming(l.width, timing('move', 'inOut')));
+    // a segment switch happens tens of times a day: 180 ms, the platform pill's own pace (V-6)
+    x.set(withTiming(l.x, timing('state', 'inOut')));
+    w.set(withTiming(l.width, timing('state', 'inOut')));
   }, [index, layouts, x, w, ready]);
 
   const pill = useAnimatedStyle(() => ({

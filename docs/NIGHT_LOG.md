@@ -45,3 +45,49 @@ Polish notes for phase 5: Stats recap shows negative nets in red (decision UB2 s
 
 ## Next
 Phase 5 fresh verification agent: all suites incl. web, impeccable audit + review-animations on app and simulator with fresh screenshots, final money red-team, README/PLAN/DECISIONS updates; then push, open PR night-1 → main, finish this log.
+
+## Phase 5 — verification and polish (fresh agent, uncommitted until the lead commits)
+- All six checks green before and after: db 24 files / 327 (was 23 / 314), rules 42, push-outbox 57, app 533, web 36 + build, scripts tsc, maestro lint.
+- Final money red team: `supabase/tests/redteam-final.test.ts` (13 tests), `20261108000900_final_fixes.sql` (V-1 `instance_member_nets.pot_cents` follows corrections; V-2 account deletion clears the ops alert recipient), table in `docs/REDTEAM.md` "Final pass (night-1)". No money hole found.
+- Audit fixes: Stats negative nets neutral and "behind / ahead" wording (V-4), completion card no longer repeats the percentage (V-3), Stats in the group More menu (V-5), segmented pill 180 ms app + web (V-6), simulator negative balances neutral (V-7). 166 app screenshots and 10 simulator screenshots regenerated.
+- Docs: README (product summary, all suites, links, simulator URL), PLAN (done / founder next / v1.1), DECISIONS V-1..V-9 (Night-1 table made well-formed), CONTRACT (pot_cents, deletion step 3).
+
+### Only a real iPhone or the founder's accounts can verify
+- Sign in with Apple (nonce round trip), push delivery and the notification tap routes, local Boarding / Final-call reminders, `expo-updates` OTA.
+- Location: the When-In-Use prompt, Precise vs Approximate refusal, GPS accuracy indoors, the 25 s fix timeout, `mocked` detection, the offline queue flushing on foreground.
+- Haptics and the feel of every spring on device (release build): check-in press, verdict and gate-close reveal, sheet drag, toast swipe, radius slider detents.
+- Dynamic Type at accessibility sizes, VoiceOver focus after the verdict panel and gate-close card, Reduce Motion crossfades; the screenshots are a Chromium render with Segoe UI, not SF.
+- Supabase: `db push` on a hosted project, pg_cron and pg_net, Vault secrets, the push function's Expo receipts, `job_health` after a day, the `review-photos` bucket policies, Auth redirect `finalcall://auth-callback`, the smoke script.
+- Apple: the developer account, EAS device registration, TestFlight review, App Store Connect privacy answers (`docs/APP_STORE.md`), the reviewer-access choice (P3-9).
+- Venmo deep links on a phone with and without Venmo installed.
+
+## End of night-1
+
+### What shipped (branch `night-1`, PR to `main`)
+- Fairness: places visible to the group with distances, confirm/object gate (24 h or a friend's confirmation, never under 12 h for changes), place events in the feed and push; Approximate Location refused as a choice (not fail-open); an automatic group challenge on the 3rd unverified day in a pact-month; an unvoted appeal leaves the result standing; the challenge opener no longer votes; six more holes closed by two independent red-team passes (`docs/REDTEAM.md`, 41 + 13 attacks considered).
+- Real deployment: `supabase/config.toml`, `seed.sql`, `scripts/smoke.ts`, `docs/DEPLOY.md` (Windows). Reliability: local Boarding / Final-call reminders, cron heartbeats + `job_health` + ops alerts, Sentry opt-in with location scrubbing, server-vs-device clock notice.
+- App Store: renamed to Final Call (`com.ishaanmakam.finalcall`, `finalcall://`), in-app account deletion (profile anonymized, ledger kept), privacy + terms screens and `docs/legal/*`, `docs/APP_STORE.md`, Sign in with Apple nonce, expo-updates.
+- Device testing: Maestro flows (`.maestro/`), EAS workflow building a demo simulator build and running them, CI for all suites + lint, `docs/TESTING.md`.
+- Product: the airport voice (Boarding / Final call / Gate closed, nowhere else), the gate-close card with today's result and money from the ledger, 4-week seasons with recaps, streaks, and the settle-up completion rate on a Stats screen.
+- Web simulator (`web/`, GitHub Pages at https://ishaanmakam.github.io/final-call/) running the real `packages/rules` oracle, with fence playground, behaviour scripts, fast-forward clock, presets and live ledger.
+
+### Test counts (final run)
+| Suite | Count |
+|---|---|
+| supabase/tests (PGlite) + tsc | 24 files, 327 tests |
+| packages/rules + tsc | 42 |
+| push-outbox + tsc | 57 |
+| app (tsc + vitest) | 40 files, 533 |
+| web (tsc + vitest + build) | 36 |
+| scripts tsc, Maestro lint | clean |
+Screenshots: 166 app (`app/screenshots/index.html`), 10 simulator (`web/screenshots/index.html`).
+
+### Needs your iPhone or your accounts
+See "Only a real iPhone or the founder's accounts can verify" above. Two one-time repo settings: GitHub → Settings → Pages → Source: GitHub Actions (for the simulator), and the EAS project id / Apple credentials for `.eas/workflows/maestro.yml`.
+
+### The 5 decisions to review first
+1. **N1-1 / N1-2** — place gate: a changed place counts only after a friend confirms it (≥ 12 h) or 24 h pass without objection; an objected place drops you from later rosters (no money moves, day voids under 2 actives). This is the biggest product-rule change of the night.
+2. **N3-1** — an unvoted appeal leaves the original result standing (resolves your open question 4). The `excluded` status is now reserved.
+3. **RT-1** — the opener of a challenge can no longer vote (reverses D3); a 2-person pact's challenges are decided by the other person alone, which is also why the automatic budget challenge is opened in the subject's name.
+4. **N2-1 … N2-9 + RT-6** — the Unverified budget: the 3rd unverified day in a calendar month per pact auto-opens a challenge; forged late taps remain accepted for friends but are bounded by this (open question 5).
+5. **P3-1 / P3-9** — account deletion drops the `profiles → auth.users` FK so the anonymized profile outlives the identity; App Store reviewer access (seeded account vs runtime demo switch) is still your call before submission.

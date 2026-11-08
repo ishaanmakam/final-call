@@ -632,8 +632,9 @@ input[type='range']::-moz-range-thumb {
 .pos {
   color: var(--success);
 }
+/* a negative balance is neutral (app decision UB2): red is for Missed and destructive actions only */
 .neg {
-  color: var(--forfeit);
+  color: var(--label);
 }
 
 .log {

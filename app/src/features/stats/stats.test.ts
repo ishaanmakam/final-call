@@ -100,11 +100,13 @@ describe('recap copy', () => {
   it('the running-season sentence, and when you hold the longest streak', () => {
     const mine = [{ user_id: 'you', current_streak: 6, best_streak: 9 }, { user_id: 'maya', current_streak: 2, best_streak: 5 }];
     expect(recapSentence(me, longestStreak(mine, nameOf), false, 'you')).toBe(
-      "So far you've shown up 17 of 20 days and are +$12.50. You have the longest streak: 9.",
+      "So far you've shown up 17 of 20 days and are $12.50 ahead. You have the longest streak: 9.",
     );
     expect(recapSentence(me, longestStreak(streaks, nameOf), false, 'you')).toBe(
-      "So far you've shown up 17 of 20 days and are +$12.50. Maya has the longest streak: 14.",
+      "So far you've shown up 17 of 20 days and are $12.50 ahead. Maya has the longest streak: 14.",
     );
+    expect(recapSentence({ ...me, net_cents: -166 }, null, false, 'you')).toBe("So far you've shown up 17 of 20 days and are $1.66 behind.");
+    expect(recapSentence({ ...me, net_cents: 0 }, null, false, 'you')).toBe("So far you've shown up 17 of 20 days and are even.");
     expect(recapSentence(null, null, false, 'you')).toBe('No closed days for you yet.');
     expect(recapSentence(null, null, true, 'you')).toBe("You weren't in any of this season's days.");
   });
@@ -129,7 +131,7 @@ describe('recap copy', () => {
     expect(netWord(0)).toBe('even');
     expect(netWord(-50)).toBe('-$0.50');
     expect(netTone(1)).toBe('success');
-    expect(netTone(-1)).toBe('forfeit');
+    expect(netTone(-1)).toBe('label'); // UB2: a negative balance is neutral, never red
     expect(netTone(0)).toBe('secondary');
     const rows: RecapRow[] = [
       { ...me, user_id: 'diego', showed_up: 10, net_cents: -500 },
@@ -173,10 +175,10 @@ describe('settle-up completion', () => {
   it('the headline number and the line', () => {
     expect(completionPercent(stats)).toBe(90);
     expect(completionHeadline(stats)).toBe('90%');
-    expect(completionLine(stats)).toBe('Settled up 9 of 10 times · 90%');
-    expect(completionLine({ ...stats, obligations_created: 1, obligations_confirmed: 1 })).toBe('Settled up 1 of 1 · 100%');
-    expect(completionLine({ ...stats, obligations_created: 2, obligations_confirmed: 1 })).toBe('Settled up 1 of 2 times · 50%');
-    expect(completionLine({ ...stats, obligations_created: 3, obligations_confirmed: 1 })).toBe('Settled up 1 of 3 times · 33%');
+    expect(completionLine(stats)).toBe('Settled up 9 of 10 times');
+    expect(completionLine({ ...stats, obligations_created: 1, obligations_confirmed: 1 })).toBe('Settled up 1 of 1');
+    expect(completionLine({ ...stats, obligations_created: 2, obligations_confirmed: 1 })).toBe('Settled up 1 of 2 times');
+    expect(completionLine({ ...stats, obligations_created: 3, obligations_confirmed: 1 })).toBe('Settled up 1 of 3 times');
     expect(openCount(stats)).toBe(1);
   });
 

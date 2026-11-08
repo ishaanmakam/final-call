@@ -187,3 +187,34 @@ Found while looking for the opposite; none moves money by itself.
 - `supabase/functions/push-outbox/outbox.ts` (+ tests, README): two obligation kinds
 - `app/src/lib/pushRoute.ts`, `app/src/features/feed/reviewCopy.ts` (+ tests)
 - `docs/CONTRACT.md`, `docs/DECISIONS.md` (RT-1..RT-6), this file
+
+## Final pass (night-1)
+
+Fresh reviewer after every night-1 lane had landed, hunting for what the first pass could not see because it was written
+concurrently: interactions between places, the unverified budget, the appeal default, RT-1..4, the heartbeat wrappers,
+account deletion, seasons and the instance-net view. Method as above: a PGlite test per suspicion in
+`supabase/tests/redteam-final.test.ts` (13 tests, F-1..F-6), fixes test-first in
+`supabase/migrations/20261108000900_final_fixes.sql`, decisions V-1..V-9 in `docs/DECISIONS.md`. Outcome: no money hole;
+2 proven defects fixed (one a wrong number on the gate-close card after a correction, one ops housekeeping); 11 suspicions
+proven safe and kept as regressions.
+
+| ID | Suspicion | Outcome |
+|----|-----------|---------|
+| F-1a | `pact_season_recaps`, `pact_streaks`, `group_settlement_stats`, `unverified_month_counts`, `instance_member_nets` readable by a non-member, a former member or anon | Safe: security_invoker over the base tables' RLS; a leaver loses the read models with the group; anon has no grant |
+| F-1b | `set_pact_season` by a plain member, an outsider, the pact's creator after leaving, or anon; direct `update pacts` | Safe: 42501 / permission denied; ownership passes to the next member, who can run the season |
+| F-2a | Owner deletes their account: orphaned group, roster, or a debt that vanishes | Safe: ownership passes on, the deleted member is off the next roster (42501 on a tap), the remaining two still play for money, the deleted member's forfeit is billed to the people who earned it, the recap names them |
+| F-2b | **The ops alert recipient deletes their account**: `check_job_health` keeps queueing `ops_alert` rows for a dead account with no push tokens | **Proven + fixed (V-2)**: `delete_my_account` clears `ops_settings.ops_user_id`; no alert is queued afterwards |
+| F-2c | Subject of an open challenge deletes mid-vote: their vote goes, the decision is lost or the forfeit lands nowhere | Safe: remaining voters decide; the forfeit lands on "Deleted member" and is zero-sum with the winners |
+| F-3a | Objector deletes: the objection or its feed event disappears, the blocked place counts again | Safe: `objected_by` / `place_events.actor_id` stay (shown as "Deleted member"); the owner is still judged against the old place and can set a new one that a friend confirms |
+| F-3b | Deleted member's pending place rows: what goes, what stays | As contracted: pending changes go (an objected pending one included), the place in force and all `place_events` stay (`place_id` set null) |
+| F-4a | Appeal defaulted *by* settlement uncovers the third unverified day; the automatic challenge it opens sits on a settled instance and is never decided | Safe: the challenge is votable on the settled day, acceptance posts a correction and the next settle-up bills it |
+| F-4b | Same, nobody votes | Safe: defaulted at the next settle-up, unverified stands, nothing billed |
+| F-5 | Heartbeat wrapper swallows an error raised *after* the payout inside the close, leaving a half-posted day | Safe: the per-instance subtransaction rolls results, ledger and status back together; `job_failures` + `recent_failures` record it; the next tick closes once (one stake, one payout entry; a third tick is a no-op) |
+| F-6a | A revived day (RT-2) draws carry, or a later challenge on it breaks the carry / zero-sum invariants | Safe: `carry_in_cents = 0` stays 0 through the correction, the rollover lands in the carry, the next winning day collects it, the season recap nets + carry = 0 |
+| F-6b | **`instance_member_nets.pot_cents` after a correction** (accepted appeal, late tap, challenge): the gate-close card said "pool $25.00 split 2 ways" while each winner had $10.00 | **Proven + fixed (V-1)**: `pot_cents` = forfeits paid in + carry drawn, from the same lines as the nets, so it follows corrections |
+| F-6c | A late in-fence tap by the person whose challenge was accepted undoes the revival | Safe: resolved reviews override the base result; no correction |
+
+Accepted, not changed: a deleted member's historical places (coordinates) remain readable to former co-members under
+`pact_participant_places` RLS, consistent with the privacy policy ("past results ... stay") and needed for reviews of the
+week in progress (V-9). A `marked_paid` obligation whose payee deletes their account stays `marked_paid` forever and keeps
+counting as provisionally paid at each settle-up (D7); nobody is hurt but the departed payee, who cannot collect anyway (A39 family).

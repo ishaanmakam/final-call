@@ -28,12 +28,15 @@ export function completionHeadline(s: CompletionStats): string {
   return pct === null ? '—' : `${pct}%`;
 }
 
-/** "Settled up 9 of 10 times · 90%" / "Settled up 1 of 1 · 100%" / "No settle-ups yet". */
+/**
+ * "Settled up 9 of 10 times" / "Settled up 1 of 1" / "No settle-ups yet". The percentage is the big
+ * figure next to it (`completionHeadline`), so the sentence does not repeat it (V-3).
+ */
 export function completionLine(s: CompletionStats): string {
   const pct = completionPercent(s);
   if (pct === null) return s.weeks_settled > 0 ? 'Nothing owed yet, so nothing to settle' : 'No settle-ups yet';
   const times = s.obligations_created === 1 ? '' : ' times';
-  return `Settled up ${s.obligations_confirmed} of ${s.obligations_created}${times} · ${pct}%`;
+  return `Settled up ${s.obligations_confirmed} of ${s.obligations_created}${times}`;
 }
 
 export type CompletionTone = 'success' | 'unverified' | 'forfeit' | 'pending';

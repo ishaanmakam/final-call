@@ -123,14 +123,15 @@ export default function GroupHome() {
     if (Platform.OS === "ios") {
       ActionSheetIOS.showActionSheetWithOptions(
         {
-          options: ["Feed", "Settle up", "Leave group…", "Cancel"],
-          destructiveButtonIndex: 2,
-          cancelButtonIndex: 3,
+          options: ["Feed", "Settle up", "Stats", "Leave group…", "Cancel"],
+          destructiveButtonIndex: 3,
+          cancelButtonIndex: 4,
         },
         (i) => {
           if (i === 0) goFeed();
           else if (i === 1) goSettle();
-          else if (i === 2) confirmLeave();
+          else if (i === 2) goStats();
+          else if (i === 3) confirmLeave();
         },
       );
       return;
@@ -159,7 +160,7 @@ export default function GroupHome() {
                 <HeaderIconButton
                   name="ellipsis.circle"
                   label="More"
-                  hint="Feed, Settle up, Leave group"
+                  hint="Feed, Settle up, Stats, Leave group"
                   onPress={openMenu}
                 />
               </HeaderItems>
@@ -348,6 +349,15 @@ export default function GroupHome() {
             onPress={() => {
               setMenuOpen(false);
               goSettle();
+            }}
+          />
+          <ListRow
+            leading={<Icon name="chart.bar" size={20} color="tint" />}
+            title="Stats"
+            chevron
+            onPress={() => {
+              setMenuOpen(false);
+              goStats();
             }}
           />
         </ListGroup>
