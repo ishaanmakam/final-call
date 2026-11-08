@@ -35,7 +35,10 @@ export type IconName =
   | 'arrow.up.right'
   | 'square.and.arrow.up'
   | 'ellipsis.circle'
-  | 'doc.on.doc';
+  | 'doc.on.doc'
+  | 'chart.bar'
+  | 'flag.checkered'
+  | 'flame';
 
 export interface IconProps {
   name: IconName;
@@ -76,6 +79,9 @@ const SF: Record<IconName, SFSymbol> = {
   'square.and.arrow.up': 'square.and.arrow.up',
   'ellipsis.circle': 'ellipsis.circle',
   'doc.on.doc': 'doc.on.doc',
+  'chart.bar': 'chart.bar',
+  'flag.checkered': 'flag.checkered',
+  flame: 'flame',
 };
 
 function Glyph({ name, color }: { name: IconName; color: string }) {
@@ -280,6 +286,24 @@ function Glyph({ name, color }: { name: IconName; color: string }) {
           <Path d="M5.5 7.5h7L15 9.5V19a1.5 1.5 0 0 1-1.5 1.5h-8A1.5 1.5 0 0 1 4 19V9a1.5 1.5 0 0 1 1.5-1.5z" {...stroke} />
         </>
       );
+    case 'chart.bar':
+      return (
+        <>
+          <Line x1="6" y1="20" x2="6" y2="13" {...stroke} strokeWidth={3} />
+          <Line x1="12" y1="20" x2="12" y2="5" {...stroke} strokeWidth={3} />
+          <Line x1="18" y1="20" x2="18" y2="9" {...stroke} strokeWidth={3} />
+        </>
+      );
+    case 'flag.checkered':
+      return (
+        <>
+          <Line x1="5" y1="21" x2="5" y2="3.5" {...stroke} />
+          <Path d="M5 4h14l-2.5 4.5L19 13H5z" {...stroke} />
+          <Path d="M8.5 4v9M12 4v9M15.5 4v9M5 7h14M5 10h13" stroke={color} strokeWidth={0.9} fill="none" />
+        </>
+      );
+    case 'flame':
+      return <Path d="M12 3c.6 3.2 3.2 4.6 4.6 7.2A6 6 0 0 1 12 20a6 6 0 0 1-5.4-8.6c.8-1.7 2-2.7 2.5-4.6.9 1 1.4 2 1.6 3.4C11.9 8.4 12.4 6 12 3z" {...stroke} />;
   }
 }
 

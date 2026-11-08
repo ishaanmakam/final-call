@@ -69,8 +69,8 @@ describe("renderNotification", () => {
       }),
       NOW,
     )!;
-    expect(r.title).toBe("Check-in open: 9am class");
-    expect(r.body).toBe("Kane Hall by 9:00. $5 pledge on the line.");
+    expect(r.title).toBe("Boarding: 9am class");
+    expect(r.body).toBe("Check in at Kane Hall by 9:00. $5 pledge on the line.");
     expect(r.data).toEqual({ kind: "window_open", outbox_id: 1, instance_id: "i1", pact_id: "p1", group_id: "g1", url: "/checkin/i1" });
   });
 
@@ -85,51 +85,52 @@ describe("renderNotification", () => {
       }),
       NOW,
     )!;
-    expect(r.title).toBe("Kane Hall by 9:00 — 15 min left");
-    expect(r.body).toBe("Check in now or forfeit your $5 pledge.");
+    expect(r.title).toBe("Final call: 9am class");
+    expect(r.body).toBe("15 minutes left to check in at Kane Hall. Miss it and you forfeit your $5 pledge.");
   });
 
   it("deadline_soon falls back to minutes_left, then 15, and to the pact title without a place", () => {
     const a = renderNotification(row("deadline_soon", { pact_title: "Gym", deadline_local: "18:00", minutes_left: 10 }), NOW)!;
-    expect(a.title).toBe("Gym by 6:00 PM — 10 min left");
-    expect(a.body).toBe("Check in now.");
+    expect(a.title).toBe("Final call: Gym");
+    expect(a.body).toBe("10 minutes left to check in.");
     const b = renderNotification(row("deadline_soon", { pact_title: "Gym" }), NOW)!;
-    expect(b.title).toBe("Gym — 15 min left");
+    expect(b.body).toBe("15 minutes left to check in.");
+    expect(renderNotification(row("deadline_soon", {}), NOW)!.title).toBe("Final call: your pact");
   });
 
   it("deadline_soon never shows zero or negative minutes", () => {
     const r = renderNotification(row("deadline_soon", { place_label: "Gym", deadline_at: "2026-11-09T16:40:00Z" }), NOW)!;
-    expect(r.title).toMatch(/— 1 min left$/);
+    expect(r.body).toMatch(/^1 minute left to check in/);
   });
 
   it("result success with winnings", () => {
     const r = renderNotification(row("result", { status: "success", pact_title: "9am class", net_cents: 250 }), NOW)!;
-    expect(r.title).toBe("9am class: you made it");
-    expect(r.body).toBe("You won $2.50 from the pool.");
+    expect(r.title).toBe("Gate closed: 9am class");
+    expect(r.body).toBe("You made it. +$2.50 from the pool.");
   });
 
   it("result success without winnings", () => {
     const r = renderNotification(row("result", { status: "success", pact_title: "9am class", net_cents: 0 }), NOW)!;
-    expect(r.body).toBe("Your pledge is safe.");
+    expect(r.body).toBe("You made it. Your pledge is safe.");
   });
 
   it("result failed, normal and rollover", () => {
     const a = renderNotification(row("result", { status: "failed", pact_title: "9am class", stake_cents: 500 }), NOW)!;
-    expect(a.title).toBe("9am class: missed");
-    expect(a.body).toBe("$5 pledge forfeited to the pool. Appeal before settlement if that's wrong.");
+    expect(a.title).toBe("Gate closed: 9am class");
+    expect(a.body).toBe("Missed. $5 pledge forfeited to the pool. Appeal before settlement if that's wrong.");
     const b = renderNotification(
       row("result", { status: "failed", pact_title: "9am class", stake_cents: 500, rolled_over: true }),
       NOW,
     )!;
-    expect(b.body).toBe("$5 pledge forfeited. Nobody made it, so the pool rolls over.");
+    expect(b.body).toBe("Missed. $5 pledge forfeited. Nobody made it, so the pool rolls over.");
   });
 
   it("result unverified, frozen, void, excluded", () => {
     const t = (status: string) => renderNotification(row("result", { status, pact_title: "Gym" }), NOW)!;
-    expect(t("unverified")).toMatchObject({ title: "Gym: couldn't verify", body: "No forfeit. Your check-in couldn't be judged." });
-    expect(t("frozen")).toMatchObject({ title: "Gym: frozen", body: "No pledge today." });
-    expect(t("void")).toMatchObject({ title: "Gym: void", body: "Fewer than 2 active, so no pledges today." });
-    expect(t("excluded")).toMatchObject({ title: "Gym: excluded", body: "Your pledge was returned." });
+    expect(t("unverified")).toMatchObject({ title: "Gate closed: Gym", body: "Unverified. No forfeit: your check-in couldn't be judged." });
+    expect(t("frozen")).toMatchObject({ title: "Gate closed: Gym", body: "Frozen. No pledge today." });
+    expect(t("void")).toMatchObject({ title: "Gate closed: Gym", body: "Didn't count. Fewer than 2 were in it, so no pledges today." });
+    expect(t("excluded")).toMatchObject({ title: "Gate closed: Gym", body: "Excluded. Your pledge was returned." });
   });
 
   it("result with an unknown status is not renderable", () => {
@@ -310,7 +311,8 @@ describe("renderNotification", () => {
   });
 
   it("uses fallbacks when names are missing and tolerates null payload", () => {
-    expect(renderNotification(row("window_open", {}), NOW)!.title).toBe("Check-in open: your pact");
+    expect(renderNotification(row("window_open", {}), NOW)!.title).toBe("Boarding: your pact");
+    expect(renderNotification(row("window_open", {}), NOW)!.body).toBe("Check in now.");
     expect(renderNotification({ ...row("settlement", {}), payload: null }, NOW)!.title).toBe("Your group: weekly settlement");
     expect(renderNotification(row("review_opened", { review_kind: "appeal" }), NOW)!.title).toBe("Someone appealed a miss");
   });

@@ -70,22 +70,24 @@ function eligible(i: UpcomingInstance, nowMs: number): boolean {
   );
 }
 
-/** Both reminders of an instance, whether or not their times have passed. */
+/**
+ * Both reminders of an instance, whether or not their times have passed. Same words as the server
+ * push (`window_open` / `deadline_soon` in push-outbox/outbox.ts): the airport voice, app/DESIGN.md "Voice".
+ */
 function remindersFor(i: UpcomingInstance): PlannedNotification[] {
-  const by = `Check in by ${formatTimeInZone(i.deadlineAt, i.tz)}.`;
   return [
     {
       identifier: `${BOARDING_PREFIX}${i.instanceId}`,
       at: Date.parse(i.windowOpenAt),
-      title: `Boarding for ${i.pactTitle}`,
-      body: by,
+      title: `Boarding: ${i.pactTitle}`,
+      body: `Check in by ${formatTimeInZone(i.deadlineAt, i.tz)}.`,
       url: `/checkin/${i.instanceId}`,
     },
     {
       identifier: `${FINAL_PREFIX}${i.instanceId}`,
       at: Date.parse(i.deadlineAt) - FINAL_CALL_LEAD_MS,
-      title: `Final call: 15 minutes left for ${i.pactTitle}`,
-      body: by,
+      title: `Final call: ${i.pactTitle}`,
+      body: `${FINAL_CALL_LEAD_MS / 60_000} minutes left to check in.`,
       url: `/checkin/${i.instanceId}`,
     },
   ];

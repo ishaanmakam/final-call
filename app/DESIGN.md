@@ -398,6 +398,35 @@ Reduce Motion: the sweep becomes a pulse, the reveal fill jumps, the card fades 
 - **Don't** animate layout (`height`, `width`, `margin`, `top`); the segmented indicator is the one sanctioned `width` animation because it is absolute and childless.
 - **Don't** use `ease-in`, `scale(0)` entrances, `PanResponder`, core `Animated`, `runOnJS` or a `setState` per frame.
 - **Don't** write "bet", "wager", "stake", "pot" or "rake" in copy. UI says pledge, forfeit, pool, settle-up.
+- **Don't** use the three voice words (Boarding, Final call, Gate closed) anywhere but their three moments, and no other aviation words at all (see Voice).
+
+## Voice
+
+Final Call speaks plainly (pledge / forfeit / pool / showed up / missed) except at three moments of the day, where it borrows three words from the departure board. The words are consistent everywhere they appear and sparing: nothing else in the app is airport-themed, and they never appear outside their moment.
+
+| Moment | Word | Where it appears (and the exact form) |
+|---|---|---|
+| The window opens | **Boarding** | Push and local reminder title `Boarding: {pact title}` (body `Check in by 9:00 AM.`); the check-in clock's big line `Boarding · 54:12` (footnote `left · by 9:00 AM`); the Today card's timing line `Boarding · 54:12 left · by 9:00 AM`; VoiceOver `Boarding. 54 minutes left, deadline 9:00 AM`. |
+| Fifteen minutes before the deadline | **Final call** | Push and local reminder title `Final call: {pact title}` (body `15 minutes left to check in.`); the clock switches to `Final call · 14:59` in the forfeit tone (digits too) until the deadline, with the last-minute footnote `Tap now. Your tap time is what counts.` unchanged; the Today card's timing line `Final call · 14:59 left · by 9:00 AM` in the forfeit tone. The fifteen-minute lead is `FINAL_CALL_MS` in `features/checkin/copy.ts`, the same lead as the `deadline_soon` push and the local reminder. |
+| The deadline | **Gate closed** | The clock's big line `Gate closed` (footnote `Deadline was 9:00 AM`); the result push title `Gate closed: {pact title}`; the Today card's timing line `Gate closed 9:00 AM`; the gate-close card while the server tallies, `Gate closed · tallying…`. Once the result is posted the card's headline is the result and the money (`You're +$3.34 today`, `You forfeited $5.00`, `Unverified · no pledge moved`), not the word. |
+
+Banned everywhere else: those three words in any other context (a settle-up is never a "gate", a missed day is never "the gate closed on you"), and every other aviation word (passengers, runway, takeoff, departures, terminal, seat, flight). The pact's own title can be whatever the group named it. Code constants: `VOICE` in `features/checkin/copy.ts`; the push copy lives in `supabase/functions/push-outbox/outbox.ts`, the local reminders in `lib/localNotifications.ts`; all three are unit-tested.
+
+### The gate-close card
+
+At the deadline the check-in screen's status line becomes the gate-close card (the verdict panel's shape), and the Today card's status line becomes its compact form. The money is read from the ledger (`instance_member_nets`), never computed on the phone.
+
+| Outcome | Headline | Subline | Compact (Today card) |
+|---|---|---|---|
+| Tallying (server not yet posted; polled every 10 s for 3 min) | `Gate closed · tallying…` | `Results post within a minute.` (after 3 min: `Results post within a minute or two; pull to refresh.`) | `Gate closed · tallying…` |
+| Showed up, winnings | `You're +$3.34 today` (figure counts up) | `Dev and Jordan missed · pool $10.00 split 3 ways` (one winner: `the $5.00 pool is yours`; carry: `pool $9.00 ($4.00 carried over)`) | `+$3.34 · Dev and Jordan missed` |
+| Showed up, nothing moved | `You made it` | `Everyone made it · no pledge moved` | `Showed up · Everyone made it` |
+| Missed | `You forfeited $5.00` (figure counts up) | `Maya, Priya and Dev showed up` / `Nobody made it · the $10.00 pool carries over`; footnote `If that's wrong, appeal it in the feed before Monday's settle-up.` | `Forfeited $5.00 · Maya, Priya and Dev showed up` |
+| Unverified | `Unverified · no pledge moved` | who showed up / missed; footnote repeats the never-costs rule | `Unverified · no pledge moved` |
+| Frozen | `Frozen · no pledge moved` | who showed up / missed, or `You called today off in advance.` | `Frozen · no pledge moved` |
+| Didn't count | `Didn't count · fewer than two people were in it` | `No pledge moved.` | same |
+
+Motion: the card enters with spring `reveal` (opacity, translateY 8, scale 0.97; opacity only under Reduce Motion), the money figure counts from $0.00 over 350 ms ease-out on the UI thread (`AnimatedHeadline`, a read-only `TextInput` driven by `animatedProps`; no count-up under Reduce Motion), the check-in ring settles full in the result tone for winnings and forfeits and stays empty when no pledge moved. Haptic: `success` for winnings, `warning` for a forfeit, none otherwise, on the frame the posted card mounts. VoiceOver hears headline and subline once and focus lands on the headline.
 
 ## Copy glossary
 

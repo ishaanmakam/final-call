@@ -551,6 +551,7 @@ const CLIENT_RPCS: [string, string[]][] = [
   ['register_push_token', ['text', 'text']],
   ['acknowledge_place', ['uuid']], ['object_place', ['uuid', 'text']], ['pact_place_distances', ['uuid']],
   ['delete_my_account', []],
+  ['set_pact_season', ['uuid', 'date', 'smallint']],
 ];
 const callSql = (fn: string, types: string[]) => `select public.${fn}(${types.map((t) => `null::${t}`).join(', ')})`;
 

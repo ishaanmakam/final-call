@@ -3,15 +3,18 @@ import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
 import { Alert, Platform, StyleSheet, Switch, View } from 'react-native';
 import { displayName, useGroupHome, usePactDetail } from '@/api/queries';
-import { declareFreeze, setPactPaused } from '@/api/rpc';
+import { declareFreeze, setPactPaused, setPactSeason } from '@/api/rpc';
+import { seasonInvalidationKeys, usePactStats } from '@/api/statsQueries';
 import type { PactInstanceRow } from '@/api/types';
 import {
   Avatar,
   Button,
   EmptyState,
+  Icon,
   ListGroup,
   ListRow,
   Pill,
+  ProgressRing,
   Screen,
   SkeletonCard,
   StatusPill,
@@ -21,11 +24,15 @@ import {
 import { ObjectionSheet, PlaceStatusBlock, type ObjectionTarget } from '@/features/place/PlaceGate';
 import { PLACE_RULE_CHANGE, placeLine, placePill, placeStatusLine } from '@/features/place/placeCopy';
 import { timeZoneDisplayName } from '@/features/shared/timeZones';
+import { longestStreak, recapSentence } from '@/features/stats/recap';
+import { formatLocalDay, seasonDetailLine, seasonOf, seasonProgress, seasonProgressLine, seasonShortLabel, type Season } from '@/features/stats/season';
+import { SeasonSheet } from '@/features/stats/SeasonSheet';
+import { streakFor, streakLine } from '@/features/stats/streak';
 import { useUserId } from '@/lib/auth';
 import { userMessage } from '@/lib/errors';
 import { formatCents } from '@/lib/money';
 import { memberPlaces, nearestOtherM } from '@/lib/places';
-import { describeDays, deviceTimeZone, displayTimeOfDay, formatDateInZone, formatTimeInZone, windowState } from '@/lib/time';
+import { describeDays, deviceTimeZone, displayTimeOfDay, formatDateInZone, formatTimeInZone, localDateInZone, windowState } from '@/lib/time';
 import { useNow } from '@/lib/useNow';
 import { haptic, useTheme } from '@/theme';
 
@@ -41,6 +48,9 @@ export default function PactDetail() {
   const [freezing, setFreezing] = useState<string | null>(null);
   const [objecting, setObjecting] = useState<ObjectionTarget | null>(null);
   const [objectOpen, setObjectOpen] = useState(false);
+  const [seasonOpen, setSeasonOpen] = useState(false);
+  const [endingSeason, setEndingSeason] = useState(false);
+  const pactStats = usePactStats(pactId);
 
   const groupId = detail.data?.pact.group_id ?? '';
   const home = useGroupHome(groupId, userId, groupId.length > 0);
@@ -135,6 +145,46 @@ export default function PactDetail() {
   const window = `${displayTimeOfDay(pact.window_open_local)} to ${displayTimeOfDay(pact.deadline_local)}`;
   const myCurrent = myPlaces.current;
 
+  // Season (Q2): owner or creator starts / ends it; everyone sees the progress and the recap line.
+  const season = seasonOf(pact);
+  const progress = season ? seasonProgress(season, localDateInZone(now, pact.tz)) : null;
+  const streaks = pactStats.data?.streaks ?? [];
+  const recaps = pactStats.data?.recaps ?? [];
+  const seasonFooter =
+    season && progress
+      ? recaps.length > 0
+        ? recapSentence(recaps.find((r) => r.user_id === userId) ?? null, longestStreak(streaks, nameOf), progress.phase === 'finished', userId)
+        : progress.phase === 'upcoming'
+          ? `Days from ${formatLocalDay(season.start)} count. At the finish line everyone sees who showed up most and who came out ahead.`
+          : 'The recap fills in as days close.'
+      : 'Four weeks with a finish line: at the end everyone sees who showed up most, who had the longest streak and who came out ahead.';
+  const refreshSeason = () => Promise.all(seasonInvalidationKeys(pactId, pact.group_id).map((queryKey) => qc.invalidateQueries({ queryKey })));
+  const startSeason = async (s: Season) => {
+    await setPactSeason(pactId, s.start, s.weeks);
+    await refreshSeason();
+    toast.show({ message: `Season on. Finish line ${formatLocalDay(seasonProgress(s, s.start).finishLine)}.`, tone: 'success', icon: 'flag.checkered' });
+  };
+  const confirmEndSeason = () =>
+    Alert.alert('End this season?', 'The recap so far stays in Stats until a new season starts. Days keep counting as usual.', [
+      { text: 'Keep going', style: 'cancel' },
+      {
+        text: 'End season',
+        style: 'destructive',
+        onPress: () => {
+          setEndingSeason(true);
+          haptic('commit');
+          setPactSeason(pactId, null, null)
+            .then(refreshSeason)
+            .then(() => toast.show({ message: 'Season ended.', tone: 'neutral', icon: 'flag.checkered' }))
+            .catch((e: unknown) => {
+              toast.show({ message: userMessage(e), tone: 'forfeit', icon: 'exclamationmark.triangle' });
+              haptic('error');
+            })
+            .finally(() => setEndingSeason(false));
+        },
+      },
+    ]);
+
   return (
     <View style={styles.root}>
       <Screen refreshing={detail.isRefetching} onRefresh={() => void detail.refetch()}>
@@ -152,6 +202,41 @@ export default function PactDetail() {
         >
           <ListRow title="Per missed day" trailing={<Value tabular>{formatCents(pact.stake_cents)}</Value>} />
         </ListGroup>
+
+        {season && progress ? (
+          <ListGroup header="Season" footer={seasonFooter}>
+            <ListRow
+              leading={
+                <ProgressRing progress={progress.fraction} size={32} strokeWidth={3} animate="step" color={progress.phase === 'finished' ? 'success' : 'tint'} />
+              }
+              title={seasonShortLabel(progress, season.start)}
+              subtitle={seasonDetailLine(progress)}
+              chevron
+              onPress={() => router.push(`/groups/${pact.group_id}/stats`)}
+              accessibilityLabel={`Season: ${seasonShortLabel(progress, season.start)}, ${seasonProgressLine(progress, season.start)}`}
+              accessibilityHint="Opens the group's stats"
+            />
+            {canPause ? (
+              <ListRow
+                title="End season"
+                trailing={<Value color="tint">{endingSeason ? 'Ending' : 'End'}</Value>}
+                disabled={endingSeason}
+                onPress={confirmEndSeason}
+                accessibilityHint="Asks you to confirm"
+              />
+            ) : null}
+          </ListGroup>
+        ) : canPause ? (
+          <ListGroup header="Season" footer={seasonFooter}>
+            <ListRow
+              leading={<Icon name="flag.checkered" size={20} color="tint" />}
+              title="Start a 4-week season"
+              chevron
+              onPress={() => setSeasonOpen(true)}
+              accessibilityHint="Opens the season sheet"
+            />
+          </ListGroup>
+        ) : null}
 
         {canPause || pact.paused ? (
           <ListGroup footer="Paused pacts skip their days until resumed. Days already in progress still count.">
@@ -221,6 +306,8 @@ export default function PactDetail() {
             const pill = placePill(mp);
             const status = placeStatusLine(mp, namer, pact.tz, mp.pending ? nearestOtherM(distances, mp.pending.place_id) : null);
             const line = placeLine(mp.current, nearest);
+            const streak = streakFor(streaks, p.user_id);
+            const streakText = streakLine(streak.current_streak, streak.best_streak);
             const lastPerson = index === participants.length - 1 && notJoined.length === 0;
             const rows = [
               <ListRow
@@ -228,7 +315,14 @@ export default function PactDetail() {
                 title={nameOf(p.user_id)}
                 subtitle={line}
                 leading={<Avatar person={{ id: p.user_id, name: nameOf(p.user_id) }} highlighted={p.user_id === userId} />}
-                accessibilityLabel={`${nameOf(p.user_id)}, ${line}`}
+                trailing={
+                  streakText ? (
+                    <Text variant="subheadline" color={streak.current_streak > 0 ? 'label' : 'secondary'} tabular numberOfLines={1}>
+                      {streakText}
+                    </Text>
+                  ) : undefined
+                }
+                accessibilityLabel={`${nameOf(p.user_id)}, ${line}${streakText ? `, ${streakText}` : ''}`}
               />,
             ];
             if (status) {
@@ -317,6 +411,7 @@ export default function PactDetail() {
           })}
         </ListGroup>
       </Screen>
+      <SeasonSheet open={seasonOpen} onClose={() => setSeasonOpen(false)} pactTitle={pact.title} tz={pact.tz} onStart={startSeason} />
       <ObjectionSheet
         target={objecting}
         open={objectOpen}

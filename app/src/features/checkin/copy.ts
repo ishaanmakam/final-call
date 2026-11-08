@@ -201,30 +201,45 @@ export function panelForError(error: unknown): VerdictPanel {
 
 // ---------- the clock ----------
 
+/**
+ * The airport voice (app/DESIGN.md "Voice"): three words, used only at their three moments. The
+ * window opening is "Boarding", the last fifteen minutes are "Final call", the deadline is "Gate
+ * closed". The same words head the push and local reminders.
+ */
+export const VOICE = { boarding: 'Boarding', finalCall: 'Final call', gateClosed: 'Gate closed' } as const;
+/** Final call starts here: the same lead as the `deadline_soon` push and the local reminder. */
+export const FINAL_CALL_MS = 15 * 60_000;
+
 export interface ClockCopy {
-  /** words before the digits ("Opens in"); undefined when the digits stand alone */
+  /** words before the digits ("Opens in", "Boarding ·"); undefined when the digits stand alone */
   prefix?: string;
   /** digits are shown (before and open); false shows `big` instead */
   showCountdown: boolean;
   big?: string;
   footnote: string;
+  /** the last minute: the footnote says to tap now */
   urgent: boolean;
+  /** the final-call register: the last fifteen minutes draw the prefix and digits in the forfeit tone */
+  final: boolean;
 }
 
 /** The big line and its footnote for each window phase. `remainingMs` is to the open or the deadline. */
 export function clockCopy(phase: WindowState, remainingMs: number, openText: string, deadlineText: string): ClockCopy {
   if (phase === 'before') {
-    return { prefix: 'Opens in', showCountdown: true, footnote: `${openText} · window until ${deadlineText}`, urgent: false };
+    return { prefix: 'Opens in', showCountdown: true, footnote: `${openText} · window until ${deadlineText}`, urgent: false, final: false };
   }
   if (phase === 'open') {
     const urgent = remainingMs > 0 && remainingMs <= 60_000;
+    const final = remainingMs > 0 && remainingMs <= FINAL_CALL_MS;
     return {
+      prefix: `${final ? VOICE.finalCall : VOICE.boarding} ·`,
       showCountdown: true,
       footnote: urgent ? 'Tap now. Your tap time is what counts.' : `left · by ${deadlineText}`,
       urgent,
+      final,
     };
   }
-  return { showCountdown: false, big: 'Closed', footnote: `Deadline was ${deadlineText}`, urgent: false };
+  return { showCountdown: false, big: VOICE.gateClosed, footnote: `Deadline was ${deadlineText}`, urgent: false, final: false };
 }
 
 const minutesWord = (n: number) => `${n} minute${n === 1 ? '' : 's'}`;
@@ -237,10 +252,11 @@ export function clockA11yLabel(phase: WindowState, remainingMs: number, openText
   const minutes = Math.max(1, Math.ceil(remainingMs / 60_000));
   if (phase === 'before') return `Check-in opens in ${minutesWord(minutes)}, at ${openText}`;
   if (phase === 'open') {
-    if (remainingMs <= 60_000) return 'One minute left. Tap now; your tap time is what counts.';
-    return `${minutesWord(minutes)} left, deadline ${deadlineText}`;
+    if (remainingMs <= 60_000) return `${VOICE.finalCall}. One minute left. Tap now; your tap time is what counts.`;
+    const word = remainingMs <= FINAL_CALL_MS ? VOICE.finalCall : VOICE.boarding;
+    return `${word}. ${minutesWord(minutes)} left, deadline ${deadlineText}`;
   }
-  return `Closed. Deadline was ${deadlineText}`;
+  return `${VOICE.gateClosed}. Deadline was ${deadlineText}`;
 }
 
 // ---------- the button ----------

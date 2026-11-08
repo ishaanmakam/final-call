@@ -148,27 +148,38 @@ describe('other panels', () => {
 describe('clock', () => {
   it('before: Opens in + digits, footnote with open and deadline', () => {
     const c = clockCopy('before', 12 * 60_000 + 4000, '8:00 AM', '9:00 AM');
-    expect(c).toEqual({ prefix: 'Opens in', showCountdown: true, footnote: '8:00 AM · window until 9:00 AM', urgent: false });
+    expect(c).toEqual({ prefix: 'Opens in', showCountdown: true, footnote: '8:00 AM · window until 9:00 AM', urgent: false, final: false });
   });
 
-  it('open: digits with "left · by", urgent in the last minute', () => {
-    expect(clockCopy('open', 14 * 60_000, '8:00 AM', '9:00 AM').footnote).toBe('left · by 9:00 AM');
+  it('open: Boarding, then Final call from 15 minutes, urgent footnote in the last minute', () => {
+    const boarding = clockCopy('open', 54 * 60_000 + 12_000, '8:00 AM', '9:00 AM');
+    expect(boarding.prefix).toBe('Boarding ·');
+    expect(boarding.footnote).toBe('left · by 9:00 AM');
+    expect(boarding.final).toBe(false);
+    expect(clockCopy('open', 15 * 60_000 + 1, '8:00 AM', '9:00 AM').final).toBe(false);
+    const final = clockCopy('open', 14 * 60_000 + 59_000, '8:00 AM', '9:00 AM');
+    expect(final.prefix).toBe('Final call ·');
+    expect(final.final).toBe(true);
+    expect(final.urgent).toBe(false);
+    expect(final.footnote).toBe('left · by 9:00 AM');
     const last = clockCopy('open', 42_000, '8:00 AM', '9:00 AM');
     expect(last.urgent).toBe(true);
+    expect(last.final).toBe(true);
     expect(last.footnote).toBe('Tap now. Your tap time is what counts.');
     expect(clockCopy('open', 60_001, '8:00 AM', '9:00 AM').urgent).toBe(false);
   });
 
   it('closed: a word, not digits', () => {
-    expect(clockCopy('closed', -5000, '8:00 AM', '9:00 AM')).toEqual({ showCountdown: false, big: 'Closed', footnote: 'Deadline was 9:00 AM', urgent: false });
+    expect(clockCopy('closed', -5000, '8:00 AM', '9:00 AM')).toEqual({ showCountdown: false, big: 'Gate closed', footnote: 'Deadline was 9:00 AM', urgent: false, final: false });
   });
 
   it('VoiceOver label changes per minute, not per second', () => {
-    expect(clockA11yLabel('open', 14 * 60_000 + 32_000, '8:00 AM', '9:00 AM')).toBe('15 minutes left, deadline 9:00 AM');
-    expect(clockA11yLabel('open', 14 * 60_000 + 1000, '8:00 AM', '9:00 AM')).toBe('15 minutes left, deadline 9:00 AM');
-    expect(clockA11yLabel('open', 59_000, '8:00 AM', '9:00 AM')).toMatch(/^One minute left/);
+    expect(clockA11yLabel('open', 54 * 60_000 + 12_000, '8:00 AM', '9:00 AM')).toBe('Boarding. 55 minutes left, deadline 9:00 AM');
+    expect(clockA11yLabel('open', 14 * 60_000 + 32_000, '8:00 AM', '9:00 AM')).toBe('Final call. 15 minutes left, deadline 9:00 AM');
+    expect(clockA11yLabel('open', 14 * 60_000 + 1000, '8:00 AM', '9:00 AM')).toBe('Final call. 15 minutes left, deadline 9:00 AM');
+    expect(clockA11yLabel('open', 59_000, '8:00 AM', '9:00 AM')).toMatch(/^Final call. One minute left/);
     expect(clockA11yLabel('before', 61_000, '8:00 AM', '9:00 AM')).toBe('Check-in opens in 2 minutes, at 8:00 AM');
-    expect(clockA11yLabel('closed', -1, '8:00 AM', '9:00 AM')).toBe('Closed. Deadline was 9:00 AM');
+    expect(clockA11yLabel('closed', -1, '8:00 AM', '9:00 AM')).toBe('Gate closed. Deadline was 9:00 AM');
   });
 });
 

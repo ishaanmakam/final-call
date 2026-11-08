@@ -2,14 +2,15 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import Animated from 'react-native-reanimated';
-import { displayName, type TodayItem } from '../../api/queries';
-import type { ProfileRow } from '../../api/types';
+import { displayName, useInstanceNets, type TodayItem } from '../../api/queries';
+import type { ProfileRow, ResultRow } from '../../api/types';
 import { AvatarStack, Button, Card, Countdown, ProgressRing, StatusPill, Text } from '../../components';
 import { formatTimeInZone, msUntil, type WindowState } from '../../lib/time';
 import { useNow } from '../../lib/useNow';
 import { PRESS_SCALE, space, transition, useReducedMotion } from '../../theme';
+import { gateClose } from '../checkin/gateClose';
 import { useWindowPhase } from '../checkin/useWindowPhase';
-import { checkedInIds, myPillState, resultTally, todayStatusLine } from './today';
+import { checkedInIds, closedTimingText, myPillState, openTimingPrefix, resultTally, todayStatusLine } from './today';
 
 export interface TodayCardProps {
   item: TodayItem;
@@ -17,13 +18,22 @@ export interface TodayCardProps {
   profiles: Map<string, ProfileRow>;
 }
 
-/** "14:32 left · by 9:00 AM": the only thing on a card that ticks, so only this line re-renders. */
+/**
+ * "Boarding · 14:32 left · by 9:00 AM", "Final call · 14:59 left · by 9:00 AM" in the forfeit tone
+ * for the last fifteen minutes: the only thing on a card that ticks, so only this line re-renders.
+ */
 function LiveTiming({ deadlineAt, tz }: { deadlineAt: string; tz: string }) {
   const now = useNow(1000);
+  const remaining = msUntil(deadlineAt, now);
+  const prefix = openTimingPrefix(remaining);
+  const color = prefix === 'Final call' ? 'forfeit' : 'secondary';
   return (
     <View style={styles.timing}>
-      <Countdown ms={msUntil(deadlineAt, now)} variant="subheadline" color="secondary" announceAtMinutes={[]} />
-      <Text variant="subheadline" color="secondary" tabular>
+      <Text variant="subheadline" color={color}>
+        {prefix} ·{' '}
+      </Text>
+      <Countdown ms={remaining} variant="subheadline" color={color} announceAtMinutes={[]} />
+      <Text variant="subheadline" color={color} tabular>
         {` left · by ${formatTimeInZone(deadlineAt, tz)}`}
       </Text>
     </View>
@@ -34,12 +44,25 @@ function timingText(phase: WindowState, item: TodayItem): string {
   const { instance, pact } = item;
   if (instance.status === 'voided') return "Didn't count today";
   if (phase === 'before') return `Opens ${formatTimeInZone(instance.window_open_at, pact.tz)} · by ${formatTimeInZone(instance.deadline_at, pact.tz)}`;
-  return `Closed ${formatTimeInZone(instance.deadline_at, pact.tz)}`;
+  return closedTimingText(formatTimeInZone(instance.deadline_at, pact.tz));
+}
+
+/** The live member states folded back into result rows for the gate-close wording (names and tallies). */
+function resultsFromSummary(item: TodayItem): ResultRow[] {
+  const out: ResultRow[] = [];
+  for (const [user_id, state] of Object.entries(item.summary.byUser)) {
+    const status: ResultRow['status'] | null =
+      state === 'success' || state === 'failed' || state === 'unverified' || state === 'frozen' || state === 'void' || state === 'excluded' ? state : null;
+    if (status) out.push({ instance_id: item.instance.id, user_id, status, first_success_at: null, decided_at: null });
+  }
+  return out;
 }
 
 /**
  * One live object per instance today: title, timing, who's in (ring + avatars), your state, and the
- * one action. Tapping anywhere opens the check-in screen when you are in the pact.
+ * one action. Tapping anywhere opens the check-in screen when you are in the pact. Once the gate is
+ * closed and you were in it, the status line is the gate-close headline in its compact form
+ * ("+$2.00 · Diego missed"), with the money read from the ledger.
  */
 export function TodayCard({ item, userId, profiles }: TodayCardProps) {
   const { instance, pact, summary, participantIds, myState } = item;
@@ -52,11 +75,38 @@ export function TodayCard({ item, userId, profiles }: TodayCardProps) {
   const inIds = checkedInIds(summary);
   const people = participantIds.map((id) => ({ id, name: id === userId ? 'You' : displayName(profiles, id) }));
   const pill = myPillState(myState, closed);
-  const status = instance.status === 'voided' ? 'Fewer than two people were in it, so nothing counts.' : closed ? resultTally(summary) : todayStatusLine(summary, myState);
+  const posted = ['closed', 'settled', 'voided'].includes(instance.status);
+  const nets = useInstanceNets(instance.id, closed && amIn && posted);
   const allIn = summary.total > 0 && summary.checkedIn === summary.total;
   const showCheckIn = amIn && open && myState !== 'checked_in' && !pill;
   const openCheckin = () => router.push(`/checkin/${instance.id}`);
   const timingLabel = open ? `${formatTimeInZone(instance.deadline_at, pact.tz)} deadline` : timingText(phase, item);
+
+  let status: string;
+  let gateTone: 'success' | 'forfeit' | null = null;
+  if (closed && amIn) {
+    const results = resultsFromSummary(item);
+    const myResult = results.find((r) => r.user_id === userId) ?? null;
+    const gate = gateClose({
+      userId,
+      instanceStatus: instance.status,
+      myResult,
+      results,
+      nets: nets.data ?? [],
+      profiles,
+      stakeCents: pact.stake_cents,
+      carryInCents: instance.carry_in_cents,
+      frozen: myState === 'frozen',
+      sinceDeadlineMs: Date.now() - Date.parse(instance.deadline_at),
+    });
+    // the money line waits for the ledger read; until then the plain tally
+    status = posted && nets.isPending && gate.amount ? resultTally(summary) : gate.compact;
+    if (gate.state === 'posted' && gate.amount) gateTone = gate.tone === 'forfeit' ? 'forfeit' : 'success';
+  } else if (instance.status === 'voided') {
+    status = 'Fewer than two people were in it, so nothing counts.';
+  } else {
+    status = closed ? resultTally(summary) : todayStatusLine(summary, myState);
+  }
 
   const body = (
     <Card>
@@ -91,7 +141,7 @@ export function TodayCard({ item, userId, profiles }: TodayCardProps) {
         <AvatarStack people={people} max={5} size={32} highlightIds={inIds} />
         {pill ? <StatusPill state={pill} who="You" /> : instance.status === 'voided' ? <StatusPill state="void" /> : null}
       </View>
-      <Text variant="subheadline" color="secondary">
+      <Text variant="subheadline" color={gateTone ?? 'secondary'} emphasis={gateTone !== null} tabular={gateTone !== null}>
         {status}
       </Text>
       {showCheckIn ? <Button title="Check in" onPress={openCheckin} style={styles.action} /> : null}
@@ -123,7 +173,7 @@ const styles = StyleSheet.create({
   pressedReduced: { opacity: 0.85 },
   head: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   titles: { flex: 1, gap: space.xxs },
-  timing: { flexDirection: 'row', alignItems: 'baseline' },
+  timing: { flexDirection: 'row', alignItems: 'baseline', flexWrap: 'wrap' },
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.sm },
   action: { marginTop: space.xs },
 });

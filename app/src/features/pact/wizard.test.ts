@@ -109,3 +109,21 @@ describe('draft', () => {
     expect(isDraftDirty({ ...DEFAULT_DRAFT, dollars: '5.00' })).toBe(false);
   });
 });
+
+describe('season toggle', () => {
+  it('is off by default, marks the draft dirty, and asks for 4 weeks from the coming Monday in the pact zone', async () => {
+    const { draftSeason } = await import('./wizard');
+    expect(DEFAULT_DRAFT.season).toBe(false);
+    expect(isDraftDirty({ ...DEFAULT_DRAFT, season: true })).toBe(true);
+    expect(draftSeason({ season: false, tz: 'America/Los_Angeles' }, Date.parse('2026-11-07T20:00:00Z'))).toBeNull();
+    // Saturday 7 Nov 2026 in Los Angeles: the coming Monday is the 9th
+    expect(draftSeason({ season: true, tz: 'America/Los_Angeles' }, Date.parse('2026-11-07T20:00:00Z'))).toEqual({ start: '2026-11-09', weeks: 4 });
+    // 23:30 Sunday in Kolkata is already Monday 02:00 in Sydney: the zone decides the date
+    expect(draftSeason({ season: true, tz: 'Australia/Sydney' }, Date.parse('2026-11-08T18:00:00Z'))?.start).toBe('2026-11-09');
+    expect(draftSeason({ season: true, tz: 'Asia/Kolkata' }, Date.parse('2026-11-08T18:00:00Z'))?.start).toBe('2026-11-09');
+    // 09:00Z Tuesday is still Monday 23:00 in Honolulu (today counts); two hours later it is Tuesday there
+    expect(draftSeason({ season: true, tz: 'Pacific/Honolulu' }, Date.parse('2026-11-10T09:00:00Z'))?.start).toBe('2026-11-09');
+    expect(draftSeason({ season: true, tz: 'Pacific/Honolulu' }, Date.parse('2026-11-10T11:00:00Z'))?.start).toBe('2026-11-16');
+    expect(draftSeason({ season: true, tz: 'nope/zone' }, Date.now())).toBeNull();
+  });
+});

@@ -8,6 +8,8 @@ import { RpcError, checkIn, declareFreeze } from '@/api/rpc';
 import type { CheckinRow } from '@/api/types';
 import { EmptyState, Icon, ListGroup, ListRow, Screen, Skeleton, StatusPill, Text, resultLabel } from '@/components';
 import { CheckinButton, RING_SIZE, type RingTone } from '@/features/checkin/CheckinButton';
+import { GateCloseCard } from '@/features/checkin/GateCloseCard';
+import { gateClose } from '@/features/checkin/gateClose';
 import { ClockSkewNotice } from '@/features/checkin/ClockSkewNotice';
 import { VerdictPanel } from '@/features/checkin/VerdictPanel';
 import { WindowClock } from '@/features/checkin/WindowClock';
@@ -34,6 +36,7 @@ import { userMessage } from '@/lib/errors';
 import { ensurePreciseForegroundPermission, takeHighAccuracyFix } from '@/lib/location';
 import { captureException } from '@/lib/sentry';
 import { formatDateInZone, formatTimeInZone } from '@/lib/time';
+import { useNow } from '@/lib/useNow';
 import { durations, easing, haptic, space } from '@/theme';
 
 type Phase =
@@ -126,9 +129,27 @@ function Loaded({
   show: (panel: Panel, extra?: { permissionBlocked?: boolean }) => void;
   invalidate: (groupId: string) => Promise<unknown>;
 }) {
-  const { instance, pact, myPlace, judgedPlace, myCheckins, myResult, myFreeze } = detail;
+  const { instance, pact, myPlace, judgedPlace, myCheckins, myResult, myFreeze, results, profiles, nets } = detail;
   const windowPhase = useWindowPhase(instance.window_open_at, instance.deadline_at);
   const finished = ['closed', 'settled', 'voided'].includes(instance.status);
+  // the gate-close moment: from the deadline (or a server close) for anyone in the pact; a slow clock
+  // (30 s) only so the tallying card can stop promising after three minutes
+  const slowNow = useNow(30_000);
+  const gate =
+    myPlace && (windowPhase === 'closed' || finished)
+      ? gateClose({
+          userId: myPlace.user_id,
+          instanceStatus: instance.status,
+          myResult,
+          results,
+          nets,
+          profiles,
+          stakeCents: pact.stake_cents,
+          carryInCents: instance.carry_in_cents,
+          frozen: !!myFreeze,
+          sinceDeadlineMs: slowNow - Date.parse(instance.deadline_at),
+        })
+      : null;
   const deadlineMs = Date.parse(instance.deadline_at);
   const inFromServer = myCheckins.some((c) => c.verdict === 'in_fence' && Date.parse(c.server_received_at) <= deadlineMs);
   const inFromPanel = phase.kind === 'panel' && phase.panel.pill === 'success';
@@ -140,7 +161,7 @@ function Loaded({
     alreadyIn,
     busy: phase.kind === 'busy' ? phase.stage : null,
   });
-  const ringTone: RingTone = phase.kind === 'panel' ? RING_TONE[phase.panel.tone] : 'tint';
+  const ringTone: RingTone = gate ? RING_TONE[gate.tone] : phase.kind === 'panel' ? RING_TONE[phase.panel.tone] : 'tint';
   const deadlineText = formatTimeInZone(instance.deadline_at, pact.tz);
   const refresh = () => invalidate(pact.group_id);
 
@@ -260,7 +281,12 @@ function Loaded({
             />
           </View>
 
-          {phase.kind === 'panel' ? (
+          {gate ? (
+            // keyed by state so the posted card re-enters (spring, count-up, haptic) when the result lands
+            <View key={`gate-${gate.state}`}>
+              <GateCloseCard gate={gate} />
+            </View>
+          ) : phase.kind === 'panel' ? (
             <View key={phase.key}>
               <VerdictPanel
                 panel={phase.panel}
@@ -326,7 +352,7 @@ function Loaded({
         </ListGroup>
       ) : null}
 
-      {myResult ? (
+      {myResult && !gate ? (
         <ListGroup header="Result" footer={resultFootnote(myResult.status)} style={styles.section}>
           <ListRow
             title={formatDateInZone(instance.deadline_at, pact.tz)}

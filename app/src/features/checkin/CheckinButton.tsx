@@ -35,8 +35,11 @@ function WindowRing({ state, tone, windowOpenAt, deadlineAt }: { state: ButtonSt
   const total = Math.max(1, Date.parse(deadlineAt) - Date.parse(windowOpenAt));
   const remaining = msUntil(deadlineAt, now);
   const busy = state === 'locating' || state === 'sending';
-  const empty = state === 'before' || state === 'closed' || state === 'frozen';
-  const progress = state === 'done' ? 1 : empty ? 0 : Math.min(1, Math.max(0, remaining / total));
+  // gate closed with a posted result: the ring settles full in the result's tone (success / forfeit);
+  // outcomes that moved no pledge leave it empty
+  const settled = state === 'closed' && (tone === 'success' || tone === 'forfeit');
+  const empty = state === 'before' || state === 'frozen' || (state === 'closed' && !settled);
+  const progress = state === 'done' || settled ? 1 : empty ? 0 : Math.min(1, Math.max(0, remaining / total));
   const urgent = state === 'idle' && remaining > 0 && remaining <= 60_000;
   const color = state === 'done' ? 'success' : urgent && tone === 'tint' ? 'forfeit' : tone;
   return (
@@ -46,7 +49,7 @@ function WindowRing({ state, tone, windowOpenAt, deadlineAt }: { state: ButtonSt
       progress={progress}
       color={color}
       indeterminate={busy}
-      animate={state === 'done' ? 'reveal' : 'step'}
+      animate={state === 'done' || settled ? 'reveal' : 'step'}
     />
   );
 }

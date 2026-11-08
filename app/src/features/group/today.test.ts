@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PactRow } from '../../api/types';
 import type { InstanceSummary } from '../../lib/instanceStatus';
-import { checkedInIds, myPillState, nothingTodayBody, pactDetailLine, resultTally, todayStatusLine } from './today';
+import { checkedInIds, closedTimingText, myPillState, nothingTodayBody, openTimingPrefix, pactDetailLine, resultTally, todayStatusLine } from './today';
 
 const summary = (byUser: InstanceSummary['byUser']): InstanceSummary => {
   const counted = Object.values(byUser).filter((s) => !['frozen', 'void', 'excluded'].includes(s));
@@ -64,4 +64,15 @@ describe('nothingTodayBody', () => {
 
 it('pactDetailLine says pledge, never stake', () => {
   expect(pactDetailLine('Weekdays', '09:00:00', '$5.00')).toBe('Weekdays · by 9:00 AM · $5.00 pledge');
+});
+
+describe('timing line voice', () => {
+  it('Boarding, then Final call from fifteen minutes out, then Gate closed', () => {
+    expect(openTimingPrefix(54 * 60_000 + 12_000)).toBe('Boarding');
+    expect(openTimingPrefix(15 * 60_000 + 1)).toBe('Boarding');
+    expect(openTimingPrefix(15 * 60_000)).toBe('Final call');
+    expect(openTimingPrefix(42_000)).toBe('Final call');
+    expect(openTimingPrefix(0)).toBe('Boarding');
+    expect(closedTimingText('9:00 AM')).toBe('Gate closed 9:00 AM');
+  });
 });

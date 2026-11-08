@@ -1,8 +1,8 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { router, Stack, useLocalSearchParams, usePreventRemove } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Platform, Pressable, ScrollView, StyleSheet, View, useWindowDimensions, type StyleProp, type ViewStyle } from 'react-native';
-import { createPact } from '@/api/rpc';
+import { Alert, Platform, Pressable, ScrollView, StyleSheet, Switch, View, useWindowDimensions, type StyleProp, type ViewStyle } from 'react-native';
+import { createPact, setPactSeason } from '@/api/rpc';
 import {
   Button,
   Card,
@@ -26,6 +26,7 @@ import {
   activeQuickPick,
   applyQuickPick,
   describeWindow,
+  draftSeason,
   draftWindowOpen,
   isDraftDirty,
   offsetLabel,
@@ -37,6 +38,7 @@ import {
   type WizardDraft,
 } from '@/features/pact/wizard';
 import { searchTimeZones, timeZoneDisplayName, timeZoneOffsetLabel, timeZoneOptions } from '@/features/shared/timeZones';
+import { seasonSummary } from '@/features/stats/season';
 import { userMessage } from '@/lib/errors';
 import { centsToDecimalString, formatCents, parseDollarsToCents } from '@/lib/money';
 import { describeDays, deviceTimeZone, displayMinutes, formatDateInZone, formatTimeInZone, nextOccurrence, toPgTime } from '@/lib/time';
@@ -99,6 +101,7 @@ export default function NewPactWizard() {
   }, [draft.days, draft.deadline, draft.tz, whenErrors.tz]);
 
   const stakeCents = parseDollarsToCents(draft.dollars);
+  const season = draftSeason(draft, Date.now());
 
   const next = async () => {
     setTouched(true);
@@ -125,8 +128,18 @@ export default function NewPactWizard() {
         stakeCents: stakeCents!,
         tz: draft.tz,
       });
+      // the season is a second call: a failure there must not lose the pact that was just created
+      let seasonNote = '';
+      const season = draftSeason(draft, Date.now());
+      if (season) {
+        try {
+          await setPactSeason(pactId, season.start, season.weeks);
+        } catch {
+          seasonNote = " The season didn't start; you can start it from the pact.";
+        }
+      }
       await qc.invalidateQueries({ queryKey: ['group', groupId] });
-      toast.show({ message: 'Pact created. Now set your place.', tone: 'success', icon: 'checkmark' });
+      toast.show({ message: `Pact created. Now set your place.${seasonNote}`, tone: seasonNote ? 'neutral' : 'success', icon: 'checkmark' });
       // lift the dismiss guard first (usePreventRemove's effect runs before the one below), then leave
       setLeaving(true);
       setDestination(`/pacts/${pactId}/place`);
@@ -302,12 +315,38 @@ export default function NewPactWizard() {
             ))}
           </View>
 
+          <ListGroup footer={season ? `${seasonSummary(season)}. At the finish line everyone sees who showed up most, who had the longest streak and who came out ahead.` : 'Four weeks with a finish line and a recap. You can start or end a season any time from the pact.'}>
+            <ListRow
+              title="Run as a 4-week season starting Monday"
+              onPress={() => {
+                haptic('selection');
+                patch({ season: !draft.season });
+              }}
+              accessibilityLabel={`Run as a 4-week season starting Monday, ${draft.season ? 'on' : 'off'}`}
+              accessibilityHint="Toggles the season"
+              trailing={
+                <Switch
+                  value={draft.season}
+                  onValueChange={(season) => {
+                    haptic('selection');
+                    patch({ season });
+                  }}
+                  accessibilityLabel="Run as a 4-week season starting Monday"
+                  trackColor={{ true: colors.tint }}
+                  ios_backgroundColor={colors.fillStrong}
+                  {...(Platform.OS === 'web' ? { thumbColor: colors.surfaceElevated, activeThumbColor: colors.surfaceElevated } : {})}
+                />
+              }
+            />
+          </ListGroup>
+
           <Card accessibilityLabel="Summary">
             <Text variant="headline">{draft.title.trim() || 'Your pact'}</Text>
             <Text variant="body">
               {describeDays(draft.days)}, {describeWindow(Math.max(0, windowOpen), draft.deadline)}
             </Text>
             <Text variant="body">Pledge {stakeCents !== null ? formatCents(stakeCents) : '—'} per missed day</Text>
+            {season ? <Text variant="body">{seasonSummary(season)}</Text> : null}
             <Text variant="footnote" color="secondary">
               Miss a day and your pledge is forfeited to the pool, which is split among everyone who showed up. If nobody
               shows up, the pool carries over. Balances settle up weekly on Venmo.

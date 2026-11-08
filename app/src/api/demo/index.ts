@@ -11,6 +11,7 @@ import { DbError, userMessage } from '../../lib/errors';
 import { summarizeInstance } from '../../lib/instanceStatus';
 import { OPEN_OBLIGATION_STATUSES } from '../../lib/obligations';
 import { derivePlaceState, effectivePlaceAt, haversineM, nextWindow, placeForWindow } from '../../lib/places';
+import { gateClosePollInterval } from '../../lib/gatePoll';
 import { localDateInZone } from '../../lib/time';
 import type {
   Feed,
@@ -24,8 +25,10 @@ import type {
   TodayItem,
 } from '../queries';
 import type { CreatePactInput, JoinPactInput, OpenReviewInput } from '../rpc';
-import type { CheckinRow, PactParticipantPlaceRow, PactPlaceVisibleRow, PlaceDistanceRow, PlaceEventKind, ProfileRow } from '../types';
-import { DEMO_T0, EMPTY_GROUP_ID, GROUP_ID, INVITE_CODE, SETTLE_VARIANTS, store } from './fixtures';
+import type { CheckinRow, GroupSettlementStatsRow, InstanceMemberNetRow, PactInstanceRow, PactParticipantPlaceRow, PactPlaceVisibleRow, PactSeasonRecapRow, PactStreakRow, PlaceDistanceRow, PlaceEventKind, ProfileRow, ResultRow } from '../types';
+import type { GroupStats, PactStats } from '../statsQueries';
+import { seasonEnd, seasonOf } from '../../features/stats/season';
+import { DEMO_T0, EMPTY_GROUP_ID, GROUP_ID, INSTANCES, INVITE_CODE, SETTLE_VARIANTS, netsFor, outcomeResults, store } from './fixtures';
 import { DEMO, DEMO_USER_ID, demoKey, demoSettingsFromParams, getDemoSettings, setDemoSettings, type DemoSettings } from './settings';
 
 export { DEMO, DEMO_USER_ID, getDemoSettings, type DemoSettings } from './settings';
@@ -50,7 +53,7 @@ const PROFILE_DEPENDENT_KEYS = (userId: string) => [['profile', userId], ['group
 export function useDemoSettings(): DemoSettings {
   const params = useGlobalSearchParams<Record<string, string | string[]>>();
   const settings = demoSettingsFromParams(params as Record<string, string | string[] | undefined>);
-  useEffect(() => setDemoSettings(settings), [settings.verdict, settings.empty, settings.state, settings.perm, settings.signedOut, settings.freeze, settings.settle, settings.fix, settings.precise, settings.budget, settings.skew]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => setDemoSettings(settings), [settings.verdict, settings.empty, settings.state, settings.perm, settings.signedOut, settings.freeze, settings.settle, settings.fix, settings.precise, settings.budget, settings.skew, settings.outcome]); // eslint-disable-line react-hooks/exhaustive-deps
   return settings;
 }
 
@@ -236,13 +239,14 @@ export function useGroupHome(groupId: string, userId: string, enabled = true) {
         seen.add(instance.pact_id);
         const pact = pacts.find((p) => p.id === instance.pact_id)!;
         const participantIds = store.participants.filter((p) => p.pact_id === pact.id && !p.left_at).map((p) => p.user_id);
+        const view = instanceView(instance, s);
         const summary = summarizeInstance({
           participantIds,
-          deadlineAt: instance.deadline_at,
-          checkins: store.checkins.filter((c) => c.instance_id === instance.id),
-          results: store.results.filter((r) => r.instance_id === instance.id),
+          deadlineAt: view.instance.deadline_at,
+          checkins: view.checkins,
+          results: view.results,
         });
-        today.push({ instance, pact, participantIds, summary, myState: summary.byUser[userId] ?? null });
+        today.push({ instance: view.instance, pact, participantIds, summary, myState: summary.byUser[userId] ?? null });
       }
       today.sort((a, b) => Date.parse(a.instance.deadline_at) - Date.parse(b.instance.deadline_at));
       const joined = new Set(store.participants.filter((p) => p.user_id === userId && !p.left_at).map((p) => p.pact_id));
@@ -304,7 +308,8 @@ export function useInstanceDetail(instanceId: string, userId: string) {
     queryKey: [...queryKeys.instance(instanceId), demoKey(s)],
     queryFn: async (): Promise<InstanceDetail> => {
       await gate(s);
-      const instance = store.instances.find((i) => i.id === instanceId) ?? store.instances[0]!;
+      const base = store.instances.find((i) => i.id === instanceId) ?? store.instances[0]!;
+      const { instance, results, checkins, nets } = instanceView(base, s);
       const pact = store.pacts.find((p) => p.id === instance.pact_id)!;
       const mine = store.participants.find((p) => p.pact_id === pact.id && p.user_id === userId && !p.left_at) ?? null;
       const history = store.placeHistory.filter((p) => p.pact_id === pact.id && p.user_id === userId);
@@ -313,14 +318,57 @@ export function useInstanceDetail(instanceId: string, userId: string) {
         pact,
         myPlace: mine,
         judgedPlace: mine ? placeForWindow(history, instance.window_open_at, mine) : null,
-        myCheckins: store.checkins
-          .filter((c) => c.instance_id === instanceId && c.user_id === userId)
-          .sort((a, b) => Date.parse(a.server_received_at) - Date.parse(b.server_received_at)),
-        myResult: store.results.find((r) => r.instance_id === instanceId && r.user_id === userId) ?? null,
-        myFreeze: store.freezes.find((f) => f.instance_id === instanceId && f.user_id === userId) ?? null,
+        myCheckins: checkins.filter((c) => c.user_id === userId).sort((a, b) => Date.parse(a.server_received_at) - Date.parse(b.server_received_at)),
+        myResult: results.find((r) => r.user_id === userId) ?? null,
+        myFreeze:
+          s.outcome === 'frozen' && instanceId === INSTANCES.closed
+            ? { id: 'f-demo', pact_id: pact.id, user_id: userId, instance_id: instanceId, declared_at: new Date(DEMO_T0 - 14 * 3_600_000).toISOString(), iso_week: '2026-W45' }
+            : (store.freezes.find((f) => f.instance_id === instanceId && f.user_id === userId) ?? null),
+        results,
+        profiles: profileMap(),
+        nets,
       };
     },
+    refetchInterval: (query) => gateClosePollInterval(query.state.data, Date.now()),
   });
+}
+
+/** The group home's compact gate-close line: the ledger effect of one closed day. */
+export function useInstanceNets(instanceId: string, enabled = true) {
+  const s = useDemoSettings();
+  return useQuery({
+    queryKey: [...queryKeys.instance(instanceId), 'nets', demoKey(s)],
+    enabled,
+    queryFn: async (): Promise<InstanceMemberNetRow[]> => {
+      await gate(s);
+      const base = store.instances.find((i) => i.id === instanceId);
+      return base ? instanceView(base, s).nets : [];
+    },
+  });
+}
+
+/**
+ * One instance as the demo params want it shown: ?state=gate-closed pushes the open instance a
+ * minute past its deadline with nothing posted (tallying); ?outcome= rewrites today's closed
+ * instance's results (and, for the outcomes where you did not tap, drops your taps). Nets are the
+ * payout rule applied to whatever results are shown (the server's view, in demo).
+ */
+function instanceView(base: PactInstanceRow, s: DemoSettings): { instance: PactInstanceRow; results: ResultRow[]; checkins: CheckinRow[]; nets: InstanceMemberNetRow[] } {
+  let instance = base;
+  let results = store.results.filter((r) => r.instance_id === base.id);
+  let checkins = store.checkins.filter((c) => c.instance_id === base.id);
+  if (s.state === 'gate-closed' && base.id === INSTANCES.open) {
+    const deadline = DEMO_T0 - 70_000;
+    instance = { ...base, window_open_at: new Date(deadline - 3_600_000).toISOString(), deadline_at: new Date(deadline).toISOString(), deadline_soon_sent_at: new Date(deadline - 900_000).toISOString() };
+    results = [];
+  } else if (s.outcome !== 'fixture' && base.id === INSTANCES.closed) {
+    results = outcomeResults(s.outcome);
+    if (s.outcome === 'void') instance = { ...base, status: 'voided', carry_in_cents: null };
+    if (s.outcome !== 'win') checkins = checkins.filter((c) => c.user_id !== DEMO_USER_ID);
+  }
+  const pact = store.pacts.find((p) => p.id === instance.pact_id);
+  const nets = instance.status === 'closed' || instance.status === 'settled' ? netsFor(instance, results, pact?.stake_cents ?? 0, pact?.group_id) : [];
+  return { instance, results, checkins, nets };
 }
 
 export const FEED_DAYS = 28;
@@ -628,3 +676,124 @@ export const demoRoutes = {
   inviteCode: INVITE_CODE,
   anchoredAt: DEMO_T0,
 };
+
+// ---------- seasons, streaks and settle-up completion (Q2; mirrors 20261108000700_seasons.sql) ----------
+
+export const setPactSeason = async (pactId: string, start: string | null, weeks: number | null): Promise<undefined> => {
+  await gate(getDemoSettings());
+  const p = store.pacts.find((x) => x.id === pactId);
+  if (!p) throw new DbError({ message: 'pact not found', code: 'P0002' });
+  if ((start === null) !== (weeks === null)) throw new DbError({ message: 'a season needs both a start date and a length in weeks, or neither', code: '22023' });
+  if (weeks !== null && (weeks < 1 || weeks > 12)) throw new DbError({ message: 'a season runs between 1 and 12 weeks', code: '23514' });
+  p.season_start = start;
+  p.season_weeks = weeks;
+  return undefined;
+};
+
+const closedInstancesOf = (pactId: string) =>
+  store.instances.filter((i) => i.pact_id === pactId && (i.status === 'closed' || i.status === 'settled'));
+
+/** `pact_streaks` over the fixtures: success extends, frozen is neutral, missed / unverified break, voided days ignored. */
+function demoStreaks(pactId: string): PactStreakRow[] {
+  const dateOf = new Map(closedInstancesOf(pactId).map((i) => [i.id, i.local_date]));
+  const perUser = new Map<string, { date: string; success: boolean }[]>();
+  for (const r of store.results) {
+    const date = dateOf.get(r.instance_id);
+    if (!date || (r.status !== 'success' && r.status !== 'failed' && r.status !== 'unverified')) continue;
+    const list = perUser.get(r.user_id) ?? [];
+    list.push({ date, success: r.status === 'success' });
+    perUser.set(r.user_id, list);
+  }
+  return [...perUser.entries()].map(([user_id, days]) => {
+    let current = 0;
+    let best = 0;
+    for (const d of days.sort((a, b) => a.date.localeCompare(b.date))) {
+      current = d.success ? current + 1 : 0;
+      best = Math.max(best, current);
+    }
+    return { pact_id: pactId, user_id, current_streak: current, best_streak: best };
+  });
+}
+
+/** `pact_season_recaps` over the fixtures for one pact (empty without a season). */
+function demoRecaps(pactId: string): PactSeasonRecapRow[] {
+  const pact = store.pacts.find((p) => p.id === pactId);
+  const season = pact ? seasonOf(pact) : null;
+  if (!pact || !season) return [];
+  const end = seasonEnd(season);
+  const insts = closedInstancesOf(pactId).filter((i) => i.local_date >= season.start && i.local_date <= end);
+  const rows = new Map<string, PactSeasonRecapRow>();
+  const rowFor = (user_id: string) => {
+    let r = rows.get(user_id);
+    if (!r) {
+      r = { pact_id: pactId, user_id, season_start: season.start, season_end: end, days: 0, showed_up: 0, missed: 0, unverified: 0, frozen: 0, net_cents: 0 };
+      rows.set(user_id, r);
+    }
+    return r;
+  };
+  for (const inst of insts) {
+    for (const res of store.results.filter((r) => r.instance_id === inst.id)) {
+      const r = rowFor(res.user_id);
+      if (res.status === 'success') (r.days += 1), (r.showed_up += 1);
+      else if (res.status === 'failed') (r.days += 1), (r.missed += 1);
+      else if (res.status === 'unverified') (r.days += 1), (r.unverified += 1);
+      else if (res.status === 'frozen') (r.days += 1), (r.frozen += 1);
+    }
+    for (const n of netsFor(inst, store.results.filter((r) => r.instance_id === inst.id), pact.stake_cents)) rowFor(n.user_id).net_cents += n.net_cents;
+  }
+  return [...rows.values()];
+}
+
+/** `group_settlement_stats` over the fixtures (the `ov-` rows exist only for the `?settle=owe` variant). */
+function demoSettlementStats(groupId: string): GroupSettlementStatsRow {
+  const obligations = store.obligations.filter((o) => o.group_id === groupId && !o.id.startsWith('ov-'));
+  const created = obligations.filter((o) => o.status !== 'superseded').length;
+  const confirmed = obligations.filter((o) => o.status === 'confirmed').length;
+  const settlements = store.settlements.filter((s) => s.group_id === groupId);
+  return {
+    group_id: groupId,
+    obligations_created: created,
+    obligations_confirmed: confirmed,
+    completion_rate: created === 0 ? null : Math.round((confirmed / created) * 10_000) / 10_000,
+    weeks_settled: settlements.length,
+    last_settled_week: settlements.map((s) => s.week_start).sort().at(-1) ?? null,
+  };
+}
+
+export function useGroupStats(groupId: string) {
+  const s = useDemoSettings();
+  return useQuery({
+    queryKey: ['group', groupId, 'stats', demoKey(s)],
+    queryFn: async (): Promise<GroupStats> => {
+      await gate(s);
+      const profiles = profileMap();
+      if (isEmptyGroup(groupId, s)) {
+        const members = store.members.filter((m) => m.group_id === EMPTY_GROUP_ID);
+        return { stats: demoSettlementStats(EMPTY_GROUP_ID), pacts: [], members, profiles, recaps: [], streaks: [], hasClosedDays: false };
+      }
+      const pacts = store.pacts.filter((p) => p.group_id === GROUP_ID);
+      return {
+        stats: demoSettlementStats(GROUP_ID),
+        pacts,
+        members: store.members.filter((m) => m.group_id === GROUP_ID && !m.left_at),
+        profiles,
+        recaps: pacts.flatMap((p) => demoRecaps(p.id)),
+        streaks: pacts.flatMap((p) => demoStreaks(p.id)),
+        hasClosedDays: pacts.some((p) => closedInstancesOf(p.id).length > 0),
+      };
+    },
+  });
+}
+
+export function usePactStats(pactId: string, enabled = true) {
+  const s = useDemoSettings();
+  return useQuery({
+    queryKey: ['pact', pactId, 'stats', demoKey(s)],
+    enabled,
+    queryFn: async (): Promise<PactStats> => {
+      await gate(s);
+      if (s.empty) return { streaks: [], recaps: [] };
+      return { streaks: demoStreaks(pactId), recaps: demoRecaps(pactId) };
+    },
+  });
+}

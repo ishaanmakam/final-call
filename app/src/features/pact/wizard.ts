@@ -3,7 +3,8 @@
  * picks and the window-open presets. The screen only renders what these return.
  */
 import { MAX_STAKE_CENTS, MIN_STAKE_CENTS, formatCents, parseDollarsToCents } from '../../lib/money';
-import { displayMinutes, isValidTimeZone } from '../../lib/time';
+import { displayMinutes, isValidTimeZone, localDateInZone } from '../../lib/time';
+import { DEFAULT_SEASON_WEEKS, nextMonday, type Season } from '../stats/season';
 
 export type QuickPick = 'weekdays' | 'weekends' | 'everyday';
 
@@ -117,6 +118,8 @@ export interface WizardDraft {
   customOpen: number;
   tz: string;
   dollars: string;
+  /** run the pact as a 4-week season from the coming Monday (set_pact_season right after create_pact) */
+  season: boolean;
 }
 
 export const DEFAULT_DRAFT: WizardDraft = {
@@ -127,7 +130,14 @@ export const DEFAULT_DRAFT: WizardDraft = {
   customOpen: 8 * 60,
   tz: '',
   dollars: '5.00',
+  season: false,
 };
+
+/** The season a wizard draft asks for: 4 weeks from the coming Monday in the pact's zone, or none. */
+export function draftSeason(d: Pick<WizardDraft, 'season' | 'tz'>, nowMs: number): Season | null {
+  if (!d.season || !isValidTimeZone(d.tz)) return null;
+  return { start: nextMonday(localDateInZone(nowMs, d.tz)), weeks: DEFAULT_SEASON_WEEKS };
+}
 
 export const draftWindowOpen = (d: WizardDraft): number =>
   d.windowOffset === null ? d.customOpen : windowOpenMinutes(d.deadline, d.windowOffset);
@@ -140,6 +150,7 @@ export function isDraftDirty(d: WizardDraft): boolean {
     d.deadline !== DEFAULT_DRAFT.deadline ||
     d.windowOffset !== DEFAULT_DRAFT.windowOffset ||
     (d.windowOffset === null && d.customOpen !== DEFAULT_DRAFT.customOpen) ||
-    d.dollars !== DEFAULT_DRAFT.dollars
+    d.dollars !== DEFAULT_DRAFT.dollars ||
+    d.season !== DEFAULT_DRAFT.season
   );
 }

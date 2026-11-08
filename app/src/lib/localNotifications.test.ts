@@ -42,13 +42,13 @@ describe('planLocalNotifications: what gets scheduled', () => {
     expect(p.schedule.map((n) => n.identifier)).toEqual([`${BOARDING_PREFIX}i1`, `${FINAL_PREFIX}i1`]);
     const [boarding, final] = p.schedule;
     expect(boarding!.at).toBe(T + H);
-    expect(boarding!.title).toBe('Boarding for 9am class');
+    expect(boarding!.title).toBe('Boarding: 9am class');
     expect(boarding!.body).toBe('Check in by 9:00 AM.');
     expect(boarding!.url).toBe('/checkin/i1');
     expect(final!.at).toBe(T + 2 * H - FINAL_CALL_LEAD_MS);
     expect(FINAL_CALL_LEAD_MS).toBe(15 * 60_000);
-    expect(final!.title).toBe('Final call: 15 minutes left for 9am class');
-    expect(final!.body).toBe('Check in by 9:00 AM.');
+    expect(final!.title).toBe('Final call: 9am class');
+    expect(final!.body).toBe('15 minutes left to check in.');
     expect(final!.url).toBe('/checkin/i1');
   });
 

@@ -17,16 +17,22 @@
  *   ?budget=N       N unverified days this month in this pact (0-9; the check-in screen's budget line)
  *   ?skew=S         the phone's clock is S seconds off the server (negative = ahead); the check-in screen's
  *                   clock-skew notice shows past 120 s
+ *   ?state=gate-closed   the open instance is a minute past its deadline and the server has not closed it yet
+ *                   (the check-in screen's "Gate closed · tallying…" card); queries otherwise work
+ *   ?outcome=win|forfeit|unverified|frozen|void   what today's closed instance (i-closed) did to you: results
+ *                   and ledger nets are rewritten so the gate-close card shows that outcome
  */
 import type { CheckinVerdict } from '../types';
 
 export const DEMO = process.env.EXPO_PUBLIC_DEMO === '1';
 export const DEMO_USER_ID = 'demo-user';
 
-export type DemoNetworkState = 'ok' | 'offline' | 'error' | 'queued';
+export type DemoNetworkState = 'ok' | 'offline' | 'error' | 'queued' | 'gate-closed';
 export type DemoPermission = 'granted' | 'denied' | 'blocked';
 export type DemoSettleVariant = 'mixed' | 'owe' | 'owed';
 export type DemoFix = 'ok' | 'none';
+/** the gate-close card's outcome on today's closed instance; 'fixture' keeps the fixture results */
+export type DemoOutcome = 'fixture' | 'win' | 'forfeit' | 'unverified' | 'frozen' | 'void';
 
 export interface DemoSettings {
   verdict: CheckinVerdict;
@@ -43,6 +49,8 @@ export interface DemoSettings {
   budget: number;
   /** seconds the server is ahead of the phone (negative = phone ahead); the clock-skew notice */
   skew: number;
+  /** what today's closed instance did to you (the gate-close card and the group home's compact line) */
+  outcome: DemoOutcome;
 }
 
 export const DEFAULT_DEMO_SETTINGS: DemoSettings = {
@@ -57,13 +65,15 @@ export const DEFAULT_DEMO_SETTINGS: DemoSettings = {
   precise: true,
   budget: 0,
   skew: 0,
+  outcome: 'fixture',
 };
 
 const VERDICTS: readonly CheckinVerdict[] = ['in_fence', 'out_of_fence', 'unjudgeable', 'rejected_simulated'];
-const STATES: readonly DemoNetworkState[] = ['ok', 'offline', 'error', 'queued'];
+const STATES: readonly DemoNetworkState[] = ['ok', 'offline', 'error', 'queued', 'gate-closed'];
 const PERMS: readonly DemoPermission[] = ['granted', 'denied', 'blocked'];
 const SETTLES: readonly DemoSettleVariant[] = ['mixed', 'owe', 'owed'];
 const FIXES: readonly DemoFix[] = ['ok', 'none'];
+const OUTCOMES: readonly DemoOutcome[] = ['fixture', 'win', 'forfeit', 'unverified', 'frozen', 'void'];
 
 type Params = Record<string, string | string[] | undefined>;
 
@@ -98,6 +108,7 @@ export function demoSettingsFromParams(params: Params): DemoSettings {
     precise: one(params.precise) !== '0' && one(params.precise) !== 'false',
     budget: digit(params.budget, DEFAULT_DEMO_SETTINGS.budget),
     skew: seconds(params.skew, DEFAULT_DEMO_SETTINGS.skew),
+    outcome: pick(params.outcome, OUTCOMES, DEFAULT_DEMO_SETTINGS.outcome),
   };
 }
 
@@ -119,7 +130,8 @@ export function setDemoSettings(next: DemoSettings): void {
     next.fix === current.fix &&
     next.precise === current.precise &&
     next.budget === current.budget &&
-    next.skew === current.skew
+    next.skew === current.skew &&
+    next.outcome === current.outcome
   ) {
     return;
   }
@@ -133,4 +145,4 @@ export function subscribeDemoSettings(listener: (s: DemoSettings) => void): () =
 }
 
 /** Stable cache-key fragment so TanStack Query refetches when the demo scenario changes. */
-export const demoKey = (s: DemoSettings): string => `${s.empty ? 'empty' : 'full'}:${s.state}:${s.settle}`;
+export const demoKey = (s: DemoSettings): string => `${s.empty ? 'empty' : 'full'}:${s.state}:${s.settle}:${s.outcome}`;

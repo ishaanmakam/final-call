@@ -10,6 +10,7 @@ import type {
   FreezeRow,
   GroupMemberRow,
   GroupRow,
+  InstanceMemberNetRow,
   MemberBalanceRow,
   ObligationRow,
   PactInstanceRow,
@@ -475,6 +476,36 @@ export const SETTLE_VARIANTS: Record<'mixed' | 'owe' | 'owed', { obligationIds: 
   owed: { obligationIds: ['o1', 'o2', 'o3'], balances },
 };
 
+// ---------- seasons and settle-up history (Q2) ----------
+
+/** "9am in Kane Hall" runs a 4-week season that started two Mondays ago: week 3 of 4 on the Stats screen. */
+export const SEASON_START = addDaysToLocalDate(THIS_MONDAY, -14);
+{
+  const p = pacts.find((x) => x.id === PACTS.classA)!;
+  p.season_start = SEASON_START;
+  p.season_weeks = 4;
+}
+
+/**
+ * Four older settle-ups, every obligation confirmed: with the five open rows above the group's
+ * settle-up completion reads 17 of 21 (81%). Confirmed rows never show on the settle-up screen.
+ */
+export const OLDER_SETTLEMENT_IDS = ['s-w3', 's-w4', 's-w5', 's-w6'] as const;
+OLDER_SETTLEMENT_IDS.forEach((id, i) => {
+  const weekStart = addDaysToLocalDate(LAST_MONDAY, -7 * (i + 2));
+  settlements.push({ id, group_id: GROUP_ID, week_start: weekStart, ran_at: iso(zonedLocalToUtc(addDaysToLocalDate(weekStart, 7), '12:00:00', TZ)) });
+  const pairs: [string, string, number][] = [
+    [USERS.diego, USERS.you, 500 + 25 * i],
+    [USERS.priya, USERS.maya, 300],
+    [USERS.diego, USERS.maya, 200 + 50 * i],
+    [USERS.you, USERS.priya, 150],
+  ];
+  pairs.forEach(([from, to, amount], j) => {
+    const paidAt = (i + 2) * 7 * DAY - (j + 1) * HOUR;
+    obligations.push({ id: `${id}-o${j + 1}`, settlement_id: id, group_id: GROUP_ID, from_user: from, to_user: to, amount_cents: amount, status: 'confirmed', marked_paid_at: ago(paidAt), confirmed_at: ago(paidAt - 30 * MIN) });
+  });
+});
+
 // ---------- the mutable store ----------
 
 export interface DemoStore {
@@ -520,3 +551,59 @@ export function createStore(): DemoStore {
 }
 
 export const store: DemoStore = createStore();
+
+// ---------- the ledger's view of one day (demo stand-in for `instance_member_nets`) ----------
+
+/**
+ * What the server's `instance_member_nets` view would return for an instance: the payout rule
+ * (CONTRACT.md "Payout") applied to its results. Demo only; the app never computes money for real
+ * data, it reads this view from the ledger.
+ */
+export function netsFor(instance: PactInstanceRow, results: readonly ResultRow[], stakeCents: number, groupId = GROUP_ID): InstanceMemberNetRow[] {
+  if (instance.status === 'voided') return [];
+  const winners = results
+    .filter((r) => r.status === 'success')
+    .sort((a, b) => {
+      const ta = a.first_success_at ? Date.parse(a.first_success_at) : Number.POSITIVE_INFINITY;
+      const tb = b.first_success_at ? Date.parse(b.first_success_at) : Number.POSITIVE_INFINITY;
+      return ta - tb || a.user_id.localeCompare(b.user_id);
+    });
+  const losers = results.filter((r) => r.status === 'failed');
+  if (winners.length + losers.length < 2) return [];
+  const carry = winners.length > 0 ? (instance.carry_in_cents ?? 0) : 0;
+  const pot = stakeCents * losers.length + carry;
+  const row = (user_id: string, net_cents: number): InstanceMemberNetRow => ({ instance_id: instance.id, group_id: groupId, user_id, net_cents, pot_cents: pot });
+  const out = losers.map((l) => row(l.user_id, -stakeCents));
+  if (winners.length === 0) return out; // all failed: the pot rolls into the carry
+  const share = Math.floor(pot / winners.length);
+  const left = pot % winners.length;
+  winners.forEach((w, i) => {
+    const amount = share + (i < left ? 1 : 0);
+    if (amount !== 0) out.push(row(w.user_id, amount));
+  });
+  return out;
+}
+
+/** The roster of today's closed fixture instance, in `?outcome=` variants (DECISIONS.md Q1). */
+export function outcomeResults(outcome: 'win' | 'forfeit' | 'unverified' | 'frozen' | 'void'): ResultRow[] {
+  const decided = ago(2 * HOUR + 14 * MIN);
+  const r = (user_id: string, status: ResultRow['status'], successMinutesAgo: number | null = null): ResultRow => ({
+    instance_id: INSTANCES.closed,
+    user_id,
+    status,
+    first_success_at: successMinutesAgo === null ? null : ago(successMinutesAgo * MIN),
+    decided_at: decided,
+  });
+  switch (outcome) {
+    case 'win':
+      return [r(USERS.you, 'success', 160), r(USERS.maya, 'success', 150), r(USERS.diego, 'failed'), r(USERS.priya, 'failed')];
+    case 'forfeit':
+      return [r(USERS.you, 'failed'), r(USERS.maya, 'success', 160), r(USERS.diego, 'success', 150), r(USERS.priya, 'success', 140)];
+    case 'unverified':
+      return [r(USERS.you, 'unverified'), r(USERS.maya, 'success', 160), r(USERS.diego, 'failed'), r(USERS.priya, 'success', 150)];
+    case 'frozen':
+      return [r(USERS.you, 'frozen'), r(USERS.maya, 'success', 160), r(USERS.diego, 'failed'), r(USERS.priya, 'unverified')];
+    case 'void':
+      return [r(USERS.you, 'void'), r(USERS.maya, 'void'), r(USERS.diego, 'void'), r(USERS.priya, 'void')];
+  }
+}

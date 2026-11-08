@@ -115,7 +115,7 @@ Route params steer the scenario (web: the URL query; native: any `router.push` w
 | `?budget=N` | N unverified days this month in the open instance's pact (0-9): the check-in screen's "N unverified this month" line |
 | `?skew=S` | the phone's clock is S seconds off the server (negative = phone ahead): past 120 s the check-in screen shows the clock-skew notice |
 
-Demo ids: group `g1` (empty group `g-empty`), pacts `p1`..`p6` (`p5` "Chem lab by 2" is one you are not in; `p6` "Lab notebook by noon" is today's Missed day of yours, `i-missed`, with no review yet), today's instances `i-open`, `i-before`, `i-closed`, `i-void`, `i-frozen`, `i-notin`, `i-missed`, invite code `KANE9AM`.
+Demo ids: group `g1` (empty group `g-empty`; `/groups/g1/stats` is the Stats screen: settle-up completion 17 of 21, `p1` in week 3 of a 4-week season, streaks per pact; `?empty=1` shows its empty state), pacts `p1`..`p6` (`p5` "Chem lab by 2" is one you are not in; `p6` "Lab notebook by noon" is today's Missed day of yours, `i-missed`, with no review yet), today's instances `i-open`, `i-before`, `i-closed`, `i-void`, `i-frozen`, `i-notin`, `i-missed`, invite code `KANE9AM`.
 
 ## Screenshots
 
@@ -142,7 +142,7 @@ src/app/                 expo-router routes (layout and data only; copy and stat
   auth-callback.tsx      finalcall://auth-callback?code=... (magic link landing)
   legal/privacy.tsx, legal/terms.tsx   static legal text (src/features/legal/content.ts; the same words as ../docs/legal/*.md)
   (app)/_layout.tsx      signed-in guard, push registration, offline queue runner, queue toasts
-  (app)/groups/...       list, create/join, group home, feed, settle-up (route name `ledger`), pact wizard
+  (app)/groups/...       list, create/join, group home, feed, settle-up (route name `ledger`), stats (settle-up completion, seasons, streaks), pact wizard
   (app)/pacts/[pactId]/  pact detail, per-person place picker
   (app)/checkin/[id]     the check-in moment (ring, button, verdict panel)
   (app)/join/[code]      finalcall://join/<code> invite links
@@ -161,11 +161,13 @@ src/features/            per-screen logic with no React Native imports, so it is
   place/                 place-change lock rules, radius detents and labels
   settings/              profile autosave patch, destructive confirm (alert on iOS, confirm on web)
   settle/                headline, subline, pills and week split for settle-up
+  stats/                 season window and progress copy, recap sentences, streak copy, settle-up completion copy; SeasonCard, SeasonSheet, DatePicker
   shared/                time zones with friendly names (one list for the group and pact pickers)
 src/api/
   types.ts               hand-written row types + Database type matching CONTRACT.md
   rpc.ts                 typed wrapper for every client RPC (exact names)
   queries.ts             TanStack Query hooks: my groups, group home, pact, instance, feed, ledger
+  statsQueries.ts        the Stats screen's hooks: group_settlement_stats, pact_season_recaps, pact_streaks
   supabase.ts            client with Keychain (secure-store) session storage, chunked (secureChunks.ts)
   demo/                  EXPO_PUBLIC_DEMO=1 fixtures, settings (`?param` switches) and in-memory hooks/RPCs
 src/lib/                 pure logic (unit tested) + small RN adapters

@@ -57,6 +57,9 @@ export type PactRow = {
   paused: boolean;
   created_by: string;
   created_at: string;
+  /** 20261108000700_seasons.sql: an optional season, both set or both null (1..12 weeks from this local date) */
+  season_start?: string | null;
+  season_weeks?: number | null;
 };
 
 export type PactParticipantRow = {
@@ -324,6 +327,57 @@ export type MemberBalanceRow = {
   balance_cents: number;
 };
 
+/**
+ * `instance_member_nets` (20261108000800): what one instance did to each member's ledger, straight
+ * from `ledger_lines`. Only members whose lines sum to a non-zero amount have a row; `pot_cents` is
+ * everything paid into that instance's pot (forfeits plus carry drawn) and repeats on every row.
+ */
+export type InstanceMemberNetRow = {
+  instance_id: string;
+  group_id: string;
+  user_id: string;
+  net_cents: number;
+  pot_cents: number;
+};
+
+/**
+ * `pact_season_recaps` (20261108000700): per member, the closed/settled days whose local_date falls in
+ * the pact's season window, and that member's ledger net on those days (members + carry sum to zero).
+ */
+export type PactSeasonRecapRow = {
+  pact_id: string;
+  user_id: string;
+  season_start: string;
+  /** the last local date of the season (inclusive) */
+  season_end: string;
+  days: number;
+  showed_up: number;
+  missed: number;
+  unverified: number;
+  frozen: number;
+  net_cents: number;
+};
+
+/** `pact_streaks`: consecutive days showed up (frozen is neutral; missed / unverified break; voided days ignored). */
+export type PactStreakRow = {
+  pact_id: string;
+  user_id: string;
+  current_streak: number;
+  best_streak: number;
+};
+
+/** `group_settlement_stats`: obligations confirmed on Venmo out of those created (superseded rows excluded). */
+export type GroupSettlementStatsRow = {
+  group_id: string;
+  obligations_created: number;
+  obligations_confirmed: number;
+  /** confirmed / created to 4 places, null until an obligation exists; PostgREST may send numeric as a string */
+  completion_rate: number | string | null;
+  weeks_settled: number;
+  /** Monday of the last settled week, 'YYYY-MM-DD' */
+  last_settled_week: string | null;
+};
+
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 
 type Table<Row, Insert = Partial<Row>, Update = Partial<Row>> = {
@@ -389,6 +443,8 @@ export type RpcFunctions = {
   pact_place_distances: Fn<{ p_pact: string }, PlaceDistanceRow[]>;
   /** the caller only: leaves every group (leave rules apply), anonymizes the profile, erases the auth identity */
   delete_my_account: Fn<Record<string, never>, undefined>;
+  /** owner or pact creator: start a season (both set) or end it (both null); 1..12 weeks */
+  set_pact_season: Fn<{ p_pact: string; p_start: string | null; p_weeks: number | null }, undefined>;
 };
 
 export type RpcName = keyof RpcFunctions;
@@ -426,6 +482,10 @@ export type Database = {
       billable_member_balances: View<MemberBalanceRow>;
       pact_places_visible: View<PactPlaceVisibleRow>;
       unverified_month_counts: View<UnverifiedMonthCountRow>;
+      instance_member_nets: View<InstanceMemberNetRow>;
+      pact_season_recaps: View<PactSeasonRecapRow>;
+      pact_streaks: View<PactStreakRow>;
+      group_settlement_stats: View<GroupSettlementStatsRow>;
     };
     Functions: RpcFunctions;
     Enums: {

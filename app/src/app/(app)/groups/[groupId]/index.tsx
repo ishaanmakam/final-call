@@ -117,6 +117,7 @@ export default function GroupHome() {
 
   const goFeed = () => router.push(`/groups/${groupId}/feed`);
   const goSettle = () => router.push(`/groups/${groupId}/ledger`);
+  const goStats = () => router.push(`/groups/${groupId}/stats`);
 
   const openMenu = () => {
     if (Platform.OS === "ios") {
@@ -202,6 +203,13 @@ export default function GroupHome() {
             subtitle="Who owes whom, with Venmo links"
             chevron
             onPress={goSettle}
+          />
+          <ListRow
+            leading={<Icon name="chart.bar" size={20} color="tint" />}
+            title="Stats"
+            subtitle="Settle-up rate, seasons, streaks"
+            chevron
+            onPress={goStats}
           />
         </ListGroup>
 

@@ -170,6 +170,13 @@ const objectPlaceReal = (placeId: string, reason: string) =>
 /** Settings → Delete account. Refused (23514) while the caller is on an open check-in roster. */
 const deleteMyAccountReal = () => call('delete_my_account', {});
 
+/**
+ * Start a season (`start` 'YYYY-MM-DD' in the pact's zone, 1..12 weeks) or end it (both null).
+ * Owner or pact creator only (42501).
+ */
+const setPactSeasonReal = (pactId: string, start: string | null, weeks: number | null) =>
+  call('set_pact_season', { p_pact: pactId, p_start: start, p_weeks: weeks });
+
 // ---------- demo-mode switch ----------
 // With EXPO_PUBLIC_DEMO=1 every RPC resolves against the in-memory fixtures (see ./demo).
 
@@ -191,3 +198,4 @@ export const registerPushToken = DEMO ? demo.registerPushToken : registerPushTok
 export const acknowledgePlace = DEMO ? demo.acknowledgePlace : acknowledgePlaceReal;
 export const objectPlace = DEMO ? demo.objectPlace : objectPlaceReal;
 export const deleteMyAccount = DEMO ? demo.deleteMyAccount : deleteMyAccountReal;
+export const setPactSeason = DEMO ? demo.setPactSeason : setPactSeasonReal;

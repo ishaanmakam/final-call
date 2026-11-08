@@ -3,6 +3,7 @@ import { DbError } from '../lib/errors';
 import { OPEN_OBLIGATION_STATUSES } from '../lib/obligations';
 import { effectivePlaceAt, nextWindow, placeForWindow, type WindowPlace } from '../lib/places';
 import { summarizeInstance, type InstanceSummary, type MemberDayState } from '../lib/instanceStatus';
+import { gateClosePollInterval } from '../lib/gatePoll';
 import { localDateInZone, windowState } from '../lib/time';
 import * as demo from './demo';
 import { DEMO } from './demo/settings';
@@ -12,6 +13,7 @@ import type {
   FreezeRow,
   GroupMemberRow,
   GroupRow,
+  InstanceMemberNetRow,
   MemberBalanceRow,
   ObligationRow,
   PactInstanceRow,
@@ -309,14 +311,35 @@ export interface InstanceDetail {
   myCheckins: CheckinRow[];
   myResult: ResultRow | null;
   myFreeze: FreezeRow | null;
+  /** everyone's posted result for this day (empty until the gate closes); the roster once closed */
+  results: ResultRow[];
+  /** names for the people in `results` */
+  profiles: Map<string, ProfileRow>;
+  /** what this day did to each member's ledger, from `instance_member_nets` (empty = no pledge moved) */
+  nets: InstanceMemberNetRow[];
+}
+
+async function fetchInstanceNets(instanceId: string): Promise<InstanceMemberNetRow[]> {
+  return must(await supabase.from('instance_member_nets').select('*').eq('instance_id', instanceId));
+}
+
+/** The ledger effect of one closed day, for the group home's compact gate-close line. */
+function useInstanceNetsReal(instanceId: string, enabled = true) {
+  return useQuery({
+    queryKey: [...queryKeys.instance(instanceId), 'nets'],
+    enabled,
+    queryFn: () => fetchInstanceNets(instanceId),
+    staleTime: 60_000,
+  });
 }
 
 function useInstanceDetailReal(instanceId: string, userId: string) {
   return useQuery({
     queryKey: queryKeys.instance(instanceId),
+    refetchInterval: (query) => gateClosePollInterval(query.state.data, Date.now()),
     queryFn: async (): Promise<InstanceDetail> => {
       const instance = await supabase.from('pact_instances').select('*').eq('id', instanceId).single().then(must);
-      const [pact, places, history, myCheckins, results, freezes] = await Promise.all([
+      const [pact, places, history, myCheckins, results, freezes, nets] = await Promise.all([
         supabase.from('pacts').select('*').eq('id', instance.pact_id).single().then(must),
         supabase
           .from('pact_participants')
@@ -338,17 +361,22 @@ function useInstanceDetailReal(instanceId: string, userId: string) {
           .eq('user_id', userId)
           .order('server_received_at')
           .then(must),
-        supabase.from('results').select('*').eq('instance_id', instanceId).eq('user_id', userId).then(must),
+        supabase.from('results').select('*').eq('instance_id', instanceId).then(must),
         supabase.from('freezes').select('*').eq('instance_id', instanceId).eq('user_id', userId).then(must),
+        fetchInstanceNets(instanceId),
       ]);
+      const profiles = await fetchProfiles(results.map((r) => r.user_id));
       return {
         instance,
         pact,
         myPlace: places[0] ?? null,
         judgedPlace: places[0] ? placeForWindow(history, instance.window_open_at, places[0]) : null,
         myCheckins,
-        myResult: results[0] ?? null,
+        myResult: results.find((r) => r.user_id === userId) ?? null,
         myFreeze: freezes[0] ?? null,
+        results,
+        profiles,
+        nets,
       };
     },
   });
@@ -579,6 +607,7 @@ export const useGroupHome = DEMO ? demo.useGroupHome : useGroupHomeReal;
 export const usePactDetail = DEMO ? demo.usePactDetail : usePactDetailReal;
 export const usePlaceSchedule = DEMO ? demo.usePlaceSchedule : usePlaceScheduleReal;
 export const useInstanceDetail = DEMO ? demo.useInstanceDetail : useInstanceDetailReal;
+export const useInstanceNets = DEMO ? demo.useInstanceNets : useInstanceNetsReal;
 export const useFeed = DEMO ? demo.useFeed : useFeedReal;
 export const useLedger = DEMO ? demo.useLedger : useLedgerReal;
 export const useUnverifiedBudget = DEMO ? demo.useUnverifiedBudget : useUnverifiedBudgetReal;

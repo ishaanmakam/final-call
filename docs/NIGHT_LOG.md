@@ -34,5 +34,14 @@ Suites: db 251, rules 41, push-outbox 55, app 446; 138 screenshots.
 - P4: `.maestro/` flows + lint, `app/.eas/workflows/maestro.yml`, CI extended, `docs/TESTING.md`.
 Suites: db 21 files green, rules 42, push-outbox 57, app 496, scripts tsc, maestro lint ok; 146 screenshots.
 
+## Phase 3 — committed and pushed
+- Q1 voice: Boarding / Final call / Gate closed in push, local reminders, the check-in clock and TodayCard; `app/DESIGN.md` Voice section. Gate-close card shows result + money from the new `instance_member_nets` view (`20261108000800_instance_nets.sql`), 10 s polling up to 3 min, reveal spring + count-up, one haptic.
+- Q2 retention: `20261108000700_seasons.sql` (pacts.season_start/season_weeks, `set_pact_season`, views `pact_season_recaps`, `pact_streaks`, `group_settlement_stats`), Stats screen (settle-up completion = confirmed / created obligations), season card + sheet on pact detail, wizard season toggle, streak lines.
+Suites: db 23 files / 314, rules 42, push-outbox 57, app 533; 166 screenshots.
+Polish notes for phase 5: Stats recap shows negative nets in red (decision UB2 says neutral; red only for Missed); the completion card repeats "81%" twice.
+
+## In flight
+- W: web simulator in `web/` (Vite + React + motion, imports packages/rules), `.github/workflows/pages.yml`, README Pages URL.
+
 ## Next
-Phase 3: airport voice (Boarding / Final call / Gate closed), gate-close money moment with reveal motion, seasons + streaks + settlement completion stats. Then phase 4 web simulator, phase 5 verification + PR.
+Commit phase 4 when W reports; then phase 5 fresh verification agent (all suites incl. web, impeccable audit + review-animations on app and simulator with fresh screenshots, final money red-team, README/PLAN/DECISIONS updates), push, open PR night-1 → main with gh, finish NIGHT_LOG.

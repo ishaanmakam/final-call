@@ -184,49 +184,51 @@ function renderCopy(row: OutboxRow, p: Record<string, unknown>, now: Date): { ti
   const stake = num(p.stake_cents);
   const pledge = stake !== undefined && stake > 0 ? `${formatCents(stake)} pledge` : undefined;
 
+  // The airport voice (app/DESIGN.md "Voice"): exactly three moments, Boarding / Final call / Gate
+  // closed, are named in the title. Everything else stays plain.
   switch (row.kind) {
     case "window_open": {
-      const where = place ?? pact ?? "Your spot";
-      const when = time ? `${where} by ${time}.` : `${where}.`;
+      const at = place ? ` at ${place}` : "";
+      const when = time ? `Check in${at} by ${time}.` : place ? `Check in${at}.` : "Check in now.";
       return {
-        title: `Check-in open: ${pact ?? "your pact"}`,
+        title: `Boarding: ${pact ?? "your pact"}`,
         body: pledge ? `${when} ${pledge} on the line.` : when,
       };
     }
     case "deadline_soon": {
-      const where = place ?? pact ?? "Your pact";
-      const head = time ? `${where} by ${time}` : where;
+      const n = minutesLeft(p, now);
+      const left = `${n} minute${n === 1 ? "" : "s"} left to check in${place ? ` at ${place}` : ""}.`;
       return {
-        title: `${head} — ${minutesLeft(p, now)} min left`,
-        body: pledge ? `Check in now or forfeit your ${pledge}.` : "Check in now.",
+        title: `Final call: ${pact ?? "your pact"}`,
+        body: pledge ? `${left} Miss it and you forfeit your ${pledge}.` : left,
       };
     }
     case "result": {
-      const name = pact ?? "Your pact";
+      const title = `Gate closed: ${pact ?? "your pact"}`;
       const pledgeOr = pledge ?? "Your pledge";
       switch (p.status) {
         case "success": {
           const net = num(p.net_cents) ?? 0;
           return {
-            title: `${name}: you made it`,
-            body: net > 0 ? `You won ${formatCents(net)} from the pool.` : "Your pledge is safe.",
+            title,
+            body: net > 0 ? `You made it. +${formatCents(net)} from the pool.` : "You made it. Your pledge is safe.",
           };
         }
         case "failed":
           return {
-            title: `${name}: missed`,
+            title,
             body: p.rolled_over === true
-              ? `${pledgeOr} forfeited. Nobody made it, so the pool rolls over.`
-              : `${pledgeOr} forfeited to the pool. Appeal before settlement if that's wrong.`,
+              ? `Missed. ${pledgeOr} forfeited. Nobody made it, so the pool rolls over.`
+              : `Missed. ${pledgeOr} forfeited to the pool. Appeal before settlement if that's wrong.`,
           };
         case "unverified":
-          return { title: `${name}: couldn't verify`, body: "No forfeit. Your check-in couldn't be judged." };
+          return { title, body: "Unverified. No forfeit: your check-in couldn't be judged." };
         case "frozen":
-          return { title: `${name}: frozen`, body: "No pledge today." };
+          return { title, body: "Frozen. No pledge today." };
         case "void":
-          return { title: `${name}: void`, body: "Fewer than 2 active, so no pledges today." };
+          return { title, body: "Didn't count. Fewer than 2 were in it, so no pledges today." };
         case "excluded":
-          return { title: `${name}: excluded`, body: "Your pledge was returned." };
+          return { title, body: "Excluded. Your pledge was returned." };
         default:
           return null;
       }

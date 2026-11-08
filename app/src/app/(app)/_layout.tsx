@@ -75,6 +75,7 @@ function SignedIn({ userId }: { userId: string }) {
       <Stack.Screen name="groups/[groupId]/index" options={{ title: 'Group' }} />
       <Stack.Screen name="groups/[groupId]/feed" options={{ title: 'Feed' }} />
       <Stack.Screen name="groups/[groupId]/ledger" options={{ title: 'Settle up' }} />
+      <Stack.Screen name="groups/[groupId]/stats" options={{ title: 'Stats' }} />
       <Stack.Screen name="groups/[groupId]/new-pact" options={{ title: 'New pact', presentation: 'modal' }} />
       <Stack.Screen name="pacts/[pactId]/index" options={{ title: 'Pact' }} />
       <Stack.Screen name="pacts/[pactId]/place" options={{ title: 'Your place' }} />

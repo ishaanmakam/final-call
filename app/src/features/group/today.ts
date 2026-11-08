@@ -5,6 +5,7 @@ import type { PactRow } from '../../api/types';
 import type { InstanceSummary, MemberDayState } from '../../lib/instanceStatus';
 import { displayTimeOfDay, formatDateInZone, nextOccurrence } from '../../lib/time';
 import { glossary } from '../../theme/tokens';
+import { FINAL_CALL_MS } from '../checkin/copy';
 
 /** "2 of 4 checked in", "Everyone's in", "Nobody yet", with your own state folded in. */
 export function todayStatusLine(summary: InstanceSummary, myState: MemberDayState | null): string {
@@ -69,6 +70,13 @@ export function nothingTodayBody(pacts: readonly PactRow[], nowMs: number): stri
   const day = formatDateInZone(best.deadlineAt, best.pact.tz).split(',')[0];
   return `Next: ${best.pact.title}, ${day} by ${displayTimeOfDay(best.pact.deadline_local)}.`;
 }
+
+/**
+ * The Today card's timing line in the airport voice (app/DESIGN.md "Voice"): "Boarding" while the
+ * window is open, "Final call" for the last fifteen minutes, "Gate closed 9:00 AM" afterwards.
+ */
+export const openTimingPrefix = (remainingMs: number): 'Boarding' | 'Final call' => (remainingMs > 0 && remainingMs <= FINAL_CALL_MS ? 'Final call' : 'Boarding');
+export const closedTimingText = (deadlineText: string): string => `Gate closed ${deadlineText}`;
 
 /** Row detail under a pact: "Weekdays · by 9:00 AM · $5.00 pledge". */
 export function pactDetailLine(days: string, deadlineLocal: string, pledge: string): string {

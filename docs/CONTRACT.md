@@ -27,7 +27,9 @@ group_members(group_id, user_id, role text check in ('owner','member'), joined_a
    -- at most 8 current members per group
 pacts(id uuid pk, group_id, title, days_of_week smallint[] (ISO 1=Mon..7=Sun), window_open_local time,
       deadline_local time, stake_cents int default 500 check 1..10000, tz text, paused bool default false,
-      created_by, created_at)   -- window_open_local < deadline_local (same local day)
+      created_by, created_at,
+      season_start date null, season_weeks smallint null check 1..12)   -- window_open_local < deadline_local (same local day);
+                                 -- season columns both set or both null (20261108000700; see Seasons and stats)
 pact_participants(pact_id, user_id, place_lat float8, place_lng float8, place_radius_m int check 25..500,
       place_label text, joined_at, left_at null, pk(pact_id,user_id))
 pact_instances(id uuid pk, pact_id, local_date date, window_open_at timestamptz, deadline_at timestamptz,
@@ -56,7 +58,7 @@ push_tokens(user_id, token text, platform text, updated_at, pk(user_id, token))
 
 Also: `billable_member_balances(group_id, user_id, balance_cents)` (what settlement bills), `job_failures` (server-only log; a failing group never blocks other groups' settlement).
 
-Views: `account_balances(account_id, group_id, kind, user_id, pact_id, instance_id, balance_cents)` and `member_balances(group_id, user_id, balance_cents)`; both derived by summing `ledger_lines`. No stored balances anywhere. `unverified_month_counts(pact_id, user_id, month date, count int)`: unverified results per person, pact and calendar month of `local_date` on closed/settled instances (security_invoker; group members see their group's rows).
+Views: `account_balances(account_id, group_id, kind, user_id, pact_id, instance_id, balance_cents)` and `member_balances(group_id, user_id, balance_cents)`; both derived by summing `ledger_lines`. No stored balances anywhere. `unverified_month_counts(pact_id, user_id, month date, count int)`: unverified results per person, pact and calendar month of `local_date` on closed/settled instances (security_invoker; group members see their group's rows). `instance_member_nets(instance_id, group_id, user_id, net_cents, pot_cents)` (night-1, Q1): what one instance did to each member's ledger, summed from `ledger_lines` over that instance's entries (stake, payout, correction); one row per member whose lines sum to a non-zero amount, so a day that moved no money has none; `pot_cents` repeats on every row and is everything paid into that instance's pot (forfeited stakes plus any carry it drew). Security_invoker over the ledger tables' RLS (group members), read-only; the check-in screen and group home read it at gate close instead of computing money on the client. Zero-sum per instance: the member nets plus the carry account's lines for the instance sum to zero.
 
 ## Ledger invariants (enforced in the database)
 
@@ -130,6 +132,29 @@ acknowledge_place(p_place uuid) returns void          -- another current member;
 object_place(p_place uuid, p_reason text) returns void -- another current member; reason required (22023); within 24 h, not confirmed (23514)
 pact_place_distances(p_pact uuid) returns table(...)   -- members of the pact's group (42501); see Places
 delete_my_account() returns void                       -- the caller only; see Account deletion
+set_pact_season(p_pact uuid, p_start date, p_weeks smallint) returns void
+                                                       -- owner or pact creator (42501); (null, null) clears; half a season 22023; weeks 1..12 (23514)
+```
+
+### Seasons and stats (`20261108000700_seasons.sql`, night-1 Q2)
+
+Read models only: nothing here moves money or changes a result. A **season** is an optional window on a pact, `pacts.season_start` (a local date in the pact's zone) and `pacts.season_weeks` (1..12), set or cleared together by `set_pact_season` (same permission as `set_pact_paused`: group owner or pact creator). The window is the local dates `[season_start, season_start + 7 × weeks)`; its last day is `season_end`. Nothing about scheduling, results or payouts changes while a season runs.
+
+Views (all `security_invoker`, so RLS on pacts / instances / results / ledger / groups / obligations limits them to the caller's groups; `select` to `authenticated` and `service_role`, nothing to `anon`):
+
+```
+pact_season_recaps(pact_id, user_id, season_start, season_end, days, showed_up, missed, unverified, frozen, net_cents)
+   -- one row per (pact with a season, member with a result row) over closed/settled instances with local_date in the window;
+   -- days = success + failed + unverified + frozen; net_cents = that member's ledger lines on those instances (stake, payout,
+   -- correction), so across members plus the carry account's lines on the same instances the sum is 0. No row until a day closes.
+pact_streaks(pact_id, user_id, current_streak, best_streak)
+   -- consecutive `success` results over the person's closed/settled instances in local_date order: frozen (and the historical
+   -- excluded) is neutral (neither breaks nor extends), failed / unverified break; voided instances are not counted at all.
+   -- current_streak = successes since the last break (0 when the last counted day was a break). No row until a counted day exists.
+group_settlement_stats(group_id, obligations_created, obligations_confirmed, completion_rate numeric(.,4) null, weeks_settled, last_settled_week date null)
+   -- one row per visible group; created = obligations whose status <> 'superseded', confirmed = status 'confirmed',
+   -- completion_rate = confirmed / created (null when created = 0): obligations confirmed on Venmo out of those created,
+   -- the group's north-star metric; weeks_settled / last_settled_week from `settlements`.
 ```
 
 ### Account deletion (`20261108000600_account_deletion.sql`)
