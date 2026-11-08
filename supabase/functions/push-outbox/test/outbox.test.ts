@@ -137,6 +137,60 @@ describe("renderNotification", () => {
     expect(renderNotification(row("result", { status: "pending" }), NOW)).toBeNull();
   });
 
+  // ---------- challenge kinds (CA-17 payload: kind, period, goal_value, goal_unit; CA-5 weekly Final call at Sunday 18:00) ----------
+
+  it("deadline_soon for a weekly distance pact counts hours and names the goal in miles", () => {
+    const r = renderNotification(
+      row("deadline_soon", {
+        pact_title: "15 miles a week",
+        kind: "distance",
+        period: "weekly",
+        goal_value: 24140,
+        goal_unit: "m",
+        stake_cents: 500,
+        minutes_left: 360,
+        deadline_at: "2026-11-09T22:45:00Z",
+        instance_id: "w1",
+        pact_id: "p7",
+      }),
+      NOW,
+    )!;
+    expect(r.title).toBe("Final call: 15 miles a week");
+    expect(r.body).toBe("6 hours left to reach 15 mi. Miss it and you forfeit your $5 pledge.");
+    expect(r.data.url).toBe("/pacts/p7");
+  });
+
+  it("deadline_soon goal units: round kilometres stay km, workouts and steps are counted", () => {
+    const body = (p: Record<string, unknown>) => renderNotification(row("deadline_soon", { pact_title: "G", minutes_left: 360, ...p }), NOW)!.body;
+    expect(body({ kind: "distance", period: "weekly", goal_value: 10000, goal_unit: "m" })).toBe("6 hours left to reach 10 km.");
+    expect(body({ kind: "distance", period: "once", goal_value: 42195, goal_unit: "m" })).toBe("6 hours left to reach 26.2 mi.");
+    expect(body({ kind: "workouts", period: "weekly", goal_value: 3, goal_unit: "count" })).toBe("6 hours left to reach 3 workouts.");
+    expect(body({ kind: "workouts", period: "weekly", goal_value: 1, goal_unit: "count" })).toBe("6 hours left to reach 1 workout.");
+    expect(body({ kind: "steps", period: "daily", goal_value: 10000, goal_unit: "steps", minutes_left: 15 })).toBe("15 minutes left to reach 10,000 steps.");
+    expect(body({ kind: "custom", period: "weekly" })).toBe("6 hours left to mark this week done.");
+    expect(body({ kind: "custom", period: "daily", minutes_left: 15 })).toBe("15 minutes left to mark today done.");
+  });
+
+  it("deadline_soon hours: 1 hour singular, under an hour stays minutes, and a show_up pact is unchanged", () => {
+    const body = (p: Record<string, unknown>) => renderNotification(row("deadline_soon", { pact_title: "G", ...p }), NOW)!.body;
+    expect(body({ kind: "distance", period: "weekly", goal_value: 24140, goal_unit: "m", minutes_left: 60 })).toBe("1 hour left to reach 15 mi.");
+    expect(body({ kind: "distance", period: "weekly", goal_value: 24140, goal_unit: "m", minutes_left: 45 })).toBe("45 minutes left to reach 15 mi.");
+    expect(body({ kind: "show_up", period: "daily", place_label: "Gym", minutes_left: 15 })).toBe("15 minutes left to check in at Gym.");
+  });
+
+  it("result for a goal kind names the goal, and the value when the payload carries one", () => {
+    const base = { pact_title: "15 miles a week", kind: "distance", period: "weekly", goal_value: 24140, goal_unit: "m", stake_cents: 500 };
+    expect(renderNotification(row("result", { ...base, status: "success", net_cents: 250, value: 26554 }), NOW)!.body).toBe("You made it: 16.5 of 15 mi. +$2.50 from the pool.");
+    expect(renderNotification(row("result", { ...base, status: "success", net_cents: 250 }), NOW)!.body).toBe("You made it: 15 mi reached. +$2.50 from the pool.");
+    expect(renderNotification(row("result", { ...base, status: "success", net_cents: 0 }), NOW)!.body).toBe("You made it: 15 mi reached. Your pledge is safe.");
+    expect(renderNotification(row("result", { ...base, status: "failed", value: 19473 }), NOW)!.body).toBe("Missed: 12.1 of 15 mi. $5 pledge forfeited to the pool. Appeal before settlement if that's wrong.");
+    expect(renderNotification(row("result", { ...base, status: "failed" }), NOW)!.body).toBe("Missed: short of 15 mi. $5 pledge forfeited to the pool. Appeal before settlement if that's wrong.");
+    expect(renderNotification(row("result", { ...base, status: "failed", value: 19473, rolled_over: true }), NOW)!.body).toBe("Missed: 12.1 of 15 mi. $5 pledge forfeited. Nobody made it, so the pool rolls over.");
+    expect(renderNotification(row("result", { ...base, kind: "workouts", goal_value: 3, goal_unit: "count", status: "failed", value: 2 }), NOW)!.body).toBe("Missed: 2 of 3 workouts. $5 pledge forfeited to the pool. Appeal before settlement if that's wrong.");
+    expect(renderNotification(row("result", { ...base, kind: "custom", goal_value: undefined, goal_unit: undefined, status: "success", net_cents: 0 }), NOW)!.body).toBe("You made it. Your pledge is safe.");
+    expect(renderNotification(row("result", { ...base, status: "frozen" }), NOW)!.body).toBe("Frozen. No pledge this week.");
+  });
+
   it("review_opened appeal goes to voters", () => {
     const r = renderNotification(
       row("review_opened", {

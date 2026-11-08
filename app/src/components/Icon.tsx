@@ -38,7 +38,18 @@ export type IconName =
   | 'doc.on.doc'
   | 'chart.bar'
   | 'flag.checkered'
-  | 'flame';
+  | 'flame'
+  // challenge kinds (CB)
+  | 'figure.run'
+  | 'figure.walk'
+  | 'bicycle'
+  | 'dumbbell'
+  | 'shoeprints.fill'
+  | 'checkmark.circle'
+  | 'heart'
+  | 'arrow.triangle.2.circlepath'
+  | 'camera'
+  | 'trophy';
 
 export interface IconProps {
   name: IconName;
@@ -82,6 +93,16 @@ const SF: Record<IconName, SFSymbol> = {
   'chart.bar': 'chart.bar',
   'flag.checkered': 'flag.checkered',
   flame: 'flame',
+  'figure.run': 'figure.run',
+  'figure.walk': 'figure.walk',
+  bicycle: 'bicycle',
+  dumbbell: 'dumbbell',
+  'shoeprints.fill': 'shoeprints.fill',
+  'checkmark.circle': 'checkmark.circle',
+  heart: 'heart',
+  'arrow.triangle.2.circlepath': 'arrow.triangle.2.circlepath',
+  camera: 'camera',
+  trophy: 'trophy',
 };
 
 function Glyph({ name, color }: { name: IconName; color: string }) {
@@ -304,6 +325,73 @@ function Glyph({ name, color }: { name: IconName; color: string }) {
       );
     case 'flame':
       return <Path d="M12 3c.6 3.2 3.2 4.6 4.6 7.2A6 6 0 0 1 12 20a6 6 0 0 1-5.4-8.6c.8-1.7 2-2.7 2.5-4.6.9 1 1.4 2 1.6 3.4C11.9 8.4 12.4 6 12 3z" {...stroke} />;
+    case 'figure.run':
+      return (
+        <>
+          <Circle cx="15" cy="4.5" r="1.8" fill={color} />
+          <Path d="M8 10.5l3.5-2.5 3 1.5 2.5 3M11.5 8l-1.5 5 3 2.5-1 5M10 13l-4 3M13 15.5l4 1.5 1.5 3.5" {...stroke} />
+        </>
+      );
+    case 'figure.walk':
+      return (
+        <>
+          <Circle cx="13" cy="4.5" r="1.8" fill={color} />
+          <Path d="M9 11l3-3 2.5 1 2 3.5M12 8l-1 5.5 2 2v5M11 13.5l-2.5 2.5-1 4.5M13.5 10l1.5 2.5 2.5.5" {...stroke} />
+        </>
+      );
+    case 'bicycle':
+      return (
+        <>
+          <Circle cx="6" cy="16" r="3.5" {...stroke} />
+          <Circle cx="18" cy="16" r="3.5" {...stroke} />
+          <Path d="M6 16l3.5-7h5l3.5 7M9.5 9L12 16l2.5-7M13 6h3" {...stroke} />
+        </>
+      );
+    case 'dumbbell':
+      return (
+        <>
+          <Path d="M3 10.5v3M6 8v8M18 8v8M21 10.5v3" {...stroke} strokeWidth={2.4} />
+          <Line x1="6" y1="12" x2="18" y2="12" {...stroke} />
+        </>
+      );
+    case 'shoeprints.fill':
+      return (
+        <>
+          <Path d="M7.5 3.5c1.6 0 2.6 1.8 2.4 4.2-.2 2.2-1.2 3.3-2.6 3.3S4.8 9.9 4.8 7.7c0-2.4 1.1-4.2 2.7-4.2zM5.4 12.5h3.6c.4 1.4.4 2.6 0 3.6-.4 1-1.2 1.6-1.9 1.6s-1.4-.6-1.8-1.6c-.3-1-.3-2.2.1-3.6z" fill={color} />
+          <Path d="M16.5 6.5c1.6 0 2.7 1.8 2.7 4.2 0 2.2-1.1 3.3-2.5 3.3s-2.5-1.1-2.7-3.3c-.2-2.4.8-4.2 2.5-4.2zM14.6 15.5h3.6c.4 1.4.4 2.6.1 3.6-.4 1-1.1 1.6-1.8 1.6s-1.5-.6-1.9-1.6c-.4-1-.4-2.2 0-3.6z" fill={color} />
+        </>
+      );
+    case 'checkmark.circle':
+      return (
+        <>
+          <Circle cx="12" cy="12" r="9" {...stroke} />
+          <Polyline points="7.5 12.5 10.5 15.5 16.5 9" {...stroke} />
+        </>
+      );
+    case 'heart':
+      return <Path d="M12 20s-7-4.6-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.4-7 10-7 10z" {...stroke} />;
+    case 'arrow.triangle.2.circlepath':
+      return (
+        <>
+          <Path d="M5 11a7 7 0 0 1 12-4.5" {...stroke} />
+          <Polyline points="17 3 17.5 7 13.5 7.5" {...stroke} />
+          <Path d="M19 13a7 7 0 0 1-12 4.5" {...stroke} />
+          <Polyline points="7 21 6.5 17 10.5 16.5" {...stroke} />
+        </>
+      );
+    case 'camera':
+      return (
+        <>
+          <Path d="M4 8.5A1.5 1.5 0 0 1 5.5 7H8l1.5-2h5L16 7h2.5A1.5 1.5 0 0 1 20 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 17.5z" {...stroke} />
+          <Circle cx="12" cy="13" r="3.2" {...stroke} />
+        </>
+      );
+    case 'trophy':
+      return (
+        <>
+          <Path d="M8 4h8v5a4 4 0 0 1-8 0zM8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4M12 13v4M8.5 20h7M10 17h4v3" {...stroke} />
+        </>
+      );
   }
 }
 

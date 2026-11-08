@@ -17,6 +17,23 @@ export type EntryKind = 'stake' | 'payout' | 'rollover' | 'settlement_payment' |
 export type ObligationStatus = 'pending' | 'marked_paid' | 'confirmed' | 'superseded';
 export type GroupRole = 'owner' | 'member';
 
+// ---------- challenge kinds (20261109000100_challenge_kinds.sql; spec docs/superpowers/specs/2026-11-08-challenge-kinds-design.md) ----------
+
+/** What success means per instance: a check-in, a distance, a count of workouts, a step total, or a self-report. */
+export type PactKind = 'show_up' | 'distance' | 'workouts' | 'steps' | 'custom';
+/** daily on `days_of_week`; weekly Monday 00:00 to the next Monday 00:00; once from race_start to race_end. */
+export type PactPeriod = 'daily' | 'weekly' | 'once';
+/** unit of `goal_value`: metres, a count of workouts or marked days, or steps */
+export type GoalUnit = 'm' | 'count' | 'steps';
+export type ActivitySource = 'healthkit' | 'strava' | 'manual';
+export type ActivityVerdict = 'accepted' | 'rejected_manual' | 'rejected_duplicate' | 'rejected_type' | 'rejected_future';
+export type ActivityType = 'running' | 'walking' | 'cycling' | 'swimming' | 'hiking' | 'rowing' | 'strength' | 'yoga' | 'other';
+export const ACTIVITY_TYPES: readonly ActivityType[] = ['running', 'walking', 'cycling', 'swimming', 'hiking', 'rowing', 'strength', 'yoga', 'other'];
+/** what `activities.activity_type` may hold: the nine pact types plus a daily step sample (CA-2) */
+export type SampleType = ActivityType | 'steps';
+/** PostgREST serializes `numeric` as a string; the app coerces with `toNumber` at the query layer. */
+export type PgNumeric = number | string;
+
 export type ProfileRow = {
   id: string;
   display_name: string;
@@ -48,8 +65,8 @@ export type PactRow = {
   id: string;
   group_id: string;
   title: string;
-  /** ISO weekdays, 1 = Monday .. 7 = Sunday */
-  days_of_week: number[];
+  /** ISO weekdays, 1 = Monday .. 7 = Sunday; null (or empty) for weekly and once pacts, which have no days */
+  days_of_week: number[] | null;
   window_open_local: string;
   deadline_local: string;
   stake_cents: number;
@@ -60,14 +77,28 @@ export type PactRow = {
   /** 20261108000700_seasons.sql: an optional season, both set or both null (1..12 weeks from this local date) */
   season_start?: string | null;
   season_weeks?: number | null;
+  /** 20261109000100_challenge_kinds.sql: 'show_up' is the original pact */
+  kind: PactKind;
+  period: PactPeriod;
+  /** null for show_up; metres / count / steps per `goal_unit` for the rest (numeric: may arrive as a string) */
+  goal_value: PgNumeric | null;
+  goal_unit: GoalUnit | null;
+  /** distance / workouts: the activity types that count (default {running}); null otherwise */
+  activity_types: ActivityType[] | null;
+  /** period 'once' only: the race runs race_start 00:00 to race_end + 1 day 00:00 in the pact zone */
+  race_start: string | null;
+  race_end: string | null;
+  /** 20261109000300_custom_proof.sql: custom kind only; mark_done then needs a photo (23514 without one) */
+  proof_required: boolean;
 };
 
 export type PactParticipantRow = {
   pact_id: string;
   user_id: string;
-  place_lat: number;
-  place_lng: number;
-  place_radius_m: number;
+  /** null for goal kinds: a place is required only for show_up (join_pact's place args are nullable) */
+  place_lat: number | null;
+  place_lng: number | null;
+  place_radius_m: number | null;
   place_label: string | null;
   joined_at: string;
   left_at: string | null;
@@ -240,6 +271,96 @@ export type UnverifiedMonthCountRow = {
   count: number;
 };
 
+/**
+ * Table `activities` (evidence for goal kinds). No route or coordinates. Idempotent per
+ * (user, source, external_id). Group members read each other's rows only through `pact_activities`.
+ */
+export type ActivityRow = {
+  id: string;
+  user_id: string;
+  source: ActivitySource;
+  external_id: string;
+  activity_type: string;
+  started_at: string;
+  ended_at: string;
+  distance_m: number | null;
+  duration_s: number;
+  steps: number | null;
+  device: string | null;
+  app_bundle: string | null;
+  /** HealthKit `HKWasUserEntered`, Strava `manual`: rejected_manual */
+  is_manual: boolean;
+  raw_hash: string | null;
+  submitted_at: string;
+  verdict: ActivityVerdict;
+  reject_reason: string | null;
+};
+
+/** View `pact_activities`: the activities that count toward (or were rejected for) a shared pact, as its members see them. */
+export type PactActivityRow = {
+  pact_id: string;
+  instance_id: string;
+  user_id: string;
+  activity_id: string;
+  source: ActivitySource;
+  activity_type: string;
+  started_at: string;
+  ended_at: string;
+  distance_m: number | null;
+  duration_s: number;
+  steps: number | null;
+  device: string | null;
+  app_bundle: string | null;
+  is_manual: boolean;
+  verdict: ActivityVerdict;
+  reject_reason: string | null;
+};
+
+/** View `instance_progress`: accepted activity totals per participant inside the instance window (derived, never stored). */
+export type InstanceProgressRow = {
+  instance_id: string;
+  user_id: string;
+  value: PgNumeric;
+  goal: PgNumeric;
+  activity_count: number;
+  /** `ended_at` of the activity that first crossed the goal; null while short of it */
+  reached_at: string | null;
+};
+
+/** View `instance_standings`: `instance_progress` ranked by value, ties by reached_at then user_id. */
+export type InstanceStandingRow = {
+  instance_id: string;
+  user_id: string;
+  rank: number;
+  value: PgNumeric;
+  goal: PgNumeric;
+  reached_at: string | null;
+};
+
+/** One item of `submit_activities(p_activities jsonb)`. */
+export type ActivitySubmission = {
+  source: ActivitySource;
+  external_id: string;
+  /** one of the nine types, or 'steps' for a daily step total */
+  activity_type: SampleType;
+  started_at: string;
+  ended_at: string;
+  distance_m: number | null;
+  duration_s: number;
+  steps: number | null;
+  device: string | null;
+  app_bundle: string | null;
+  is_manual: boolean;
+  raw_hash: string | null;
+};
+
+/** View `my_integrations` (20261109000200_strava.sql): the caller's own connections, never a token. */
+export type MyIntegrationRow = {
+  provider: 'strava';
+  athlete_id: string;
+  connected_at: string;
+};
+
 export type ReviewVoteRow = {
   review_id: string;
   voter_id: string;
@@ -380,6 +501,13 @@ export type GroupSettlementStatsRow = {
 
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 
+/** PostgREST sends `numeric` columns as strings; everything the app draws is a number. */
+export function toNumber(v: PgNumeric | null | undefined): number {
+  if (v === null || v === undefined) return 0;
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
 type Table<Row, Insert = Partial<Row>, Update = Partial<Row>> = {
   Row: Row;
   Insert: Insert;
@@ -407,10 +535,25 @@ export type RpcFunctions = {
       p_deadline: string;
       p_stake_cents: number;
       p_tz: string;
+      /** challenge kinds (defaults keep the 7-argument show_up call working) */
+      p_kind?: PactKind;
+      p_period?: PactPeriod;
+      p_goal_value?: number | null;
+      p_goal_unit?: GoalUnit | null;
+      p_activity_types?: ActivityType[] | null;
+      p_race_start?: string | null;
+      p_race_end?: string | null;
+      /** custom kind: every mark needs a photo (20261109000300) */
+      p_proof_required?: boolean;
     },
     string
   >;
-  join_pact: Fn<{ p_pact: string; p_lat: number; p_lng: number; p_radius_m: number; p_label: string }, undefined>;
+  /** place args are required only for show_up; goal kinds join with nulls */
+  join_pact: Fn<{ p_pact: string; p_lat: number | null; p_lng: number | null; p_radius_m: number | null; p_label: string | null }, undefined>;
+  /** goal kinds: evidence from Apple Health (the Strava function uses submit_activities_for); returns the number of rows written */
+  submit_activities: Fn<{ p_activities: ActivitySubmission[] }, number>;
+  /** custom kind: marks the instance done before its deadline (success), optional photo path */
+  mark_done: Fn<{ p_instance: string; p_photo_path: string | null }, undefined>;
   set_pact_paused: Fn<{ p_pact: string; p_paused: boolean }, undefined>;
   check_in: Fn<
     {
@@ -445,6 +588,8 @@ export type RpcFunctions = {
   delete_my_account: Fn<Record<string, never>, undefined>;
   /** owner or pact creator: start a season (both set) or end it (both null); 1..12 weeks */
   set_pact_season: Fn<{ p_pact: string; p_start: string | null; p_weeks: number | null }, undefined>;
+  /** forgets the caller's Strava connection (tokens deleted; activities stay); idempotent */
+  disconnect_integration: Fn<{ p_provider: 'strava' }, undefined>;
 };
 
 export type RpcName = keyof RpcFunctions;
@@ -465,6 +610,7 @@ export type Database = {
       checkins: Table<CheckinRow>;
       freezes: Table<FreezeRow>;
       results: Table<ResultRow>;
+      activities: Table<ActivityRow>;
       reviews: Table<ReviewRow>;
       review_votes: Table<ReviewVoteRow>;
       ledger_accounts: Table<LedgerAccountRow>;
@@ -486,6 +632,10 @@ export type Database = {
       pact_season_recaps: View<PactSeasonRecapRow>;
       pact_streaks: View<PactStreakRow>;
       group_settlement_stats: View<GroupSettlementStatsRow>;
+      instance_progress: View<InstanceProgressRow>;
+      instance_standings: View<InstanceStandingRow>;
+      pact_activities: View<PactActivityRow>;
+      my_integrations: View<MyIntegrationRow>;
     };
     Functions: RpcFunctions;
     Enums: {
@@ -497,6 +647,10 @@ export type Database = {
       ledger_account_kind: LedgerAccountKind;
       entry_kind: EntryKind;
       obligation_status: ObligationStatus;
+      pact_kind: PactKind;
+      pact_period: PactPeriod;
+      activity_source: ActivitySource;
+      activity_verdict: ActivityVerdict;
     };
     CompositeTypes: Record<string, never>;
   };

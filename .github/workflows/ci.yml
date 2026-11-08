@@ -91,6 +91,32 @@ jobs:
       - run: npx tsc --noEmit
       - run: npx vitest run
 
+  web-app:
+    # The real app exported for the web (what pages.yml publishes at /final-call/app/): the demo build must
+    # export with the base path and produce an index.html whose assets sit under it (build-web.mjs checks).
+    # The Playwright smoke (scripts/web-smoke.mjs) needs an installed Chrome and runs locally before a PR.
+    name: app (web export)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      - run: node scripts/build-web.mjs --demo
+        env:
+          EXPO_WEB_BASE_URL: /final-call/app
+      - name: dist-web/index.html exists and points under the base path
+        run: |
+          test -f dist-web/index.html
+          grep -q 'src="/final-call/app/_expo/' dist-web/index.html
+
   maestro-lint:
     # Maestro itself runs on EAS (app/.eas/workflows/maestro.yml); here every flow must at least
     # parse and use known commands, declared ${VARS} and existing runFlow files (docs/TESTING.md).

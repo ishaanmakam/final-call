@@ -27,6 +27,10 @@ export interface GateCloseInput {
   frozen: boolean;
   /** ms since the deadline (negative before it) */
   sinceDeadlineMs: number;
+  /** a goal kind (distance / workouts / steps / custom): people "made it", nobody "showed up" (CI-6) */
+  goal?: boolean;
+  /** names the unit of time in the headline: "today", "this week", "in the race" */
+  period?: 'daily' | 'weekly' | 'once';
 }
 
 export interface GateClose {
@@ -67,6 +71,9 @@ export function gateClose(i: GateCloseInput): GateClose {
   if (!posted && !i.frozen) return tallying(i.sinceDeadlineMs);
 
   const name = (id: string) => firstName(i.profiles.get(id)?.display_name);
+  const made = i.goal ? 'made it' : 'showed up';
+  const Made = i.goal ? 'Made it' : 'Showed up';
+  const when = i.period === 'weekly' ? 'this week' : i.period === 'once' ? 'in the race' : 'today';
   const others = i.results.filter((r) => r.user_id !== i.userId);
   const byStatus = (s: ResultRow['status']) => others.filter((r) => r.user_id !== i.userId && r.status === s).map((r) => name(r.user_id));
   const showed = byStatus('success');
@@ -79,7 +86,7 @@ export function gateClose(i: GateCloseInput): GateClose {
 
   const othersTally = (): string => {
     const parts: string[] = [];
-    if (showed.length) parts.push(`${joinNames(showed)} showed up`);
+    if (showed.length) parts.push(`${joinNames(showed)} ${made}`);
     if (missed.length) parts.push(`${joinNames(missed)} missed`);
     if (unverified.length) parts.push(`${joinNames(unverified)} unverified`);
     return parts.length ? parts.join(' · ') : 'Nobody else was in it';
@@ -99,8 +106,8 @@ export function gateClose(i: GateCloseInput): GateClose {
         const figure = formatCents(net, { signed: true });
         return {
           state: 'posted',
-          headline: `You're ${figure} today`,
-          amount: { before: "You're ", cents: net, after: ' today' },
+          headline: `You're ${figure} ${when}`,
+          amount: { before: "You're ", cents: net, after: ` ${when}` },
           subline: `${who} · ${poolPart()}`,
           tone: 'success',
           pill: 'success',
@@ -115,7 +122,7 @@ export function gateClose(i: GateCloseInput): GateClose {
         tone: 'success',
         pill: 'success',
         haptic: null,
-        compact: `Showed up · ${who}`,
+        compact: `${Made} · ${who}`,
       };
     }
     case 'failed': {
@@ -134,7 +141,7 @@ export function gateClose(i: GateCloseInput): GateClose {
       }
       const lost = -mine.net_cents;
       const figure = formatCents(lost);
-      const who = winners > 0 ? `${joinNames(showed)} showed up` : `Nobody made it · the ${formatCents(pot)} pool carries over`;
+      const who = winners > 0 ? `${joinNames(showed)} ${made}` : `Nobody made it · the ${formatCents(pot)} pool carries over`;
       return {
         state: 'posted',
         headline: `You forfeited ${figure}`,
@@ -162,7 +169,7 @@ export function gateClose(i: GateCloseInput): GateClose {
       return {
         state: 'posted',
         headline: `Frozen · ${NO_MONEY}`,
-        subline: others.length ? othersTally() : 'You called today off in advance.',
+        subline: others.length ? othersTally() : `You called ${when} off in advance.`,
         tone: 'neutral',
         pill: 'frozen',
         haptic: null,

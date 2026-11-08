@@ -4,6 +4,7 @@
   "main": "expo-router/entry",
   "dependencies": {
     "@expo/metro-runtime": "~58.0.17",
+    "@kingstinct/react-native-healthkit": "^16.2.0",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-native-community/datetimepicker": "9.2.1",
     "@sentry/react-native": "~8.28.0",
@@ -29,6 +30,7 @@
     "react-dom": "19.3.0",
     "react-native": "0.88.1",
     "react-native-gesture-handler": "~3.3.0",
+    "react-native-nitro-modules": "^0.37.2",
     "react-native-reanimated": "4.7.1",
     "react-native-safe-area-context": "~5.11.1",
     "react-native-screens": "~4.30.1",
@@ -51,6 +53,9 @@
     "test:watch": "vitest",
     "doctor": "expo-doctor",
     "web:export": "expo export --platform web",
+    "web:build": "node scripts/build-web.mjs",
+    "web:serve": "node scripts/serve-web.mjs",
+    "web:smoke": "node scripts/web-smoke.mjs",
     "screenshots": "node scripts/screenshot.mjs",
     "screenshots:quick": "node scripts/screenshot.mjs --skip-export"
   },

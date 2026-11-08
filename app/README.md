@@ -2,7 +2,7 @@
 
 The client for show-up pacts (the product was renamed from "Show Up" to **Final Call** on 2026-11-07: bundle id `com.ishaanmakam.finalcall`, scheme `finalcall://`). Expo SDK 58, React Native 0.88, TypeScript (strict), expo-router, Supabase JS, TanStack Query. Design: `../docs/DESIGN.md`. Interfaces: `../docs/CONTRACT.md`.
 
-Native modules are limited to expo-location (foreground only), expo-notifications, expo-apple-authentication, expo-crypto (the Sign in with Apple nonce), expo-secure-store, expo-linking, expo-image-picker (appeal photos), expo-updates (OTA JS updates) and AsyncStorage (offline queue). One EAS development build covers all of them, and everything else is JavaScript that reloads without a rebuild.
+Native modules are limited to expo-location (foreground only), expo-notifications, expo-apple-authentication, expo-crypto (the Sign in with Apple nonce and activity hashes), expo-secure-store, expo-linking, expo-image-picker (appeal photos), expo-updates (OTA JS updates), AsyncStorage (offline queue, Health sync watermark) and `@kingstinct/react-native-healthkit` (read-only Apple Health for the running / workout / step challenges, on `react-native-nitro-modules`). One EAS development build covers all of them, and everything else is JavaScript that reloads without a rebuild.
 
 ## Setup on Windows (no Mac needed)
 
@@ -114,8 +114,11 @@ Route params steer the scenario (web: the URL query; native: any `router.push` w
 | `?precise=0` | iOS Approximate Location: the Check In tap sends nothing and points to Settings (the day would count as missed) |
 | `?budget=N` | N unverified days this month in the open instance's pact (0-9): the check-in screen's "N unverified this month" line |
 | `?skew=S` | the phone's clock is S seconds off the server (negative = phone ahead): past 120 s the check-in screen shows the clock-skew notice |
+| `?week=closed` | the weekly distance pact's current week (`w-current`) closed a minute ago with results posted: you fell short at 11.2 / 15 mi and forfeited, Maya made it (the weekly gate-close money line on the pact and the group home) |
 
 Demo ids: group `g1` (empty group `g-empty`; `/groups/g1/stats` is the Stats screen: settle-up completion 17 of 21, `p1` in week 3 of a 4-week season, streaks per pact; `?empty=1` shows its empty state), pacts `p1`..`p6` (`p5` "Chem lab by 2" is one you are not in; `p6` "Lab notebook by noon" is today's Missed day of yours, `i-missed`, with no review yet), today's instances `i-open`, `i-before`, `i-closed`, `i-void`, `i-frozen`, `i-notin`, `i-missed`, invite code `KANE9AM`.
+
+Challenge kinds: `p7` "15 miles a week" (distance, running, weekly, goal 24 140 m) with this week `w-current` open (you 11.2 mi from two Apple Watch runs plus a manually entered 5.0 mi the server rejected, Maya 16.5 mi from Strava on a Garmin and already over the line, Diego 4.0, Priya 0) and last week `w-last` settled (you 12.1 / 15 short, Maya and Diego made it, Priya frozen: you forfeited $5.00, split two ways); `p8` "3 workouts" (weekly workouts, any type) is one you have not joined, with `w8-current` open (Maya 5 and reached, Diego 2, Priya 1 plus an 8-minute session that is too short to count). The Sync row "syncs" the fixture runs and reports the manual rejection; Strava connect flips an in-memory connection (Settings → Integrations then reads "Connected as athlete 4242" until Disconnect).
 
 ## Screenshots
 
@@ -152,12 +155,18 @@ src/theme/               tokens (colors, type, space, radius, springs, easings, 
                          motion helpers, reduced-motion mapper, countdown formatting; all unit tested
 src/features/            per-screen logic with no React Native imports, so it is unit tested
   auth/                  safe `next` redirect, email validation, magic-link error copy, the Sign in with Apple nonce
+  goal/                  challenge kinds: units (mi/km, metres stored), progress and standings copy, period windows
+                         (this week's Monday, the Sunday 6 PM Final call), the demo stand-in for instance_progress;
+                         GoalHeader (ring + "11.2 / 15.0 mi · 3.8 mi to go · 2 days left"), StandingsGroup, ActivityGroup, ProgressBar
+  health/                Apple Health: pure mapper from HKWorkout samples / daily step buckets to submit_activities items
+                         (+ hashes), healthRuntime (native: permission, watermark, foreground sync) and its .web twin / demo fake
+  integrations/          Strava client helper (lane C)
   legal/                 privacy policy and terms as data (+ the screen that renders them)
   checkin/               the button state machine, verdict panel copy, clock copy, CheckinButton/VerdictPanel/WindowClock
   feed/                  day grouping, money sentences, review and vote copy
   group/                 today-card copy and status lines, nav-bar icon button
   groups/                create/join forms, nav-bar text and icon buttons
-  pact/                  wizard draft, validation, window presets
+  pact/                  wizard draft, validation, window presets, the seven challenge choices and their create_pact mapping
   place/                 place-change lock rules, radius detents and labels
   settings/              profile autosave patch, destructive confirm (alert on iOS, confirm on web)
   settle/                headline, subline, pills and week split for settle-up
@@ -232,6 +241,20 @@ The client needs these, which are not in CONTRACT.md yet:
 8. Place accountability (`20261108000100_place_accountability.sql`): view `pact_places_visible` (every current participant's place rows with `state`, `is_current`, `acknowledgeable`, `objectable`), table `place_events` (feed rows), RPCs `acknowledge_place(p_place)`, `object_place(p_place, p_reason)` and `pact_place_distances(p_pact)` (metres from each place to the others' places in force). `pact_participant_places` carries `id`, `requires_ack`, `acknowledged_*`, `objected_*`, `objection_reason`. A participant with no place in force at window open is not on that day's roster (`lib/places.ts#placeForWindow` returns null).
 9. Notification kind `place_changed` (payload `event` = created / acknowledged / objected / effective, `url` = `/pacts/<id>`); the push function needs a renderer for it.
 8. The view `unverified_month_counts(pact_id, user_id, month, count)` (`20261108000200`), read by `features/checkin/useUnverifiedBudget.ts`; `reviews.system_opened` marks the automatic challenge the third unverified day of a pact-month opens (CONTRACT.md "Unverified budget"). Neither is in `api/types.ts` yet.
+
+## Challenge kinds and Apple Health
+
+A pact has a `kind` (`show_up`, `distance`, `workouts`, `steps`, `custom`) and a `period` (`daily`, `weekly`, `once`); CONTRACT.md "Challenge kinds" has the tables and RPCs, `docs/superpowers/specs/2026-11-08-challenge-kinds-design.md` the rules. The wizard opens on "What kind of challenge?" (Show up / Run / Ride / Walk / Workouts / Steps / Custom) and asks a kind-specific goal step instead of the place-and-window steps; distances are typed in the device unit (miles for US/GB/LR/MM locales, kilometres elsewhere) and stored in metres. Goal pacts have no place: the creator is joined right after `create_pact`, friends join from the pact screen, and the client never opens the check-in screen for them (`/checkin/<weekly id>` redirects to the pact).
+
+The pact screen for a goal kind shows your progress ring, the standings (`instance_standings`), an Evidence group (Sync Apple Health, Connect Strava), this week's activities (`pact_activities`, rejected rows greyed with the reason, a Challenge affordance on a friend's accepted entry once the week has closed with a success for them) and last week with its money line from `instance_member_nets`. The group home's Today card for a weekly pact reads "This week · Boarding · 2 days left · ends Sunday night", then "Final call" from Sunday 6 PM and "Gate closed · week of …" after; its ring is your own progress and its status line the standings ("Maya leads · you're 2nd · 3.8 mi to go").
+
+**Strava** (`src/features/integrations/strava.ts`, tested): Settings → **Integrations** has the Strava row: "Connect Strava" asks the `strava-sync` Edge Function for a signed state (`POST /state` with the session), builds the function's `/connect` URL from `EXPO_PUBLIC_SUPABASE_URL` and opens it (`Linking.openURL` on iOS, `window.location.assign` on the web, where the return URL is this page); the function's callback lands on `finalcall://settings?strava=connected` (or `strava=error&reason=…`), which Settings reads on mount, on `Linking` URL events and from the route params (`parseStravaReturn`), shows as a toast (`stravaReturnMessage`) and follows with a refetch of the `['integrations', 'strava']` query over the `my_integrations` view. Connected, the row reads "Connected as athlete <id> · since <date>" with a confirmed **Disconnect Strava** (`disconnect_integration`; activities already counted stay). The pact screen's Evidence row connects the same way and points at Settings to manage it. `useStravaStatus()` is `loading | disconnected | connected | error` with `refetch` and `invalidate`.
+
+**Custom pacts with proof**: the wizard's "Needs a photo" switch is `pacts.proof_required` (`create_pact(..., p_proof_required)`); the pact screen's button reads "Mark today done with a photo", picks a photo from the library, uploads it to `review-photos` like an appeal's evidence and calls `mark_done(instance, path)`; the server refuses a bare mark with "This challenge needs a photo".
+
+**Apple Health** (`src/features/health/`): `@kingstinct/react-native-healthkit` v16 on Nitro, read-only, requested when you join or create a distance / workouts / steps pact (`NSHealthShareUsageDescription` in `app.config.ts`; no update permission, no background delivery, so a dev build rebuild is needed once). `health.ts` is the pure mapper (tested): HKWorkoutActivityType codes and names → our nine types, `HKWasUserEntered` → `is_manual`, duration and distance units → seconds and whole metres, the HK uuid as `external_id`, daily step buckets → one `walking` row per local day (`steps:YYYY-MM-DD`), and `raw_hash` = SHA-256 (expo-crypto) over every judged field. `healthRuntime.ts` syncs on foreground (throttled to 10 minutes while you are in a goal pact) and from the pact's Sync row: it reads from the AsyncStorage watermark minus a day (at most 14 days), posts one `submit_activities` batch (idempotent per source + external id) and shows "Synced 3 activities." plus the manual rejections plainly. `healthRuntime.web.ts` has no Health ("Runs sync from your iPhone. Strava works here."); demo mode fakes a sync against the fixture runs. Weekly pacts also get two local reminders: Friday 6 PM with what is left when behind, and the Sunday 6 PM Final call, both opening the pact.
+
+Regenerate types or run the app against a database without `20261109000100_challenge_kinds.sql` and every pact reads as `show_up`; the kind columns are typed as required in `src/api/types.ts` to match the migration's defaults.
 
 ## Reliability
 

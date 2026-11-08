@@ -11,6 +11,14 @@ const SENTRY_ORG = process.env.SENTRY_ORG || undefined;
 const SENTRY_PROJECT = process.env.SENTRY_PROJECT || undefined;
 const SENTRY_URL = process.env.SENTRY_URL || 'https://sentry.io/';
 
+// Web base path (`/final-call/app` on Pages). Normalized to "/segment" or "" so expo-router's
+// EXPO_BASE_URL and the exported asset URLs agree (scripts/build-web.mjs sets it).
+const WEB_BASE_RAW = (process.env.EXPO_WEB_BASE_URL ?? '').trim().replace(/\/+$/, '');
+const WEB_BASE_URL = WEB_BASE_RAW && !WEB_BASE_RAW.startsWith('/') ? `/${WEB_BASE_RAW}` : WEB_BASE_RAW;
+
+const HEALTH_SHARE =
+  'Final Call reads your workouts, walking and running distance and daily steps from Apple Health to count them toward a running, workout or step challenge you joined. It reads nothing else and never writes to Health.';
+
 const LOCATION_WHEN_IN_USE =
   'Final Call reads your location once, only when you tap Check In during a pact window, to confirm you made it to your place. Keep Precise Location on: an approximate location cannot be judged. It never tracks you in the background.';
 
@@ -34,6 +42,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     usesAppleSignIn: true,
     infoPlist: {
       NSLocationWhenInUseUsageDescription: LOCATION_WHEN_IN_USE,
+      NSHealthShareUsageDescription: HEALTH_SHARE,
       // lets Linking.canOpenURL detect the Venmo app for "Pay on Venmo"
       LSApplicationQueriesSchemes: ['venmo'],
       ITSAppUsesNonExemptEncryption: false,
@@ -50,8 +59,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       monochromeImage: './assets/android-icon-monochrome.png',
     },
   },
-  // web exists only for the screenshot harness and demos (single-page output, SPA fallback)
+  // the real app on the web (GitHub Pages at /final-call/app/) and the screenshot harness: single-page
+  // output with an SPA fallback. EXPO_WEB_BASE_URL is the path the site is served under; empty = root.
   web: { favicon: './assets/favicon.png', bundler: 'metro', output: 'single' },
+  experiments: { baseUrl: WEB_BASE_URL },
   plugins: [
     'expo-router',
     'expo-secure-store',
@@ -69,6 +80,15 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       },
     ],
     ['expo-notifications', { color: '#1F6FEB' }],
+    // goal kinds (challenges): read-only Apple Health for workouts, distance and steps; no background delivery
+    [
+      '@kingstinct/react-native-healthkit',
+      {
+        NSHealthShareUsageDescription: HEALTH_SHARE,
+        NSHealthUpdateUsageDescription: false,
+        background: false,
+      },
+    ],
     [
       'expo-image-picker',
       {

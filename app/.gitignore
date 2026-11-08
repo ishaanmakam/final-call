@@ -44,3 +44,6 @@ yarn-error.*
 .env
 dist-*/
 screenshots-*/
+
+# the web app smoke captures (scripts/web-smoke.mjs) are committed, unlike private screenshots-<tag>/ dirs
+!screenshots-web/

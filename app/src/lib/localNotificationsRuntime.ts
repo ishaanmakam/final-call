@@ -11,8 +11,10 @@ import * as Notifications from 'expo-notifications';
 import { useEffect, useRef } from 'react';
 import { AppState, Platform } from 'react-native';
 import { DEMO } from '../api/demo/settings';
+import { deviceDistanceUnit } from '../features/goal/useDistanceUnit';
 import {
   BOARDING_PREFIX,
+  FRIDAY_PREFIX,
   isOurIdentifier,
   localIdentifierForPush,
   planLocalNotifications,
@@ -45,7 +47,7 @@ function requestFor(n: PlannedNotification): Notifications.NotificationRequestIn
       data: {
         url: n.url,
         instance_id: n.identifier.slice(n.identifier.indexOf(':') + 1),
-        kind: n.identifier.startsWith(BOARDING_PREFIX) ? 'window_open' : 'deadline_soon',
+        kind: n.identifier.startsWith(BOARDING_PREFIX) ? 'window_open' : n.identifier.startsWith(FRIDAY_PREFIX) ? 'behind_nudge' : 'deadline_soon',
         local: true,
       },
     },
@@ -68,7 +70,7 @@ export function syncLocalNotifications(qc: QueryClient, userId: string): Promise
       const ms = triggerInstant(r.trigger);
       if (isOurIdentifier(r.identifier) && ms !== null) at.set(r.identifier, ms);
     }
-    const plan = planLocalNotifications(upcomingFromQueryCache(qc, userId, Date.now()), ids, Date.now(), at);
+    const plan = planLocalNotifications(upcomingFromQueryCache(qc, userId, Date.now(), deviceDistanceUnit()), ids, Date.now(), at);
     for (const id of plan.cancel) await Notifications.cancelScheduledNotificationAsync(id);
     for (const n of plan.schedule) await Notifications.scheduleNotificationAsync(requestFor(n));
   };

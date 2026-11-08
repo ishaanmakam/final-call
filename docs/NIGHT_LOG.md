@@ -91,3 +91,17 @@ See "Only a real iPhone or the founder's accounts can verify" above. Two one-tim
 3. **RT-1** — the opener of a challenge can no longer vote (reverses D3); a 2-person pact's challenges are decided by the other person alone, which is also why the automatic budget challenge is opened in the subject's name.
 4. **N2-1 … N2-9 + RT-6** — the Unverified budget: the 3rd unverified day in a calendar month per pact auto-opens a challenge; forged late taps remain accepted for friends but are bounded by this (open question 5).
 5. **P3-1 / P3-9** — account deletion drops the `profiles → auth.users` FK so the anonymized profile outlives the identity; App Store reviewer access (seeded account vs runtime demo switch) is still your call before submission.
+
+# Day 2 (2026-11-08): challenge kinds, running, web app — branch `challenges` (from `night-1`)
+
+Founder: "IOU-only for now, and build." Spec: `docs/superpowers/specs/2026-11-08-challenge-kinds-design.md`. Decisions: "Challenges defaults" table in `docs/DECISIONS.md` (C0, CA, CB, CC, CD, CI rows).
+
+## Lanes (all landed, integrating)
+- A backend + oracle: `20261109000100_challenge_kinds.sql` (kinds show_up / distance / workouts / steps / custom; periods daily / weekly / once; `activities` with verdicts; `instance_progress`, `instance_standings`, `pact_activities`; `submit_activities`, `mark_done`; late evidence within 24 h → correction; monthly freezes for weekly pacts; implausible-pace and cross-source duplicate rejection). Oracle RULES_VERSION 4 with `computeProgress`/`goalResult`; differential-kinds test (120 random instances). db 369 / rules 56 at hand-off.
+- B app: kind picker step, goal steps, goal pact detail (ring, standings, evidence, activities with Challenge), weekly TodayCards, Apple Health sync (`@kingstinct/react-native-healthkit`), Friday nudge + Sunday Final call reminders, demo `p7`/`p8`, 34 screenshots.
+- C Strava: `supabase/functions/strava-sync` (OAuth via signed state, webhook, backfill, token refresh; 56 tests), `20261109000200_strava.sql` (service-only tokens, `my_integrations`, `disconnect_integration`), client helper + 8 tests.
+- D web app: Expo web export under `/final-call/app/` (`scripts/build-web.mjs`, `serve-web.mjs`, `web-smoke.mjs`, `public/index.html` centered column), Pages workflow builds and publishes it next to the simulator with a 404.html SPA fallback, `location.web.ts`, redirect URLs, CI `web-app` job, 12 web screenshots.
+- Integrator: rebuilding the Strava client helper that lane B's stub overwrote, Settings Strava row, weekly push copy, `proof_required` for custom pacts, docs reconciliation, full suites + screenshots.
+
+## Next
+Commit "Challenges" when the integrator is green; push; red-team the new rules + audit (phase E); PR `challenges` → `night-1` (stacked) or → `main` after PR 1 merges.

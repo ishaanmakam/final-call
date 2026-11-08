@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { router, Stack, useLocalSearchParams } from 'expo-router';
+import { Redirect, router, Stack, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, AppState, Linking, StyleSheet, View } from 'react-native';
 import Animated, { FadeOut } from 'react-native-reanimated';
@@ -28,6 +28,7 @@ import {
   type VerdictPanel as Panel,
 } from '@/features/checkin/copy';
 import { useWindowPhase } from '@/features/checkin/useWindowPhase';
+import { isGoalKind } from '@/features/goal/goal';
 import { useUserId } from '@/lib/auth';
 import type { CheckinAttempt } from '@/lib/checkinQueue';
 import { enqueueCheckin, kickQueue } from '@/lib/checkinQueueRuntime';
@@ -75,6 +76,8 @@ export default function CheckInScreen() {
   }, [blocked]);
 
   if (detail.isPending) return <CheckInSkeleton />;
+  // the check-in moment belongs to show_up; a goal pact's week lives on the pact screen (CB)
+  if (detail.isSuccess && isGoalKind(detail.data.pact.kind)) return <Redirect href={`/pacts/${detail.data.pact.id}`} />;
   if (detail.isError) {
     return (
       <Screen>

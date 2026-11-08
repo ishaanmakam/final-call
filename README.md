@@ -6,6 +6,8 @@ iOS app (Expo, bundle id `com.ishaanmakam.finalcall`, scheme `finalcall://`), a 
 
 **Simulator:** https://ishaanmakam.github.io/final-call/
 
+**Web app:** https://ishaanmakam.github.io/final-call/app/ after merge; email sign-in (the same app, exported for the web by `app/scripts/build-web.mjs`; docs/DEPLOY.md §13).
+
 ## Read first
 
 - Why and what: [`docs/DESIGN.md`](docs/DESIGN.md)

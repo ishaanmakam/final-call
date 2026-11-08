@@ -29,7 +29,9 @@ import {
 } from "@/components";
 import { HeaderIconButton, HeaderItems } from "@/features/group/HeaderIconButton";
 import { TodayCard } from "@/features/group/TodayCard";
-import { nothingTodayBody, pactDetailLine } from "@/features/group/today";
+import { goalDetailLine, nothingTodayBody, pactDetailLine } from "@/features/group/today";
+import { isGoalKind } from "@/features/goal/goal";
+import { useDistanceUnit } from "@/features/goal/useDistanceUnit";
 import { useUserId } from "@/lib/auth";
 import { classifyRpcError, userMessage } from "@/lib/errors";
 import { inviteLink } from "@/lib/links";
@@ -47,6 +49,7 @@ export default function GroupHome() {
   const qc = useQueryClient();
   const toast = useToast();
   const [menuOpen, setMenuOpen] = useState(false);
+  const unit = useDistanceUnit();
 
   if (home.isPending) return <GroupSkeleton />;
   if (home.isError) {
@@ -235,29 +238,31 @@ export default function GroupHome() {
                 <ListRow
                   key={pact.id}
                   title={pact.title}
-                  subtitle={pactDetailLine(
-                    describeDays(pact.days_of_week),
-                    pact.deadline_local,
-                    formatCents(pact.stake_cents),
-                  )}
+                  subtitle={
+                    isGoalKind(pact.kind)
+                      ? goalDetailLine(pact, unit, formatCents(pact.stake_cents))
+                      : pactDetailLine(describeDays(pact.days_of_week ?? []), pact.deadline_local, formatCents(pact.stake_cents))
+                  }
                   trailing={
                     pact.paused ? (
                       <Pill label="Paused" tone="pending" size="compact" />
                     ) : unjoined ? (
-                      <Pill label="Set your place" tone="tint" size="compact" />
+                      <Pill label={isGoalKind(pact.kind) ? "Join" : "Set your place"} tone="tint" size="compact" />
                     ) : undefined
                   }
                   chevron
                   onPress={() =>
                     router.push(
-                      unjoined
+                      unjoined && !isGoalKind(pact.kind)
                         ? `/pacts/${pact.id}/place`
                         : `/pacts/${pact.id}`,
                     )
                   }
                   accessibilityHint={
                     unjoined
-                      ? "Opens the place picker to join"
+                      ? isGoalKind(pact.kind)
+                        ? "Opens the challenge to join"
+                        : "Opens the place picker to join"
                       : "Opens the pact"
                   }
                 />

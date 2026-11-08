@@ -269,11 +269,12 @@ Logs: **Dashboard → Edge Functions → push-outbox → Logs** (one JSON line p
 | Setting | Value |
 |---|---|
 | Site URL | `finalcall://auth-callback` |
-| Redirect URLs | `finalcall://auth-callback`, `finalcall://auth-callback/**`, `exp://**/--/auth-callback` (dev client on the LAN) |
+| Redirect URLs | `finalcall://auth-callback`, `finalcall://auth-callback/**`, `exp://**/--/auth-callback` (dev client on the LAN), `https://ishaanmakam.github.io/final-call/app/auth-callback` (the web app, §13), `http://localhost:8081/auth-callback` (`npx expo start --web`) |
 
 The app sends magic links with `emailRedirectTo = Linking.createURL('auth-callback')`
 (`app/src/lib/auth.tsx`); a URL not in this list makes the link land on the Site URL with an
-error. Wildcards: `*` one path segment, `**` any.
+error. Wildcards: `*` one path segment, `**` any. The same list is in `supabase/config.toml`
+(`additional_redirect_urls`).
 
 **Authentication → Providers → Email**: enabled; *Confirm email* **off** (the magic link is the
 confirmation); *Secure email change* on. Magic-link / OTP expiry 3600 s (matches
@@ -418,6 +419,134 @@ supabase status                # prints local URL (http://127.0.0.1:54321), anon
 - `supabase test db` runs the pgTAP files in `supabase/tests/pgtap/` (copy them to
   `supabase/tests/database/` if your CLI only looks there).
 
+## 13. Web app (GitHub Pages)
+
+The same Expo app, exported for the web (`npx expo export --platform web`) and published next to
+the simulator: **https://ishaanmakam.github.io/final-call/app/** (site root = simulator, `/app/` =
+Final Call). `.github/workflows/pages.yml` builds both on every push to `main` that touches `web/**`,
+`packages/rules/**` or `app/**`, and by hand (*Actions → Pages → Run workflow*). Locally:
+`cd app && npm run web:build` (or `node scripts/build-web.mjs --demo`), `npm run web:serve`, open
+http://127.0.0.1:8081/final-call/app/; `npm run web:smoke` runs the Playwright check (docs/TESTING.md).
+
+**Repository secrets** (*Settings → Secrets and variables → Actions → Secrets*):
+
+| Secret | Value |
+|---|---|
+| `EXPO_PUBLIC_SUPABASE_URL` | `https://<ref>.supabase.co` (same as the EAS variable, §11) |
+| `EXPO_PUBLIC_SUPABASE_ANON_KEY` | the anon key (§2). It ends up in the public bundle by design, exactly as in the iOS build; RLS and the RPC membership checks are the boundary, never the key |
+
+**Repository variable** (*… → Variables*): `WEB_APP_DEMO` = `true` publishes the fixture-backed demo
+(no backend, fake session, `?signedOut=1` and the other demo params work) instead of the real app.
+Use it until the hosted project exists: without the two secrets the real build renders its
+"Setup needed (developer)" screen. Set it to `false` (or delete it) once the secrets are in.
+
+**What differs on the web** (all in `app/src/**/*.web.ts*` and `app/public/index.html`; nothing
+in the rules): sign-in is email (magic link) only, no Sign in with Apple (that needs a Services
+ID + the OAuth secret in §8; add it later); the magic link lands on
+`https://ishaanmakam.github.io/final-call/app/auth-callback?code=…`, which must be in the redirect
+list (§8) or the link lands on the Site URL with an error; location comes from the browser's
+geolocation prompt (no Approximate mode exists there, so a granted permission counts as precise;
+the fence math is the phone's); Health sync is unavailable ("Runs sync from your iPhone; Strava
+works here"); push and local reminders are no-ops; Venmo opens venmo.com in a new tab. The session
+lives in `localStorage` for that origin, and so does the PKCE verifier: the magic link must be
+opened in the same browser that asked for it (a link requested on the laptop and tapped on the
+phone lands on "Couldn't finish signing in").
+
+**Strava on the web**: see §14. Strava's callback domain is the functions host
+(`<ref>.supabase.co`), never the Pages origin; the web app only receives the function's final
+redirect back to `https://ishaanmakam.github.io/final-call/app/settings?strava=…`, which the
+function allow-lists through `WEB_ORIGIN`. Nothing to register for the Pages site.
+
+**Deep links on Pages**: GitHub Pages has no SPA rewrite, so the workflow copies the app's
+`index.html` to the site's `404.html`; `/final-call/app/groups/g1` (or the auth callback) is served
+by that page (HTTP 404 status, correct content), the bundle's absolute asset URLs
+(`/final-call/app/_expo/…`) resolve from anywhere, and expo-router strips the base path
+(`experiments.baseUrl`, set from `EXPO_WEB_BASE_URL` by `scripts/build-web.mjs`). The simulator has
+no deep routes, so it loses nothing.
+
+## 14. Strava (Edge Function `strava-sync`)
+
+Lets members connect Strava so their runs count toward distance / workouts challenges
+(`supabase/functions/README.md` "strava-sync" has the route-by-route description; storage is
+`20261109000200_strava.sql`). Needs §4 (migrations) and a deployed project URL.
+
+1. **Create the Strava API application** at https://www.strava.com/settings/api (one per
+   environment; a personal account is fine for the MVP). Fields:
+   - Application name: `Final Call` (staging: `Final Call (staging)`); category "Training".
+   - Website: `https://ishaanmakam.github.io/final-call/`.
+   - **Authorization Callback Domain**: the project's functions host, `<ref>.supabase.co`
+     (no scheme, no path). Strava only checks the domain, so `/functions/v1/strava-sync/callback`
+     works without being listed. For a local stack use `localhost`.
+   - Copy **Client ID** and **Client Secret**.
+   A new application is in "single player" mode (only the owner can authorize) until Strava
+   approves it; request access from the same page before TestFlight.
+
+2. **Secrets**:
+
+   ```powershell
+   $verify = -join ((48..57 + 97..122) | Get-Random -Count 32 | ForEach-Object { [char]$_ })
+   $state  = -join ((48..57 + 97..122) | Get-Random -Count 48 | ForEach-Object { [char]$_ })
+   supabase secrets set STRAVA_CLIENT_ID=<client id> STRAVA_CLIENT_SECRET=<client secret> STRAVA_VERIFY_TOKEN=$verify STRAVA_STATE_SECRET=$state
+   # optional: APP_SCHEME=finalcall  WEB_ORIGIN=https://ishaanmakam.github.io  (defaults)
+   supabase secrets list
+   ```
+
+3. **Deploy**:
+
+   ```powershell
+   supabase functions deploy strava-sync --no-verify-jwt
+   ```
+
+   `verify_jwt = false` is also set in `config.toml` (`[functions.strava-sync]`): browsers and
+   Strava's servers call this function without a Supabase JWT. The function authenticates each
+   route itself (signed state, verify token, or `auth.getUser` on the caller's JWT for `POST /state`).
+
+4. **The webhook subscription is created by the function** the first time anyone finishes
+   connecting (`GET /callback` → `ensureSubscription`): Strava calls `GET /webhook` with
+   `hub.verify_token` and the function echoes `hub.challenge`. Nothing to do by hand. To check:
+
+   ```powershell
+   Invoke-RestMethod "https://www.strava.com/api/v3/push_subscriptions?client_id=<id>&client_secret=<secret>"
+   # one entry whose callback_url is https://<ref>.supabase.co/functions/v1/strava-sync/webhook
+   ```
+
+   To create it by hand instead (same effect): `curl -X POST https://www.strava.com/api/v3/push_subscriptions -F client_id=<id> -F client_secret=<secret> -F callback_url=https://<ref>.supabase.co/functions/v1/strava-sync/webhook -F verify_token=<STRAVA_VERIFY_TOKEN>`.
+
+5. **Test with curl** (PowerShell: `curl.exe`):
+
+   ```powershell
+   $fn = "https://<ref>.supabase.co/functions/v1/strava-sync"
+   curl.exe -s "$fn/webhook?hub.mode=subscribe&hub.verify_token=<STRAVA_VERIFY_TOKEN>&hub.challenge=abc"
+   # {"hub.challenge":"abc"}            (403 with a wrong token)
+   curl.exe -s -i "$fn/connect?state=garbage"
+   # HTTP 400 {"error":"invalid or expired state; start again from the app"}
+   curl.exe -s -X POST "$fn/state" -H "Authorization: Bearer <a user's access token>" -H "content-type: application/json" -d "{}"
+   # {"state":"...","connect_url":"https://<ref>.supabase.co/functions/v1/strava-sync/connect?state=..."}
+   # open connect_url in a browser signed in to Strava: it ends on finalcall://settings?strava=connected
+   curl.exe -s -X POST "$fn/webhook" -H "content-type: application/json" -d '{"object_type":"activity","object_id":1,"aspect_type":"create","owner_id":1,"subscription_id":1,"event_time":1}'
+   # {"received":<id>}; the row in strava_webhook_events ends processed with error null
+   #   (owner 1 has no tokens → action "no_token" in the logs)
+   curl.exe -s "$fn/nothing"           # 404
+   ```
+
+   Then in SQL Editor: `select id, event->>'aspect_type' aspect, processed_at, error, attempts from public.strava_webhook_events order by id desc limit 10;`
+   and `select user_id, provider, athlete_id, connected_at from public.integration_tokens;` (never
+   select the token columns into a shared screen).
+
+6. **App side**: Settings → "Connect Strava" calls `POST /state` with the session and opens
+   `connect_url`; the return deep link is `finalcall://settings?strava=connected` (iOS) or the web
+   app's own settings page with `?strava=connected`. The web origin must be in `WEB_ORIGIN`
+   (default: the Pages origin), otherwise `/state` answers 400 for that redirect.
+
+Local stack: `supabase functions serve strava-sync --no-verify-jwt --env-file supabase/functions/.env`
+with the four `STRAVA_*` values plus `STRAVA_FUNCTION_URL=http://127.0.0.1:54321/functions/v1/strava-sync`
+(inside the container `SUPABASE_URL` is Kong's address, which Strava cannot reach). Strava must be
+able to reach the callback for a real connect: use a tunnel (`cloudflared tunnel --url http://127.0.0.1:54321`)
+and set the Strava application's callback domain to the tunnel host.
+
+Logs: **Dashboard → Edge Functions → strava-sync → Logs**, one JSON line per step
+(`{"fn":"strava-sync","route":"callback","backfill":{...}}`).
+
 ## Troubleshooting
 
 | Symptom | Cause → fix |
@@ -463,4 +592,6 @@ Copy into the deploy issue and tick:
 - [ ] §9 `review-photos` bucket private, 5 MB, image MIME; two policies present
 - [ ] §10 `npm run smoke` green against the smoke project
 - [ ] §11 EAS env vars for development / preview / production
+- [ ] §13 Pages secrets `EXPO_PUBLIC_SUPABASE_URL` + `EXPO_PUBLIC_SUPABASE_ANON_KEY`; `WEB_APP_DEMO` off; a magic link opened in a desktop browser signs in at `/final-call/app/`
+- [ ] §14 Strava application (callback domain = `<ref>.supabase.co`), four `STRAVA_*` secrets, `strava-sync` deployed, `GET /webhook` echoes the challenge, one push subscription listed after the first connect
 - [ ] REVIEW.md "Before production checklist" items 5–9 (push receipts, security review, legal opinion, dashboard advisors, first-two-weeks watch)

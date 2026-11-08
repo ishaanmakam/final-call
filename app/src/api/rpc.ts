@@ -3,7 +3,7 @@ import { classifyRpcError, userMessage, type RpcErrorKind } from '../lib/errors'
 import * as demo from './demo';
 import { DEMO } from './demo/settings';
 import { supabase } from './supabase';
-import type { CheckinRow, ReviewKind, RpcArgs, RpcName, RpcReturn } from './types';
+import type { ActivitySubmission, ActivityType, CheckinRow, GoalUnit, PactKind, PactPeriod, ReviewKind, RpcArgs, RpcName, RpcReturn } from './types';
 
 export class RpcError extends Error {
   readonly kind: RpcErrorKind;
@@ -64,36 +64,70 @@ const leaveGroupReal = (groupId: string) => call('leave_group', { p_group: group
 export interface CreatePactInput {
   groupId: string;
   title: string;
-  /** ISO weekdays 1=Mon..7=Sun */
-  days: number[];
+  /** ISO weekdays 1=Mon..7=Sun; null for weekly and once pacts (the server derives the week / race) */
+  days: number[] | null;
   /** 'HH:MM:SS' local to tz */
   windowOpen: string;
   deadline: string;
   stakeCents: number;
   tz: string;
+  /** challenge kinds (CB); omitted = show_up daily, the original 7-argument call */
+  kind?: PactKind;
+  period?: PactPeriod;
+  /** metres, count or steps per goalUnit */
+  goalValue?: number | null;
+  goalUnit?: GoalUnit | null;
+  activityTypes?: ActivityType[] | null;
+  raceStart?: string | null;
+  raceEnd?: string | null;
+  /** custom kind: every mark needs a photo (`pacts.proof_required`, 20261109000300) */
+  needsPhoto?: boolean;
 }
 
 const createPactReal = (p: CreatePactInput) =>
   call('create_pact', {
     p_group: p.groupId,
     p_title: p.title,
-    p_days: p.days,
+    // supabase-js drops undefined keys, so a show_up draft still sends the original seven arguments
+    p_days: p.days as number[],
     p_window_open: p.windowOpen,
     p_deadline: p.deadline,
     p_stake_cents: p.stakeCents,
     p_tz: p.tz,
+    ...(p.kind && p.kind !== 'show_up'
+      ? {
+          p_kind: p.kind,
+          p_period: p.period ?? 'daily',
+          p_goal_value: p.goalValue ?? null,
+          p_goal_unit: p.goalUnit ?? null,
+          p_activity_types: p.activityTypes ?? null,
+          p_race_start: p.raceStart ?? null,
+          p_race_end: p.raceEnd ?? null,
+          ...(p.kind === 'custom' ? { p_proof_required: p.needsPhoto === true } : {}),
+        }
+      : {}),
   });
 
 export interface JoinPactInput {
   pactId: string;
-  lat: number;
-  lng: number;
-  radiusM: number;
-  label: string;
+  /** the place; required for show_up, omitted for goal kinds (join_pact's place args are nullable) */
+  lat?: number | null;
+  lng?: number | null;
+  radiusM?: number | null;
+  label?: string | null;
 }
 
 const joinPactReal = (p: JoinPactInput) =>
-  call('join_pact', { p_pact: p.pactId, p_lat: p.lat, p_lng: p.lng, p_radius_m: p.radiusM, p_label: p.label });
+  call('join_pact', { p_pact: p.pactId, p_lat: p.lat ?? null, p_lng: p.lng ?? null, p_radius_m: p.radiusM ?? null, p_label: p.label ?? null });
+
+/**
+ * Goal kinds: Apple Health evidence in batches (the Strava function posts its own through
+ * `submit_activities_for`). Idempotent per (user, source, external_id); returns the rows written.
+ */
+const submitActivitiesReal = (items: ActivitySubmission[]) => call('submit_activities', { p_activities: items });
+
+/** Custom kind: mark the day or week done before its deadline; an optional photo path from the review-photos bucket. */
+const markDoneReal = (instanceId: string, photoPath: string | null = null) => call('mark_done', { p_instance: instanceId, p_photo_path: photoPath });
 
 const setPactPausedReal = (pactId: string, paused: boolean) =>
   call('set_pact_paused', { p_pact: pactId, p_paused: paused });
@@ -199,3 +233,5 @@ export const acknowledgePlace = DEMO ? demo.acknowledgePlace : acknowledgePlaceR
 export const objectPlace = DEMO ? demo.objectPlace : objectPlaceReal;
 export const deleteMyAccount = DEMO ? demo.deleteMyAccount : deleteMyAccountReal;
 export const setPactSeason = DEMO ? demo.setPactSeason : setPactSeasonReal;
+export const submitActivities = DEMO ? demo.submitActivities : submitActivitiesReal;
+export const markDone = DEMO ? demo.markDone : markDoneReal;

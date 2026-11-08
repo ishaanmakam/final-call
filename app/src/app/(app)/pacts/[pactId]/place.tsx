@@ -61,7 +61,8 @@ export default function PlacePicker() {
     if (detail.data && hadPlace === null) setHadPlace(mine !== undefined);
   }, [detail.data, mine, hadPlace]);
   useEffect(() => {
-    if (mine && !spot) {
+    // goal kinds join without a place (null columns): nothing to pre-fill
+    if (mine && !spot && mine.place_lat !== null && mine.place_lng !== null && mine.place_radius_m !== null) {
       setSpot({ lat: mine.place_lat, lng: mine.place_lng, accuracy: null });
       setRadius(mine.place_radius_m);
       setLabel(mine.place_label ?? '');

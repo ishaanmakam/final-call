@@ -540,11 +540,20 @@ const SERVICE_ONLY: [string, string[]][] = [
   ['_instance_posted', ['uuid']],
   ['_local_to_utc', ['timestamp', 'text']],
   ['_haversine_m', ['float8', 'float8', 'float8', 'float8']],
+  ['upsert_integration_token', ['uuid', 'text', 'text', 'text', 'text', 'timestamptz', 'text']],
+  // challenge kinds (20261109000100)
+  ['submit_activities_for', ['uuid', 'jsonb']],
+  ['submit_activities_at', ['uuid', 'jsonb', 'timestamptz']],
+  ['mark_done_at', ['uuid', 'uuid', 'text', 'timestamptz']],
+  ['_goal_progress', ['uuid', 'uuid', 'timestamptz']],
+  ['_base_result_v1', ['uuid', 'uuid']],
+  ['_tick_periodic', ['timestamptz']],
 ];
 const CLIENT_RPCS: [string, string[]][] = [
   ['create_group', ['text', 'text']], ['join_group', ['text']], ['leave_group', ['uuid']],
-  ['create_pact', ['uuid', 'text', 'smallint[]', 'time', 'time', 'int', 'text']],
+  ['create_pact', ['uuid', 'text', 'smallint[]', 'time', 'time', 'int', 'text', 'public.pact_kind', 'public.pact_period', 'numeric', 'text', 'text[]', 'date', 'date', 'boolean']],
   ['join_pact', ['uuid', 'float8', 'float8', 'int', 'text']], ['set_pact_paused', ['uuid', 'boolean']],
+  ['submit_activities', ['jsonb']], ['mark_done', ['uuid', 'text']],
   ['check_in', ['uuid', 'float8', 'float8', 'float8', 'timestamptz', 'boolean', 'uuid']], ['declare_freeze', ['uuid']],
   ['open_review', ['uuid', 'uuid', 'public.review_kind', 'text', 'text']], ['cast_vote', ['uuid', 'boolean']],
   ['mark_obligation_paid', ['uuid']], ['confirm_obligation', ['uuid']], ['dispute_obligation', ['uuid']],
@@ -552,6 +561,7 @@ const CLIENT_RPCS: [string, string[]][] = [
   ['acknowledge_place', ['uuid']], ['object_place', ['uuid', 'text']], ['pact_place_distances', ['uuid']],
   ['delete_my_account', []],
   ['set_pact_season', ['uuid', 'date', 'smallint']],
+  ['disconnect_integration', ['text']],
 ];
 const callSql = (fn: string, types: string[]) => `select public.${fn}(${types.map((t) => `null::${t}`).join(', ')})`;
 
