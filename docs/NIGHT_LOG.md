@@ -23,5 +23,13 @@ Plan: three parallel agents, each test-first, each with its own migration file:
 3. Appeal default → `20261108000300_appeal_default.sql`, `packages/rules`, differential + e2e tests, CONTRACT.
 Then a fresh red-team agent, fixes test-first.
 
+## Phase 1a — committed and pushed (4272671)
+Suites: db 251, rules 41, push-outbox 55, app 446; 138 screenshots.
+
+## In flight
+- Fresh red-team agent: `supabase/tests/redteam.test.ts`, `supabase/migrations/20261108000400_redteam_fixes.sql`, `docs/REDTEAM.md`.
+- Phase 2 in parallel: P1 Supabase-for-real (`supabase/config.toml`, `seed.sql`, `scripts/smoke.ts`, `docs/DEPLOY.md`), P2 reliability (local notifications, heartbeat migration `20261108000500_heartbeat.sql`, Sentry, clock skew), P4 device testing (`.maestro/`, `.eas/workflows/`, CI, `docs/TESTING.md`).
+- After P2 finishes: P3 App Store readiness + global rename to Final Call (account deletion, privacy/terms, APP_STORE.md, Apple nonce, expo-updates, bundle id, scheme).
+
 ## Next
-Dispatch phase 1 agents.
+Collect red-team + P1/P2/P4 reports, integrate, run all suites, commit "Phase 1b/2a", push. Then P3, then phase 3.
