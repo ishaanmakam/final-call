@@ -83,7 +83,7 @@ npm run screenshots:quick  # capture again without re-exporting
 
 ## Design system
 
-`PRODUCT.md` (product truth) and `DESIGN.md` (tokens, type scale, colors, motion, haptics, the check-in moment, copy glossary) are the design authority for the app. Tokens live in `src/theme/tokens.ts` and are tested (`src/theme/*.test.ts`: WCAG AA contrast for every documented pair in light and dark, spring/easing invariants, reduced-motion mapping, countdown formatting). Primitives live in `src/components/` (`Button`, `Card`, `ListRow`/`ListGroup`, `StatusPill`, `AvatarStack`, `Countdown`, `ProgressRing`, `Sheet`, `Toast`, `EmptyState`, `Skeleton`, `TextField`, `SegmentedControl`, `Screen`, `Text`, `Icon`); `src/components/ui.tsx` is a compatibility layer for the phase-1 screens.
+`PRODUCT.md` (product truth) and `DESIGN.md` (tokens, type scale, colors, motion, haptics, the check-in moment, copy glossary) are the design authority for the app. Tokens live in `src/theme/tokens.ts` and are tested (`src/theme/*.test.ts`: WCAG AA contrast for every documented pair in light and dark, spring/easing invariants, reduced-motion mapping, countdown formatting). Primitives live in `src/components/` (`Button`, `Card`, `ListRow`/`ListGroup`, `StatusPill`/`Pill`, `Avatar`/`AvatarStack`, `Countdown`, `ProgressRing`, `RadiusSlider`, `Sheet`, `Toast`, `EmptyState`, `Skeleton`, `TextField`, `TimePicker` (+ `.web`), `SegmentedControl`, `Screen`, `Text`, `Icon`); screens compose only these and the tokens. Motion goes through `src/theme/motion.ts` (`transition()`, `spring()`, `timing()`, every spring with `reduceMotion: System`) and haptics through `src/theme/haptics.ts` (`haptic('name')`, one per action, no-op on web).
 
 ## Demo mode
 
@@ -104,8 +104,10 @@ Route params steer the scenario (web: the URL query; native: any `router.push` w
 | `?perm=denied\|blocked` | location permission outcome on the Check In tap |
 | `?signedOut=1` | no session (shows sign-in) |
 | `?freeze=1` | stops the clock at the fixture anchor (deterministic countdowns) |
+| `?settle=owe\|owed` | settle-up variants: only obligations you pay / only ones paid to you |
+| `?fix=none` | the GPS fix times out on the Check In tap (sent without coordinates: unverified, never missed) |
 
-Demo ids: group `g1` (empty group `g-empty`), pacts `p1`..`p4`, today's instances `i-open`, `i-before`, `i-closed`, `i-void`, invite code `KANE9AM`.
+Demo ids: group `g1` (empty group `g-empty`), pacts `p1`..`p5` (`p5` "Chem lab by 2" is one you are not in), today's instances `i-open`, `i-before`, `i-closed`, `i-void`, `i-frozen`, `i-notin`, invite code `KANE9AM`.
 
 ## Screenshots
 
@@ -124,20 +126,38 @@ Routes that need interaction (the pact wizard's later steps, each check-in verdi
 ```
 app.config.ts            Expo config: bundle id, permissions text, plugins
 eas.json                 development / preview / production build profiles
-src/app/                 expo-router routes
+PRODUCT.md, DESIGN.md    design authority: product truth; tokens, motion, haptics, copy glossary
+screenshots/             the review artifact: every route, light and dark (see "Screenshots")
+scripts/screenshot.mjs   exports the demo web build and captures it with Playwright
+src/app/                 expo-router routes (layout and data only; copy and state tables live in src/features)
   sign-in.tsx            Sign in with Apple + email magic link
   auth-callback.tsx      showup://auth-callback?code=... (magic link landing)
-  (app)/_layout.tsx      signed-in guard, push registration, offline queue runner
-  (app)/groups/...       list, create/join, group home, feed, ledger, pact wizard
+  (app)/_layout.tsx      signed-in guard, push registration, offline queue runner, queue toasts
+  (app)/groups/...       list, create/join, group home, feed, settle-up (route name `ledger`), pact wizard
   (app)/pacts/[pactId]/  pact detail, per-person place picker
-  (app)/checkin/[id]     the big Check In button
+  (app)/checkin/[id]     the check-in moment (ring, button, verdict panel)
   (app)/join/[code]      showup://join/<code> invite links
-  (app)/settings.tsx     profile + Venmo username, notifications, sign out
+  (app)/settings.tsx     profile + Venmo username (autosave), notifications, sign out
+src/components/          the primitives (see "Design system"); `status.ts` maps every state to its word and tone
+src/theme/               tokens (colors, type, space, radius, springs, easings, haptics map), ThemeProvider,
+                         motion helpers, reduced-motion mapper, countdown formatting; all unit tested
+src/features/            per-screen logic with no React Native imports, so it is unit tested
+  auth/                  safe `next` redirect, email validation, magic-link error copy
+  checkin/               the button state machine, verdict panel copy, clock copy, CheckinButton/VerdictPanel/WindowClock
+  feed/                  day grouping, money sentences, review and vote copy
+  group/                 today-card copy and status lines, nav-bar icon button
+  groups/                create/join forms, nav-bar text and icon buttons
+  pact/                  wizard draft, validation, window presets
+  place/                 place-change lock rules, radius detents and labels
+  settings/              profile autosave patch, destructive confirm (alert on iOS, confirm on web)
+  settle/                headline, subline, pills and week split for settle-up
+  shared/                time zones with friendly names (one list for the group and pact pickers)
 src/api/
   types.ts               hand-written row types + Database type matching CONTRACT.md
   rpc.ts                 typed wrapper for every client RPC (exact names)
   queries.ts             TanStack Query hooks: my groups, group home, pact, instance, feed, ledger
-  supabase.ts            client with Keychain (secure-store) session storage
+  supabase.ts            client with Keychain (secure-store) session storage, chunked (secureChunks.ts)
+  demo/                  EXPO_PUBLIC_DEMO=1 fixtures, settings (`?param` switches) and in-memory hooks/RPCs
 src/lib/                 pure logic (unit tested) + small RN adapters
   checkinQueue.ts        offline queue: dedupe, backoff, 24h expiry, serialized flushes
   checkinQueueRuntime.ts AsyncStorage + AppState wiring for the queue
@@ -148,6 +168,9 @@ src/lib/                 pure logic (unit tested) + small RN adapters
   obligations.ts         open obligations (pending + marked_paid, any settlement) grouped by week
   places.ts              which saved place applies to a window (12 h lead time), next window
   reviews.ts             Appeal/Challenge availability (one of each per person per instance)
+  pendingNext.ts         where to land after a magic link (the invite that sent you to sign in), AsyncStorage-backed
+  push.ts / push.web.ts  Expo push registration and notification-tap routing (by `url`, then by kind)
+  queueNotice.ts         toast copy for offline-queue outcomes (sent / rejected / expired)
 ```
 
 UI copy says pledge, forfeit and pool; code says stake and pot.
@@ -189,7 +212,7 @@ The client needs these, which are not in CONTRACT.md yet:
 
 1. `profiles.venmo_username text null`, plus an RLS policy letting a user update their own profile row (`id = auth.uid()`), which Settings uses for display name and Venmo username.
 2. RLS so group members can read co-members' `profiles` rows.
-3. A private Storage bucket `review-photos` with policies: members insert under `<instance_id>/<auth.uid()>/...`, members of the instance's group can read. Appeal photos pass that object path as `p_photo_path`.
+3. A private Storage bucket `review-photos` with policies: members insert under `<group_id>/<user_id>/...` (what `lib/reviewPhoto.ts` writes), members of that group can read. Appeal photos pass that object path as `p_photo_path`.
 4. An RLS delete policy on `push_tokens` for `user_id = auth.uid()` (Settings > Notifications off and sign-out delete the device token; there is no unregister RPC).
 5. `check_in` should accept null `p_lat`/`p_lng`/`p_accuracy_m` ("no fix", judged `unjudgeable` by the existing rule).
 6. A `profiles` row is created for each new auth user (trigger), since the app only updates it.

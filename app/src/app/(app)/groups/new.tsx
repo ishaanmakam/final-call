@@ -6,7 +6,7 @@ import { createGroup, joinGroup } from '@/api/rpc';
 import { Icon, ListGroup, ListRow, Screen, SegmentedControl, Sheet, Text, TextField } from '@/components';
 import { NAME_MAX, canCreate, canJoin, groupNameError, normalizeInviteInput, parseInviteInput } from '@/features/groups/forms';
 import { HeaderItems, HeaderTextButton } from '@/features/groups/headerButtons';
-import { searchZones, zoneDisplayName } from '@/features/groups/timeZones';
+import { searchZones, zoneDisplayName } from '@/features/shared/timeZones';
 import { userMessage } from '@/lib/errors';
 import { deviceTimeZone } from '@/lib/time';
 import { space } from '@/theme';
@@ -180,15 +180,15 @@ export default function NewGroup() {
         <ListGroup footer={zones.length === 0 ? 'No zone matches that. Try the nearest big city.' : 'Type to find other zones.'}>
           {zones.map((z) => (
             <ListRow
-              key={z.tz}
+              key={z.id}
               title={z.name}
-              subtitle={z.tz === deviceTz ? `${z.city} · this device` : z.city}
-              trailing={z.tz === tz ? <Icon name="checkmark" size={18} color="tint" accessibilityLabel="Selected" /> : undefined}
+              subtitle={z.id === deviceTz ? `${z.city} · this device` : z.city}
+              trailing={z.id === tz ? <Icon name="checkmark" size={18} color="tint" accessibilityLabel="Selected" /> : undefined}
               onPress={() => {
-                setTz(z.tz);
+                setTz(z.id);
                 setZonePicker(false);
               }}
-              accessibilityLabel={`${z.name}, ${z.city}${z.tz === tz ? ', selected' : ''}`}
+              accessibilityLabel={`${z.name}, ${z.city}${z.id === tz ? ', selected' : ''}`}
             />
           ))}
         </ListGroup>

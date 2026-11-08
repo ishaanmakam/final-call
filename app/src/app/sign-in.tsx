@@ -7,6 +7,7 @@ import { DEMO } from '@/api/demo';
 import { Button, Icon, Text, TextField } from '@/components';
 import { EMAIL_INVALID, isValidEmail, safeNext } from '@/features/auth/magicLink';
 import { sendMagicLink, signInWithApple, useAuth } from '@/lib/auth';
+import { pendingNext } from '@/lib/pendingNextRuntime';
 import { userMessage } from '@/lib/errors';
 import { gutter, radius, space, useTheme } from '@/theme';
 
@@ -61,6 +62,8 @@ export default function SignIn() {
     setEmailError(null);
     setBusy('email');
     try {
+      // the callback URL cannot carry `next` (A5): park it for auth-callback to pick up
+      await pendingNext.set(params.next).catch(() => undefined);
       await sendMagicLink(email);
       setSentTo(email.trim());
     } catch (e) {

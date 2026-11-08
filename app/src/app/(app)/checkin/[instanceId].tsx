@@ -30,7 +30,7 @@ import { captureAttempt } from '@/lib/checkinAttempt';
 import { userMessage } from '@/lib/errors';
 import { ensureForegroundPermission, takeHighAccuracyFix } from '@/lib/location';
 import { formatDateInZone, formatTimeInZone } from '@/lib/time';
-import { durations, haptic, space } from '@/theme';
+import { durations, easing, haptic, space } from '@/theme';
 
 type Phase =
   | { kind: 'idle' }
@@ -259,7 +259,7 @@ function Loaded({
               ) : null}
             </View>
           ) : (
-            <Animated.View key="status" exiting={FadeOut.duration(durations.press)} style={styles.status}>
+            <Animated.View key="status" exiting={FadeOut.duration(durations.press).easing(easing.out)} style={styles.status}>
               {state === 'closed' && myResult ? (
                 <StatusPill state={myResult.status} who="Your result" style={styles.centerPill} />
               ) : statusLine ? (
@@ -314,7 +314,7 @@ function Loaded({
       {judgedPlace ? (
         <ListGroup
           header="Your place"
-          footer="Judged against the place in force when the window opened. Your location is read once, when you tap, and nowhere else."
+          footer="Judged against the place in force when the window opened."
           style={styles.section}
         >
           <ListRow

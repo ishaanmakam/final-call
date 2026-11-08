@@ -124,7 +124,7 @@ export function panelForPermission(blocked: boolean): VerdictPanel {
   return blocked
     ? {
         headline: 'Location is off for Show Up',
-        body: 'Location is turned off for Show Up in iOS Settings. Turn it on, then come back and tap Check in.',
+        body: 'Turn it on in iOS Settings, then come back and tap Check in. Without location a tap can\'t be judged.',
         tone: 'neutral',
         haptic: 'error',
         action: 'openSettings',

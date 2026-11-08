@@ -22,17 +22,33 @@ export function avatarSlot(id: string, slots: number): number {
   return h % slots;
 }
 
+/** Below this size two letters no longer fit a circle (with its ring) at any system font; one does. */
+export const SINGLE_INITIAL_BELOW = 28;
+
+/**
+ * Initials sized from the circle, not from the type scale: two letters need about 36% of the
+ * diameter each to clear the ring; when less than 28 pt of the circle is visible (a small avatar,
+ * or one partly covered by its neighbour in a stack) only the first initial is drawn.
+ */
+export function avatarInitials(name: string, size: number, visibleWidth = size): { text: string; fontSize: number } {
+  const text = visibleWidth < SINGLE_INITIAL_BELOW ? initials(name).charAt(0) : initials(name);
+  return { text, fontSize: Math.max(9, Math.round(size * 0.36)) };
+}
+
 export interface AvatarProps {
   person: Person;
   size?: number;
   /** a ring in the tint marks "you" */
   highlighted?: boolean;
+  /** how much of the circle is uncovered (a stack overlaps its neighbours); defaults to the size */
+  visibleWidth?: number;
   style?: StyleProp<ViewStyle>;
 }
 
-export function Avatar({ person, size = 32, highlighted, style }: AvatarProps) {
+export function Avatar({ person, size = 32, highlighted, visibleWidth, style }: AvatarProps) {
   const { colors } = useTheme();
   const slot = colors.avatar[avatarSlot(person.id, colors.avatar.length)]!;
+  const { text, fontSize } = avatarInitials(person.name, size, visibleWidth);
   return (
     <View
       accessible
@@ -46,12 +62,14 @@ export function Avatar({ person, size = 32, highlighted, style }: AvatarProps) {
       ]}
     >
       <Text
-        variant={size >= 36 ? 'subheadline' : 'caption1'}
+        variant="caption1"
         emphasis
-        style={{ color: slot.fg, lineHeight: undefined }}
-        maxFontSizeMultiplier={1.2}
+        numberOfLines={1}
+        // the circle is a fixed-size glyph, like an SF Symbol: it does not grow with Dynamic Type
+        maxFontSizeMultiplier={1}
+        style={{ color: slot.fg, fontSize, lineHeight: fontSize * 1.2, letterSpacing: -0.2 }}
       >
-        {initials(person.name)}
+        {text}
       </Text>
     </View>
   );
@@ -74,6 +92,7 @@ export function AvatarStack({ people, max = 4, size = 28, highlightIds, style }:
   const extra = people.length - shown.length;
   const highlight = highlightIds instanceof Set ? highlightIds : new Set(highlightIds ?? []);
   const overlap = Math.round(size * 0.3);
+  const tail = avatarInitials('+', size).fontSize;
   return (
     <View
       accessible
@@ -86,8 +105,10 @@ export function AvatarStack({ people, max = 4, size = 28, highlightIds, style }:
           <Avatar
             person={p}
             size={size}
+            // the circle to its left sits on top (higher zIndex), so only the uncovered part holds letters
+            visibleWidth={i > 0 ? size - overlap : size}
             highlighted={highlight.has(p.id)}
-            style={{ borderWidth: highlight.has(p.id) ? 2 : 2, borderColor: highlight.has(p.id) ? colors.tint : colors.bg }}
+            style={{ borderWidth: 2, borderColor: highlight.has(p.id) ? colors.tint : colors.bg }}
           />
         </View>
       ))}
@@ -98,7 +119,14 @@ export function AvatarStack({ people, max = 4, size = 28, highlightIds, style }:
             { width: size, height: size, borderRadius: size / 2, marginLeft: -overlap, backgroundColor: colors.fill, borderWidth: 2, borderColor: colors.bg },
           ]}
         >
-          <Text variant="caption1" emphasis color="secondary" style={{ lineHeight: undefined }} maxFontSizeMultiplier={1.2}>
+          <Text
+            variant="caption1"
+            emphasis
+            color="secondary"
+            numberOfLines={1}
+            maxFontSizeMultiplier={1}
+            style={{ fontSize: tail, lineHeight: tail * 1.2 }}
+          >
             +{extra}
           </Text>
         </View>

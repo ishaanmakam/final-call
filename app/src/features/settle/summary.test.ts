@@ -47,14 +47,12 @@ describe('settleSummary', () => {
       [ob({ from_user: 'diego', to_user: 'me', amount_cents: 825 }), ob({ from_user: 'me', to_user: 'maya', amount_cents: 200 })],
       'me',
     );
-    expect(settleSubline(both, nameOf, true)).toBe(
-      "You pay Maya $2.00 on Venmo, then mark it paid; they confirm and it's done. Diego pays you $8.25 on Venmo. Confirm when it lands.",
-    );
+    expect(settleSubline(both, nameOf, true)).toBe('You pay Maya $2.00; Diego pays you $8.25, on Venmo.');
     const two = settleSummary(
       [ob({ from_user: 'diego', to_user: 'me', amount_cents: 825 }), ob({ from_user: 'priya', to_user: 'me', amount_cents: 100 })],
       'me',
     );
-    expect(settleSubline(two, nameOf, true)).toBe('Diego and Priya pay you $9.25 on Venmo. Confirm when it lands.');
+    expect(settleSubline(two, nameOf, true)).toBe('Diego and Priya pay you $9.25, on Venmo.');
     expect(settleSubline(settleSummary([], 'me'), nameOf, true)).toMatch(/Monday at noon/);
     expect(settleSubline(settleSummary([], 'me'), nameOf, false)).toMatch(/first settle-up/);
   });

@@ -72,8 +72,7 @@ import { gutter, radius, space, useTheme } from '@/theme';
 const FEED_RULE = "Missed a day you actually made? Appeal it. Something look off? Challenge it. The group votes before Monday's settle-up.";
 const UNVERIFIED_RULE =
   "Unverified means the app couldn't judge a tap (weak GPS, no fix, or a late offline send). It never costs a pledge and never wins one.";
-const OTHER_STATES_RULE =
-  'Frozen: the day was called off in advance. Didn\'t count: fewer than two people were active. Excluded: the group\'s review took someone out of the day. None of these move money.';
+const OTHER_STATES_RULE = "Frozen, Didn't count and Excluded days move no money either.";
 
 interface ReviewTarget {
   item: FeedItem;

@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { StyleSheet, View, type LayoutChangeEvent } from 'react-native';
 import { GestureDetector, usePanGesture } from 'react-native-gesture-handler';
-import Animated, { useAnimatedReaction, useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
+import Animated, { useAnimatedReaction, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { scheduleOnRN } from 'react-native-worklets';
 import { RADIUS_DETENTS, RADIUS_MAX, RADIUS_MIN, RADIUS_STEP, radiusLine } from '../features/place/radius';
 import { haptic } from '../theme/haptics';
+import { timing } from '../theme/motion';
 import { useTheme } from '../theme/ThemeProvider';
 import { TOUCH_TARGET, radius, space } from '../theme/tokens';
 import { Button } from './Button';
@@ -89,14 +90,18 @@ export function RadiusSlider({ value, onChange, min = RADIUS_MIN, max = RADIUS_M
     onFinalize: () => {
       'worklet';
       dragging.set(false);
-      // settle the thumb on the committed step
-      ratio.set((stepped.get() - min) / (max - min));
+      // settle the thumb on the committed step (a few points at most: a short ease, not a jump)
+      ratio.set(withTiming((stepped.get() - min) / (max - min), timing('press')));
     },
   });
 
   const fillStyle = useAnimatedStyle(() => ({ width: `${ratio.get() * 100}%` }));
   const thumbStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: ratio.get() * Math.max(0, trackWidth.get() - THUMB) }, { scale: dragging.get() ? 1.1 : 1 }],
+    transform: [
+      { translateX: ratio.get() * Math.max(0, trackWidth.get() - THUMB) },
+      // press feedback on the thumb: grows under the finger over 120 ms, shrinks back on release
+      { scale: withTiming(dragging.get() ? 1.1 : 1, timing('press')) },
+    ],
   }));
 
   const onLayout = (e: LayoutChangeEvent) => {

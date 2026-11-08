@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
 import { GestureDetector, usePanGesture } from 'react-native-gesture-handler';
 import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -31,12 +31,14 @@ const ToastContext = createContext<ToastApi>({ show: () => undefined, hide: () =
 
 export const useToast = (): ToastApi => useContext(ToastContext);
 
-const HIDDEN_Y = -120;
+/** Off-screen start before the toast has measured itself; replaced by its own height on layout. */
+const HIDDEN_Y = -200;
 
 /**
  * One toast at a time, at the top, under the status bar. A new toast replaces the current one.
- * Enters and exits along the same path (down in, up out), exit faster than entry; swipe up to
- * dismiss with velocity OR distance; reduced motion fades in place.
+ * Enters and exits along the same path (down in 250 ms ease-out, up out 200 ms); a timing curve,
+ * not a spring, because no finger put it there. Swipe up to dismiss with velocity OR distance;
+ * the release spring carries the finger's velocity. Reduced motion fades in place.
  */
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [current, setCurrent] = useState<(ToastOptions & { id: number }) | null>(null);
@@ -82,6 +84,7 @@ function ToastHost({ toast, onDismiss }: { toast: (ToastOptions & { id: number }
   const reduced = useReducedMotion();
   const [shown, setShown] = useState<(ToastOptions & { id: number }) | null>(toast);
   const y = useSharedValue(HIDDEN_Y);
+  const hiddenY = useSharedValue(HIDDEN_Y);
   const opacity = useSharedValue(0);
   const start = useSharedValue(0);
 
@@ -93,15 +96,20 @@ function ToastHost({ toast, onDismiss }: { toast: (ToastOptions & { id: number }
         opacity.set(withTiming(1, timing('enter')));
       } else {
         opacity.set(withTiming(1, timing('enter')));
-        y.set(withSpring(0, spring('settle')));
+        y.set(withTiming(0, timing('enter')));
       }
       return;
     }
     if (!shown) return;
     const unmount = () => setShown(null);
     opacity.set(withTiming(0, timing('exit'), (f) => f && scheduleOnRN(unmount)));
-    if (!reduced) y.set(withTiming(HIDDEN_Y, timing('exit')));
-  }, [toast, reduced, y, opacity, shown]);
+    if (!reduced) y.set(withTiming(hiddenY.get(), timing('exit')));
+  }, [toast, reduced, y, hiddenY, opacity, shown]);
+
+  // the toast's own height (Dynamic Type can make it tall) decides how far "off the top" is
+  const onLayout = (e: LayoutChangeEvent) => {
+    hiddenY.set(-(e.nativeEvent.layout.height + insets.top + space.lg));
+  };
 
   const pan = usePanGesture({
     activeOffsetY: [-6, 6],
@@ -120,7 +128,7 @@ function ToastHost({ toast, onDismiss }: { toast: (ToastOptions & { id: number }
       const projected = y.get() + project(e.velocityY);
       if (projected < -40 || e.velocityY < -500) {
         opacity.set(withTiming(0, timing('exit')));
-        y.set(withSpring(HIDDEN_Y, spring('sheetDismiss', e.velocityY), (f) => f && scheduleOnRN(onDismiss)));
+        y.set(withSpring(hiddenY.get(), spring('sheetDismiss', e.velocityY), (f) => f && scheduleOnRN(onDismiss)));
         scheduleOnRN(haptic, 'snap');
       } else {
         y.set(withSpring(0, spring('snapBack', e.velocityY)));
@@ -138,14 +146,11 @@ function ToastHost({ toast, onDismiss }: { toast: (ToastOptions & { id: number }
     <View pointerEvents="box-none" style={[StyleSheet.absoluteFill, styles.host]}>
       <GestureDetector gesture={pan}>
         <Animated.View
+          onLayout={onLayout}
           accessibilityRole="alert"
           accessibilityLiveRegion="polite"
           accessibilityLabel={shown.message}
-          style={[
-            styles.toast,
-            { top: insets.top + space.sm, backgroundColor: colors.surfaceElevated, shadowColor: colors.shadow, borderColor: colors.separator },
-            style,
-          ]}
+          style={[styles.toast, { top: insets.top + space.sm, backgroundColor: colors.surfaceElevated, shadowColor: colors.shadow }, style]}
         >
           <Pressable
             disabled={!shown.onPress}
@@ -175,7 +180,7 @@ const styles = StyleSheet.create({
     left: gutter,
     right: gutter,
     borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
+    // floating surface: shadow only, never a border under it (DESIGN.md Border-or-Shadow rule)
     shadowOpacity: 0.18,
     shadowRadius: 20,
     shadowOffset: { width: 0, height: 8 },

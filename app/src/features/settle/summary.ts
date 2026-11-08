@@ -50,26 +50,23 @@ export function joinNames(names: string[]): string {
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
-/** The sentence under the headline: who pays whom, and what to do about it. */
+/**
+ * The sentence under the headline: who pays whom. One clause per direction, no instructions (the
+ * rows below carry the buttons and their footnotes).
+ */
 export function settleSubline(s: SettleSummary, nameOf: (id: string) => string, hasSettlement: boolean): string {
   const lines: string[] = [];
-  if (s.payCents > 0) {
-    lines.push(
-      `You pay ${joinNames(s.payees.map(nameOf))} ${formatCents(s.payCents)} on Venmo, then mark it paid; they confirm and it's done.`,
-    );
-  }
+  if (s.payCents > 0) lines.push(`You pay ${joinNames(s.payees.map(nameOf))} ${formatCents(s.payCents)}`);
   if (s.receiveCents > 0) {
     const names = joinNames(s.payers.map(nameOf));
-    lines.push(`${names} ${s.payers.length === 1 ? 'pays' : 'pay'} you ${formatCents(s.receiveCents)} on Venmo. Confirm when it lands.`);
+    lines.push(`${names} ${s.payers.length === 1 ? 'pays' : 'pay'} you ${formatCents(s.receiveCents)}`);
   }
   if (lines.length === 0) {
-    lines.push(
-      hasSettlement
-        ? 'Nothing open for you. Next settle-up: Monday at noon, group time.'
-        : 'The first settle-up runs Monday at noon, group time. Until then this week shows only in the running balance.',
-    );
+    return hasSettlement
+      ? 'Nothing open for you. Next settle-up: Monday at noon, group time.'
+      : 'The first settle-up runs Monday at noon, group time. Until then this week shows only in the running balance.';
   }
-  return lines.join(' ');
+  return `${lines.join('; ')}, on Venmo.`;
 }
 
 /** Pill from your side of the obligation: a payee waits, a payer has something unpaid. */

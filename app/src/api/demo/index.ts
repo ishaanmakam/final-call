@@ -41,6 +41,9 @@ const queryKeys = {
   profile: (userId: string) => ['profile', userId] as const,
 };
 
+/** Mirrors queries.ts (A6): a profile edit refreshes every query that embeds the name. */
+const PROFILE_DEPENDENT_KEYS = (userId: string) => [['profile', userId], ['group'], ['groups']];
+
 // ---------- settings plumbing ----------
 
 /** Reads the demo params from the current URL and publishes them to the process-wide store. */
@@ -100,7 +103,7 @@ export function useUpdateProfile(userId: string) {
       const p = store.profiles.find((x) => x.id === userId);
       if (p) Object.assign(p, patch);
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.profile(userId) }),
+    onSuccess: () => Promise.all(PROFILE_DEPENDENT_KEYS(userId).map((queryKey) => qc.invalidateQueries({ queryKey }))),
   });
 }
 
@@ -123,10 +126,11 @@ export function useMyGroups(userId: string) {
   });
 }
 
-export function useGroupHome(groupId: string, userId: string) {
+export function useGroupHome(groupId: string, userId: string, enabled = true) {
   const s = useDemoSettings();
   return useQuery({
     queryKey: [...queryKeys.groupHome(groupId), demoKey(s)],
+    enabled,
     queryFn: async (): Promise<GroupHome> => {
       await gate(s);
       const group = groupOf(groupId);

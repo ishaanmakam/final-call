@@ -7,7 +7,6 @@ import { declareFreeze, setPactPaused } from '@/api/rpc';
 import type { PactInstanceRow } from '@/api/types';
 import {
   Avatar,
-  AvatarStack,
   Button,
   EmptyState,
   ListGroup,
@@ -18,9 +17,8 @@ import {
   StatusPill,
   Text,
   useToast,
-  type Person,
 } from '@/components';
-import { timeZoneDisplayName } from '@/features/pact/timeZones';
+import { timeZoneDisplayName } from '@/features/shared/timeZones';
 import { useUserId } from '@/lib/auth';
 import { userMessage } from '@/lib/errors';
 import { formatCents } from '@/lib/money';
@@ -40,7 +38,7 @@ export default function PactDetail() {
   const [freezing, setFreezing] = useState<string | null>(null);
 
   const groupId = detail.data?.pact.group_id ?? '';
-  const home = useGroupHome(groupId, userId);
+  const home = useGroupHome(groupId, userId, groupId.length > 0);
   const amIn = detail.data?.participants.some((p) => p.user_id === userId) ?? false;
   const schedule = usePlaceSchedule(pactId, userId, amIn);
 
@@ -78,7 +76,6 @@ export default function PactDetail() {
   const canPause = pact.created_by === userId || myRole === 'owner';
   const deviceZone = deviceTimeZone();
   const nameOf = (id: string) => (id === userId ? 'You' : displayName(memberProfiles, id));
-  const people: Person[] = participants.map((p) => ({ id: p.user_id, name: nameOf(p.user_id) }));
   const notJoined = members.filter((m) => !participants.some((p) => p.user_id === m.user_id));
   const pending = schedule.data && schedule.data.latestSaved && schedule.data.nextPlace && schedule.data.latestSaved !== schedule.data.nextPlace ? schedule.data.latestSaved : null;
 
@@ -109,7 +106,11 @@ export default function PactDetail() {
           haptic('commit');
           declareFreeze(inst.id)
             .then(async () => {
-              await qc.invalidateQueries({ queryKey: ['pact', pactId] });
+              await Promise.all([
+                qc.invalidateQueries({ queryKey: ['pact', pactId] }),
+                qc.invalidateQueries({ queryKey: ['instance', inst.id] }),
+                qc.invalidateQueries({ queryKey: ['group', pact.group_id] }),
+              ]);
               toast.show({ message: `${day} is frozen. It counts for nothing either way.`, tone: 'frozen', icon: 'snowflake' });
             })
             .catch((e: unknown) => {
@@ -128,12 +129,7 @@ export default function PactDetail() {
     <Screen refreshing={detail.isRefetching} onRefresh={() => void detail.refetch()}>
       <Stack.Screen options={{ title: pact.title }} />
 
-      <ListGroup
-        header="Schedule"
-        footer={`Check in any time from ${displayTimeOfDay(pact.window_open_local)}; ${displayTimeOfDay(pact.deadline_local)} is the deadline.${
-          pact.tz !== deviceZone ? ` Times follow ${timeZoneDisplayName(pact.tz)}.` : ''
-        }`}
-      >
+      <ListGroup header="Schedule" footer={pact.tz !== deviceZone ? `Times follow ${timeZoneDisplayName(pact.tz)}.` : undefined}>
         <ListRow title="Days" trailing={<Value>{describeDays(pact.days_of_week)}</Value>} />
         <ListRow title="Check-in window" trailing={<Value tabular>{window}</Value>} />
         {pact.tz !== deviceZone ? <ListRow title="Time zone" trailing={<Value>{timeZoneDisplayName(pact.tz)}</Value>} /> : null}
@@ -141,7 +137,7 @@ export default function PactDetail() {
 
       <ListGroup
         header="Pledge"
-        footer="Your pledge is what you forfeit to the pool on a day you miss. Show up and you split the pool with the others who did. Unverified days never cost anything."
+        footer="Forfeited to the pool on a day you miss; show up and you split the pool with the others who did. Unverified days never cost anything."
       >
         <ListRow title="Per missed day" trailing={<Value tabular>{formatCents(pact.stake_cents)}</Value>} />
       </ListGroup>
@@ -159,8 +155,8 @@ export default function PactDetail() {
                   accessibilityLabel="Pause this pact"
                   trackColor={{ true: colors.tint }}
                   ios_backgroundColor={colors.fillStrong}
-                  // iOS keeps its white thumb; the web Switch defaults to a teal one
-                  {...(Platform.OS === 'web' ? { thumbColor: colors.surfaceElevated } : {})}
+                  // iOS keeps its white thumb; react-native-web paints its active thumb teal
+                  {...(Platform.OS === 'web' ? { thumbColor: colors.surfaceElevated, activeThumbColor: colors.surfaceElevated } : {})}
                 />
               }
             />
@@ -201,14 +197,10 @@ export default function PactDetail() {
         </ListGroup>
       )}
 
-      <ListGroup header={members.length > 0 ? `Who's in · ${participants.length} of ${members.length}` : "Who's in"}>
-        {participants.length > 0 ? (
-          <ListRow
-            title={participants.length === 1 ? '1 person' : `${participants.length} people`}
-            subtitle={notJoined.length > 0 ? `${notJoined.length} still to set a place` : 'Everyone has a place'}
-            trailing={<AvatarStack people={people} highlightIds={[userId]} />}
-          />
-        ) : null}
+      <ListGroup
+        header={members.length > 0 ? `Who's in · ${participants.length} of ${members.length}` : "Who's in"}
+        footer={notJoined.length > 0 ? `${notJoined.length === 1 ? '1 person has' : `${notJoined.length} people have`} not set a place yet.` : undefined}
+      >
         {participants.map((p) => (
           <ListRow
             key={p.user_id}

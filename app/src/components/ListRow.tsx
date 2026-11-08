@@ -169,7 +169,8 @@ const styles = StyleSheet.create({
   trailing: { alignItems: 'flex-end', justifyContent: 'center' },
   disabled: { opacity: 0.45 },
   group: { gap: space.xs },
-  header: { paddingHorizontal: space.lg, paddingBottom: space.xs },
+  // 12 (screen gap) + 8 above a header, 4 below: more above a heading than below it
+  header: { paddingHorizontal: space.lg, paddingTop: space.sm, paddingBottom: space.xs },
   footer: { paddingHorizontal: space.lg, paddingTop: space.xs },
   block: { borderRadius: radius.lg, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
 });

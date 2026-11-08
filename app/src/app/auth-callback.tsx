@@ -4,6 +4,7 @@ import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { EmptyState, Screen, Text } from '@/components';
 import { callbackErrorFromParams, exchangeErrorMessage, type CallbackParams } from '@/features/auth/magicLink';
 import { completeMagicLink } from '@/lib/auth';
+import { pendingNext } from '@/lib/pendingNextRuntime';
 import { space, useTheme } from '@/theme';
 
 /** Target of the magic link: showup://auth-callback?code=... (PKCE). */
@@ -16,7 +17,9 @@ export default function AuthCallback() {
   useEffect(() => {
     if (error || !code) return;
     completeMagicLink(code)
-      .then(() => router.replace('/groups'))
+      // the invite (or any deep link) that sent the person to sign in comes back here (A5)
+      .then(() => pendingNext.take().catch(() => '/groups'))
+      .then((next) => router.replace(next as never))
       .catch((e: unknown) => setError(exchangeErrorMessage(e)));
     // `error` is intentionally not a dependency: a failed exchange must not re-run on re-render
   }, [code]); // eslint-disable-line react-hooks/exhaustive-deps

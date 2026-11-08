@@ -36,7 +36,7 @@ import {
   validateWhen,
   type WizardDraft,
 } from '@/features/pact/wizard';
-import { searchTimeZones, timeZoneDisplayName, timeZoneOffsetLabel, timeZoneOptions } from '@/features/pact/timeZones';
+import { searchTimeZones, timeZoneDisplayName, timeZoneOffsetLabel, timeZoneOptions } from '@/features/shared/timeZones';
 import { userMessage } from '@/lib/errors';
 import { centsToDecimalString, formatCents, parseDollarsToCents } from '@/lib/money';
 import { describeDays, deviceTimeZone, displayMinutes, formatDateInZone, formatTimeInZone, nextOccurrence, toPgTime } from '@/lib/time';

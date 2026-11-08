@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { Linking, Platform, Pressable, StyleSheet, View } from 'react-native';
+import { Linking, StyleSheet, View } from 'react-native';
 import { usePactDetail, usePlaceSchedule, type PlaceSchedule } from '@/api/queries';
 import { joinPact } from '@/api/rpc';
 import { Button, Card, EmptyState, ListGroup, ListRow, Screen, SkeletonCard, Text, TextField } from '@/components';
@@ -14,7 +14,7 @@ import { FixTimeoutError, ensureForegroundPermission, takeHighAccuracyFix, type 
 import { PLACE_CHANGE_LEAD_HOURS } from '@/lib/places';
 import { formatDateInZone, formatTimeInZone } from '@/lib/time';
 import { useNow } from '@/lib/useNow';
-import { TOUCH_TARGET, haptic, space, useTheme } from '@/theme';
+import { haptic, space, useTheme } from '@/theme';
 
 interface Spot {
   lat: number;
@@ -167,26 +167,14 @@ export default function PlacePicker() {
         )
       }
     >
-      <Stack.Screen
-        options={{
-          title: 'Your place',
-          headerRight: saved
-            ? () => (
-                <Pressable accessibilityRole="button" accessibilityLabel="Done" onPress={done} hitSlop={8} style={[styles.headerButton, Platform.OS === 'web' && styles.headerButtonWeb]}>
-                  <Text variant="body" emphasis color="tint">
-                    Done
-                  </Text>
-                </Pressable>
-              )
-            : undefined,
-        }}
-      />
+      {/* a pushed screen: the one Done is the footer button, never doubled in the nav bar */}
+      <Stack.Screen options={{ title: 'Your place' }} />
 
       <View style={styles.intro}>
         <Text variant="headline">{pact.title}</Text>
         <Text variant="subheadline" color="secondary">
-          Your place is yours alone; everyone in the pact sets their own. Stand where you need to be, like your seat in
-          Kane Hall, then capture it. You're in when your GPS fix lands inside this circle.
+          Everyone sets their own place. Stand where you need to be, then capture it. You're in when your GPS fix
+          lands inside this circle.
         </Text>
       </View>
 
@@ -339,8 +327,6 @@ function SavedSummary({ schedule, tz, label, radius }: { schedule: PlaceSchedule
 
 const styles = StyleSheet.create({
   intro: { gap: space.xs },
-  headerButton: { minHeight: TOUCH_TARGET, justifyContent: 'center' },
-  headerButtonWeb: { paddingHorizontal: space.lg },
   inlineEmpty: { paddingVertical: space.sm },
   sliderBlock: { padding: space.lg },
   footer: { gap: space.sm },

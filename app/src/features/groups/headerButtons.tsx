@@ -10,12 +10,26 @@ import { PRESS_SCALE, TOUCH_TARGET, space, transition, useTheme } from '@/theme'
 
 const pressTransition = transition('transform', 'press');
 
-export function HeaderIconButton({ icon, label, onPress, testID }: { icon: IconName; label: string; onPress: () => void; testID?: string }) {
+export function HeaderIconButton({
+  icon,
+  label,
+  hint,
+  onPress,
+  testID,
+}: {
+  icon: IconName;
+  /** VoiceOver name; the icon alone never carries meaning */
+  label: string;
+  hint?: string;
+  onPress: () => void;
+  testID?: string;
+}) {
   const [pressed, setPressed] = useState(false);
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityHint={hint}
       hitSlop={6}
       onPress={onPress}
       onPressIn={() => setPressed(true)}

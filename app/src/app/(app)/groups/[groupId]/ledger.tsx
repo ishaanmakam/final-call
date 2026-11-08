@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams } from 'expo-router';
 import { useState, type ReactNode } from 'react';
 import { Alert, Platform, StyleSheet, View } from 'react-native';
 import { displayName, queryKeys, useLedger, type Ledger } from '@/api/queries';
@@ -25,11 +25,10 @@ import { normalizeVenmoUsername } from '@/lib/venmo';
 import { haptic, radius, space, useTheme } from '@/theme';
 
 const THIS_WEEK_FOOTER =
-  "Each row is one Venmo payment from Monday's settle-up: the week's forfeits and pool shares, simplified so you pay at most a few friends. Marking paid is provisional until the other person confirms; \"Not received\" sends it back to unpaid.";
-const EARLIER_FOOTER =
-  "Unpaid amounts roll into the next Monday's settle-up (the old row shows as Replaced), so you only ever pay one total per friend. Anything already marked paid stays here until it's confirmed.";
+  "One Venmo payment per row, simplified so you pay at most a few friends. Paid counts once the other person confirms.";
+const EARLIER_FOOTER = "Unpaid amounts roll into the next settle-up as one total per friend; the old row shows as Replaced.";
 const BALANCE_FOOTER =
-  "What the group would owe each other if settle-up ran right now, including this week. Plus means the group owes you. Forfeits sitting in a carry-over pool aren't owed to anyone yet. Corrections after a review land in the next Monday's settle-up; nothing already paid changes.";
+  "If settle-up ran right now, including this week. Plus means the group owes you. Corrections after a review land in the next settle-up; nothing already paid changes.";
 
 type Busy = 'paid' | 'confirm' | 'dispute' | 'venmo';
 
@@ -75,7 +74,6 @@ function Obligation({
   userId: string;
   onChanged: () => void;
 }) {
-  const router = useRouter();
   const toast = useToast();
   const [busy, setBusy] = useState<Busy | null>(null);
   const [venmoOpened, setVenmoOpened] = useState(false);
@@ -183,7 +181,7 @@ function Obligation({
           />
         </View>
         <Text variant="footnote" color="secondary">
-          {venmoOpened ? `Back from Venmo? Mark it paid so ${other} can confirm.` : `Opens Venmo with the amount and note filled in. After you pay, come back and mark it paid so ${other} can confirm.`}
+          {venmoOpened ? `Back from Venmo? Mark it paid so ${other} can confirm.` : `Opens Venmo with the amount and note filled in. Then mark it paid here.`}
         </Text>
       </>
     ) : (
@@ -203,13 +201,6 @@ function Obligation({
             style={styles.flex}
           />
         </View>
-        <Button
-          title="Your own Venmo username is in Settings"
-          size="small"
-          variant="tertiary"
-          onPress={() => router.push('/settings')}
-          accessibilityHint="Opens Settings"
-        />
       </>
     );
   } else if (side === 'pay' && ob.status === 'marked_paid') {
@@ -471,9 +462,9 @@ export default function LedgerScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  headline: { gap: space.xs, paddingHorizontal: space.xs, paddingBottom: space.sm },
+  headline: { gap: space.xs, paddingHorizontal: space.xs, paddingBottom: space.xs },
   section: { gap: space.xs },
-  sectionHeader: { paddingHorizontal: space.lg, paddingBottom: space.xs },
+  sectionHeader: { paddingHorizontal: space.lg, paddingTop: space.sm, paddingBottom: space.xs },
   sectionFooter: { paddingHorizontal: space.lg, paddingTop: space.xs },
   block: { borderRadius: radius.lg, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
   divider: { height: StyleSheet.hairlineWidth, marginLeft: space.lg },

@@ -97,8 +97,6 @@ const ROUTES = [
   { name: 'checkin.closed', path: '/checkin/i-closed?freeze=1' },
   { name: 'checkin.not_participant', path: '/checkin/i-notin?freeze=1' },
   { name: 'checkin.offline', path: CHECKIN('?freeze=1&state=offline') },
-  // last: it leaves an attempt in the offline queue, which the next check-in route would flush
-  { name: 'checkin.queued', path: CHECKIN('?freeze=1&state=queued'), actions: [tap('Check in'), wait(2300)] },
   { name: 'feed', path: `/groups/${G}/feed` },
   { name: 'feed.empty', path: `/groups/${G}/feed?empty=1` },
   { name: 'feed.review', path: `/groups/${G}/feed`, actions: [tap('Challenge'), wait(600)] },
@@ -110,6 +108,9 @@ const ROUTES = [
   { name: 'settle-up.empty', path: `/groups/${G}/ledger?empty=1` },
   { name: 'settings', path: '/settings' },
   { name: 'settings.offline', path: '/settings?state=offline' },
+  // last of all: it leaves an attempt in the offline queue, which the next signed-in route would
+  // flush (a toast and an extra tap would then show on an unrelated capture)
+  { name: 'checkin.queued', path: CHECKIN('?freeze=1&state=queued'), actions: [tap('Check in'), wait(2300)] },
 ];
 
 function exportWeb() {

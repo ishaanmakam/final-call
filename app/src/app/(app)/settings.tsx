@@ -17,7 +17,7 @@ import { TOUCH_TARGET, haptic, space, transition, type as typeScale, useTheme } 
 const PROFILE_FOOTNOTE = "Friends use your Venmo to pay you at settle-up. Leave it blank and they'll pay you however you agree.";
 const NOTIF_FOOTNOTE = 'When a window opens, 15 minutes before a deadline, results, reviews and settle-up.';
 const ABOUT_FOOTNOTE =
-  'Your location is read once, only when you tap Check In during a window. Never in the background. Raw coordinates are deleted after 30 days.\n\nNo real money moves through Show Up. It keeps the group\'s running tally and hands out Venmo links at settle-up.';
+  'Your location is read once, only when you tap Check In. Raw coordinates are deleted after 30 days. No real money moves through Show Up; it keeps the tally and hands out Venmo links at settle-up.';
 const SAVED_MS = 2000;
 
 /** A grouped-list row whose value is typed in place: label left, input right, autosaves on end-editing. */
@@ -251,14 +251,14 @@ export default function Settings() {
 
       <ListGroup header="Notifications" footer={notifNote ? notifNote.text : NOTIF_FOOTNOTE}>
         <ListRow
-          title="Notifications"
+          title="Allow notifications"
           leading={<Icon name="bell" size={20} color="secondary" />}
           trailing={
             <Switch
               value={notif ?? false}
               disabled={notif === null}
               onValueChange={(v) => void toggleNotifications(v)}
-              accessibilityLabel="Notifications"
+              accessibilityLabel="Allow notifications"
               trackColor={{ true: colors.tint, false: colors.fillStrong }}
               thumbColor={colors.surfaceElevated}
               {...(Platform.OS === 'ios' ? { ios_backgroundColor: colors.fillStrong } : {})}
@@ -322,7 +322,8 @@ const styles = StyleSheet.create({
     paddingLeft: space.lg,
     paddingRight: space.md,
   },
-  fieldLabel: { width: 84 },
+  // a minimum, not a fixed width: "Venmo" at an accessibility size must not clip
+  fieldLabel: { minWidth: 84 },
   fieldInput: { flex: 1, minHeight: TOUCH_TARGET, paddingVertical: space.sm + 2, paddingHorizontal: space.xs, textAlign: 'right' },
   fieldInputPrefixed: { textAlign: 'left', marginLeft: -space.sm + 2 },
   footer: { paddingHorizontal: space.lg, paddingTop: space.xs, gap: space.xs },

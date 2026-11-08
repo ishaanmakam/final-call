@@ -1,11 +1,13 @@
 import { router } from 'expo-router';
+import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
+import Animated from 'react-native-reanimated';
 import { displayName, type TodayItem } from '../../api/queries';
 import type { ProfileRow } from '../../api/types';
 import { AvatarStack, Button, Card, Countdown, ProgressRing, StatusPill, Text } from '../../components';
 import { formatTimeInZone, msUntil, type WindowState } from '../../lib/time';
 import { useNow } from '../../lib/useNow';
-import { space } from '../../theme';
+import { PRESS_SCALE, space, transition, useReducedMotion } from '../../theme';
 import { useWindowPhase } from '../checkin/useWindowPhase';
 import { checkedInIds, myPillState, resultTally, todayStatusLine } from './today';
 
@@ -41,6 +43,8 @@ function timingText(phase: WindowState, item: TodayItem): string {
  */
 export function TodayCard({ item, userId, profiles }: TodayCardProps) {
   const { instance, pact, summary, participantIds, myState } = item;
+  const reduced = useReducedMotion();
+  const [pressed, setPressed] = useState(false);
   const phase = useWindowPhase(instance.window_open_at, instance.deadline_at);
   const closed = ['closed', 'settled', 'voided'].includes(instance.status) || phase === 'closed';
   const amIn = participantIds.includes(userId);
@@ -101,13 +105,22 @@ export function TodayCard({ item, userId, profiles }: TodayCardProps) {
       accessibilityLabel={`${pact.title}, ${timingLabel}, ${status}`}
       accessibilityHint="Opens check-in"
       onPress={openCheckin}
+      onPressIn={() => setPressed(true)}
+      onPressOut={() => setPressed(false)}
+      pressRetentionOffset={16}
     >
-      {body}
+      {/* feedback on press-in (120 ms ease-out); reduced motion dims instead of scaling */}
+      <Animated.View style={[styles.pressable, pressTransition, pressed && (reduced ? styles.pressedReduced : styles.pressed)]}>{body}</Animated.View>
     </Pressable>
   );
 }
 
+const pressTransition = transition(['transform', 'opacity'], 'press');
+
 const styles = StyleSheet.create({
+  pressable: { transform: [{ scale: 1 }], opacity: 1 },
+  pressed: { transform: [{ scale: PRESS_SCALE }] },
+  pressedReduced: { opacity: 0.85 },
   head: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   titles: { flex: 1, gap: space.xxs },
   timing: { flexDirection: 'row', alignItems: 'baseline' },

@@ -29,9 +29,10 @@ export interface SheetProps {
 
 /**
  * In-screen bottom sheet you can drag to dismiss. (A sheet that is its own route should use
- * `presentation: 'formSheet'` instead and get the platform's real sheet.) Pan on shared values,
- * rubber-band past the top, dismiss on projected distance OR velocity, velocity handed to the
- * spring, Light haptic when it snaps back home, backdrop derived from the same value.
+ * `presentation: 'formSheet'` instead and get the platform's real sheet.) Opens on the iOS sheet
+ * curve (300 ms timing: no finger, so no bounce); pan on shared values, rubber-band past the top,
+ * dismiss on projected distance OR velocity, the finger's velocity handed to the spring, Light
+ * haptic when it snaps back home, backdrop derived from the same value.
  */
 export function Sheet({ open, onClose, title, children, accessibilityLabel }: SheetProps) {
   const { colors } = useTheme();
@@ -43,6 +44,8 @@ export function Sheet({ open, onClose, title, children, accessibilityLabel }: Sh
   const y = useSharedValue(screenH);
   const start = useSharedValue(0);
   const fadeIn = useSharedValue(0);
+  // the entrance runs once per open; later layout passes (keyboard, content) must not re-fire it
+  const entered = useSharedValue(false);
 
   // mount, then slide in once the sheet knows its height; reduced motion crossfades in place
   useEffect(() => {
@@ -51,24 +54,27 @@ export function Sheet({ open, onClose, title, children, accessibilityLabel }: Sh
       return;
     }
     if (!mounted) return;
+    entered.set(false);
     const finish = () => setMounted(false);
     if (reduced) {
       fadeIn.set(withTiming(0, timing('exit'), (f) => f && scheduleOnRN(finish)));
     } else {
       y.set(withSpring(height.get(), spring('sheetDismiss', 0), (f) => f && scheduleOnRN(finish)));
     }
-  }, [open, mounted, reduced, y, height, fadeIn]);
+  }, [open, mounted, reduced, y, height, fadeIn, entered]);
 
   const onLayout = (e: LayoutChangeEvent) => {
     const h = e.nativeEvent.layout.height;
     height.set(h);
-    if (open) {
+    if (open && !entered.get()) {
+      entered.set(true);
       if (reduced) {
         y.set(0);
         fadeIn.set(withTiming(1, timing('enter')));
       } else {
         fadeIn.set(1);
-        y.set(withSpring(0, spring('sheet', 0)));
+        y.set(h);
+        y.set(withTiming(0, timing('sheet', 'sheet')));
       }
     }
   };

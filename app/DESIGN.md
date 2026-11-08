@@ -349,15 +349,15 @@ All primitives live in `src/components/` and are documented by their props. Char
 - Native stack: large title on top-level screens, inline on detail; modal presentation for create flows; form sheets for short pickers. Header tint = tint, no header shadow, bg matches the page. Tab switches (if added) never slide. Reduce Motion: `animation: 'fade'`.
 
 ### Sheet (in-screen)
-- surface-elevated, 20 pt top corners, 36x5 grabber in tertiary at 50%. Pan on shared values: `onActivate` captures the current position, upward past the top rubber-bands (`rubberband(overshoot, height, 0.55)`), release projects momentum (`project(velocity)`); dismiss when the projected rest is past 40% of the height, else snap home with the `sheet` spring and a `snap` haptic. Dismiss uses `sheetDismiss` (critically damped, overshoot clamped) so it never flashes a gap. Backdrop opacity derives from the same value. Reduce Motion crossfades in place.
+- surface-elevated, 20 pt top corners, 36x5 grabber in tertiary at 50%. Opens on the `sheet` curve (300 ms timing: nobody dragged it, so it does not bounce), once per open. Pan on shared values: `onActivate` captures the current position, upward past the top rubber-bands (`rubberband(overshoot, height, 0.55)`), release projects momentum (`project(velocity)`); dismiss when the projected rest is past 40% of the height, else snap home with the `sheet` spring and a `snap` haptic. Dismiss uses `sheetDismiss` (critically damped, overshoot clamped) so it never flashes a gap. Backdrop opacity derives from the same value. Reduce Motion crossfades in place.
 
 ### Toast
-- One at a time, top, under the status bar, surface-elevated with a floating shadow, subheadline semibold, leading icon in its tone. Enters down 250 ms ease-out (settle spring on translate), exits up 200 ms; swipe up to dismiss (velocity or distance), `snap` haptic. `accessibilityRole="alert"`, `accessibilityLiveRegion="polite"`.
+- One at a time, top, under the status bar, surface-elevated with a floating shadow (no border), subheadline semibold, leading icon in its tone. Enters down 250 ms ease-out, exits up 200 ms, both timing curves; the off-screen offset is the toast's own measured height. Swipe up to dismiss (velocity or distance) with the release spring carrying the finger's velocity, `snap` haptic. `accessibilityRole="alert"`, `accessibilityLiveRegion="polite"`.
 
 ### Progress ring, Countdown, Avatar stack, Skeleton, Empty state
 - **ProgressRing:** react-native-svg stroke on `useAnimatedProps`; `reveal` spring to new values, `step` jumps for a ticking clock; `indeterminate` sweeps a quarter arc at 1200 ms linear (Reduce Motion: opacity pulse instead).
 - **Countdown:** title1 tabular, h:mm:ss / mm:ss, forfeit tone in the last minute, VoiceOver label in words, announcements at 5 and 1 minutes only.
-- **AvatarStack:** 28 pt initials circles overlapping 30%, bg-colored 2 pt ring, "+n" tail, tint ring for "you".
+- **AvatarStack:** 28 pt initials circles overlapping 30%, bg-colored 2 pt ring, "+n" tail, tint ring for "you". Initials are 36% of the diameter (a glyph, not Dynamic Type text) and a single letter under 28 pt.
 - **Skeleton:** fill-strong block, opacity shimmer 1 to 0.45 at 900 ms ease-in-out (static at 0.7 under Reduce Motion).
 - **EmptyState:** title3 + subheadline body + one primary small button; the body says what will appear and how to make it appear.
 

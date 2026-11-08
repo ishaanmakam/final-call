@@ -25,6 +25,9 @@ import type {
   SettlementRow,
 } from './types';
 
+/** Queries that cache a person's display name next to their own data; a profile edit refreshes them. */
+export const PROFILE_DEPENDENT_KEYS = (userId: string): QueryKey[] => [['profile', userId], ['group'], ['groups']];
+
 export const queryKeys = {
   myGroups: (userId: string) => ['groups', userId] as const,
   groupHome: (groupId: string) => ['group', groupId, 'home'] as const,
@@ -69,7 +72,8 @@ function useUpdateProfileReal(userId: string) {
       const { error } = await supabase.from('profiles').update(patch).eq('id', userId);
       if (error) throw new DbError(error);
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.profile(userId) }),
+    // the name is embedded in every group, feed and ledger query (A6), and in the groups list
+    onSuccess: () => Promise.all(PROFILE_DEPENDENT_KEYS(userId).map((queryKey) => qc.invalidateQueries({ queryKey }))),
   });
 }
 
@@ -125,9 +129,10 @@ export interface GroupHome {
   today: TodayItem[];
 }
 
-function useGroupHomeReal(groupId: string, userId: string) {
+function useGroupHomeReal(groupId: string, userId: string, enabled = true) {
   return useQuery({
     queryKey: queryKeys.groupHome(groupId),
+    enabled,
     queryFn: async (): Promise<GroupHome> => {
       const now = Date.now();
       const [group, members, pacts] = await Promise.all([

@@ -13,7 +13,6 @@ import {
 } from "react-native";
 import { displayName, useFeed, useGroupHome } from "@/api/queries";
 import { leaveGroup } from "@/api/rpc";
-import type { ProfileRow } from "@/api/types";
 import {
   Avatar,
   EmptyState,
@@ -28,11 +27,11 @@ import {
   Text,
   useToast,
 } from "@/components";
-import { HeaderIconButton } from "@/features/group/HeaderIconButton";
+import { HeaderIconButton, HeaderItems } from "@/features/group/HeaderIconButton";
 import { TodayCard } from "@/features/group/TodayCard";
 import { nothingTodayBody, pactDetailLine } from "@/features/group/today";
 import { useUserId } from "@/lib/auth";
-import { userMessage } from "@/lib/errors";
+import { classifyRpcError, userMessage } from "@/lib/errors";
 import { inviteLink } from "@/lib/links";
 import { formatCents } from "@/lib/money";
 import { describeDays } from "@/lib/time";
@@ -52,15 +51,24 @@ export default function GroupHome() {
 
   if (home.isPending) return <GroupSkeleton />;
   if (home.isError) {
+    const offline = classifyRpcError(home.error) === "network";
     return (
       <Screen>
         <Stack.Screen options={{ title: "Group" }} />
         <EmptyState
           layout="screen"
-          icon="wifi.slash"
-          title="Couldn't load this group"
-          body={userMessage(home.error)}
-          action={{ label: "Try again", onPress: () => void home.refetch() }}
+          icon={offline ? "wifi.slash" : "exclamationmark.triangle"}
+          title={offline ? "You're offline" : "Couldn't load this group"}
+          body={
+            offline
+              ? "Today's pacts will appear once you have a connection. Nothing about today is lost."
+              : userMessage(home.error)
+          }
+          action={{
+            label: "Try again",
+            onPress: () => void home.refetch(),
+            loading: home.isFetching,
+          }}
         />
       </Screen>
     );
@@ -147,7 +155,7 @@ export default function GroupHome() {
             title: group.name,
             headerLargeTitle: true,
             headerRight: () => (
-              <View style={styles.headerRight}>
+              <HeaderItems>
                 <HeaderIconButton
                   name="square.and.arrow.up"
                   label="Invite"
@@ -160,18 +168,22 @@ export default function GroupHome() {
                   hint="Feed, Settle up, Leave group"
                   onPress={openMenu}
                 />
-              </View>
+              </HeaderItems>
             ),
           }}
         />
 
-        <SectionHeader title="Today" first />
-        {today.length === 0 ? (
-          <EmptyState
-            icon="clock"
-            title="Nothing today"
-            body={nothingTodayBody(pacts, nowMs())}
-          />
+        {/* No pacts: the Pacts empty state below teaches; a second illustration would compete with it.
+            Pacts but nothing today: one quiet row that names the next day, not a full empty state. */}
+        {pacts.length > 0 ? <SectionHeader title="Today" first /> : null}
+        {pacts.length === 0 ? null : today.length === 0 ? (
+          <ListGroup>
+            <ListRow
+              leading={<Icon name="clock" size={20} color="secondary" />}
+              title="Nothing today"
+              subtitle={nothingTodayBody(pacts, nowMs())}
+            />
+          </ListGroup>
         ) : (
           today.map((item) => (
             <TodayCard
@@ -183,7 +195,7 @@ export default function GroupHome() {
           ))
         )}
 
-        <ListGroup style={styles.section}>
+        <ListGroup style={pacts.length > 0 ? styles.section : undefined}>
           <ListRow
             leading={<Icon name="bubble.left" size={20} color="tint" />}
             title="Feed"
@@ -263,15 +275,29 @@ export default function GroupHome() {
           footer={`Share the link or the code. Anyone with it can join until the group has ${MAX_MEMBERS} people.${excludedNote}`}
           style={styles.section}
         >
-          {members.map((m) => (
-            <MemberRow
-              key={m.user_id}
-              userId={m.user_id}
-              me={m.user_id === userId}
-              owner={m.role === "owner"}
-              profiles={profiles}
-            />
-          ))}
+          {/* rows are direct ListRow children so ListGroup can give them corners and separators */}
+          {members.map((m) => {
+            const me = m.user_id === userId;
+            const name = displayName(profiles, m.user_id);
+            const detail = [me ? "you" : null, m.role === "owner" ? "owner" : null]
+              .filter(Boolean)
+              .join(" · ");
+            return (
+              <ListRow
+                key={m.user_id}
+                leading={
+                  <Avatar
+                    person={{ id: m.user_id, name }}
+                    size={32}
+                    highlighted={me}
+                  />
+                }
+                title={name}
+                subtitle={detail || undefined}
+                accessibilityLabel={detail ? `${name}, ${detail}` : name}
+              />
+            );
+          })}
           <ListRow
             title={`Invite code ${group.invite_code}`}
             trailing={
@@ -339,33 +365,6 @@ export default function GroupHome() {
   );
 }
 
-function MemberRow({
-  userId,
-  me,
-  owner,
-  profiles,
-}: {
-  userId: string;
-  me: boolean;
-  owner: boolean;
-  profiles: Map<string, ProfileRow>;
-}) {
-  const name = displayName(profiles, userId);
-  const detail = [me ? "you" : null, owner ? "owner" : null]
-    .filter(Boolean)
-    .join(" · ");
-  return (
-    <ListRow
-      leading={
-        <Avatar person={{ id: userId, name }} size={32} highlighted={me} />
-      }
-      title={name}
-      subtitle={detail || undefined}
-      accessibilityLabel={detail ? `${name}, ${detail}` : name}
-    />
-  );
-}
-
 function SectionHeader({ title, first }: { title: string; first?: boolean }) {
   return (
     <Text
@@ -396,7 +395,6 @@ function GroupSkeleton() {
 }
 
 const styles = StyleSheet.create({
-  headerRight: { flexDirection: "row", alignItems: "center" },
   section: { marginTop: space.md },
   sectionHeader: {
     paddingHorizontal: space.lg,
