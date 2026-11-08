@@ -1,20 +1,22 @@
+/**
+ * Compatibility layer: the names the phase-1 screens import, implemented on the new primitives.
+ * New code imports from `@/components` directly; phase 2 migrates the screens and deletes this.
+ */
 import type { ReactNode } from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-  type StyleProp,
-  type TextInputProps,
-  type ViewStyle,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { ActivityIndicator, Pressable, StyleSheet, View, type StyleProp, type TextInputProps, type ViewStyle } from 'react-native';
 import { userMessage } from '../lib/errors';
-import { colors, radius, space } from './theme';
+import { haptic } from '../theme/haptics';
+import { useTheme } from '../theme/ThemeProvider';
+import { TOUCH_TARGET, radius, space } from '../theme/tokens';
+import { Button as NewButton, type ButtonVariant } from './Button';
+import { Card as NewCard } from './Card';
+import { Screen as NewScreen } from './Screen';
+import { Pill } from './StatusPill';
+import { Text } from './Text';
+import { TextField } from './TextField';
+import type { BadgeTone } from './status';
+
+export type { BadgeTone } from './status';
 
 export function Screen({
   children,
@@ -27,29 +29,23 @@ export function Screen({
   onRefresh?: () => void;
   scroll?: boolean;
 }) {
-  if (!scroll) {
-    return (
-      <SafeAreaView edges={['bottom', 'left', 'right']} style={styles.screen}>
-        <View style={styles.content}>{children}</View>
-      </SafeAreaView>
-    );
-  }
   return (
-    <SafeAreaView edges={['bottom', 'left', 'right']} style={styles.screen}>
-      <ScrollView
-        contentContainerStyle={styles.content}
-        keyboardShouldPersistTaps="handled"
-        refreshControl={
-          onRefresh ? <RefreshControl refreshing={refreshing ?? false} onRefresh={onRefresh} /> : undefined
-        }
-      >
-        {children}
-      </ScrollView>
-    </SafeAreaView>
+    <NewScreen scroll={scroll} refreshing={refreshing} onRefresh={onRefresh}>
+      {children}
+    </NewScreen>
   );
 }
 
-type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost';
+type LegacyVariant = ButtonVariant | 'danger' | 'ghost';
+
+const variantMap: Record<LegacyVariant, ButtonVariant> = {
+  primary: 'primary',
+  secondary: 'secondary',
+  tertiary: 'tertiary',
+  destructive: 'destructive',
+  danger: 'destructive',
+  ghost: 'tertiary',
+};
 
 export function Button({
   title,
@@ -62,82 +58,71 @@ export function Button({
 }: {
   title: string;
   onPress: () => void;
-  variant?: ButtonVariant;
+  variant?: LegacyVariant;
   disabled?: boolean;
   loading?: boolean;
   style?: StyleProp<ViewStyle>;
   accessibilityHint?: string;
 }) {
-  const inactive = disabled || loading;
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ disabled: !!inactive, busy: !!loading }}
-      accessibilityHint={accessibilityHint}
+    <NewButton
+      title={title}
       onPress={onPress}
-      disabled={inactive}
-      style={({ pressed }) => [
-        styles.button,
-        buttonStyles[variant],
-        inactive && styles.buttonDisabled,
-        pressed && !inactive && styles.buttonPressed,
-        style,
-      ]}
-    >
-      {loading ? (
-        <ActivityIndicator color={variant === 'primary' || variant === 'danger' ? colors.primaryText : colors.primary} />
-      ) : (
-        <Text style={[styles.buttonText, buttonTextStyles[variant]]}>{title}</Text>
-      )}
-    </Pressable>
+      variant={variantMap[variant]}
+      disabled={disabled}
+      loading={loading}
+      style={style}
+      accessibilityHint={accessibilityHint}
+    />
   );
 }
 
 export function Card({ children, style }: { children: ReactNode; style?: StyleProp<ViewStyle> }) {
-  return <View style={[styles.card, style]}>{children}</View>;
+  return <NewCard style={style}>{children}</NewCard>;
 }
 
 export function Title({ children }: { children: ReactNode }) {
-  return <Text style={styles.title}>{children}</Text>;
-}
-
-export function Heading({ children }: { children: ReactNode }) {
-  return <Text style={styles.heading}>{children}</Text>;
-}
-
-export function Body({ children, muted }: { children: ReactNode; muted?: boolean }) {
-  return <Text style={[styles.body, muted && styles.muted]}>{children}</Text>;
-}
-
-export function ErrorText({ error }: { error: unknown }) {
-  if (!error) return null;
-  const message = userMessage(error);
   return (
-    <Text accessibilityRole="alert" style={styles.error}>
-      {message}
+    <Text variant="title1" accessibilityRole="header">
+      {children}
     </Text>
   );
 }
 
-export function Field({ label, hint, ...input }: TextInputProps & { label: string; hint?: string }) {
+export function Heading({ children }: { children: ReactNode }) {
   return (
-    <View style={styles.field}>
-      <Text style={styles.label}>{label}</Text>
-      <TextInput
-        placeholderTextColor={colors.muted}
-        style={styles.input}
-        accessibilityLabel={label}
-        {...input}
-      />
-      {hint ? <Text style={styles.hint}>{hint}</Text> : null}
-    </View>
+    <Text variant="headline" accessibilityRole="header">
+      {children}
+    </Text>
   );
 }
 
-export function Loading() {
+export function Body({ children, muted }: { children: ReactNode; muted?: boolean }) {
   return (
-    <View style={styles.center}>
-      <ActivityIndicator size="large" color={colors.primary} />
+    <Text variant="subheadline" color={muted ? 'secondary' : 'label'}>
+      {children}
+    </Text>
+  );
+}
+
+export function ErrorText({ error }: { error: unknown }) {
+  if (!error) return null;
+  return (
+    <Text variant="footnote" color="forfeit" accessibilityRole="alert" accessibilityLiveRegion="assertive">
+      {userMessage(error)}
+    </Text>
+  );
+}
+
+export function Field({ label, hint, value, onChangeText, ...input }: TextInputProps & { label: string; hint?: string }) {
+  return <TextField label={label} helper={hint} value={value ?? ''} onChangeText={onChangeText ?? (() => undefined)} {...input} />;
+}
+
+export function Loading() {
+  const { colors } = useTheme();
+  return (
+    <View style={[styles.center, { backgroundColor: colors.bg }]} accessibilityLabel="Loading" accessibilityState={{ busy: true }}>
+      <ActivityIndicator size="large" color={colors.secondary} />
     </View>
   );
 }
@@ -151,22 +136,8 @@ export function QueryState({ error, onRetry }: { error: unknown; onRetry: () => 
   );
 }
 
-const badgeTones = {
-  good: { bg: colors.successBg, fg: colors.success },
-  bad: { bg: colors.dangerBg, fg: colors.danger },
-  warn: { bg: colors.warnBg, fg: colors.warn },
-  neutral: { bg: colors.neutralBg, fg: colors.muted },
-} as const;
-
-export type BadgeTone = keyof typeof badgeTones;
-
 export function Badge({ label, tone }: { label: string; tone: BadgeTone }) {
-  const t = badgeTones[tone];
-  return (
-    <View style={[styles.badge, { backgroundColor: t.bg }]}>
-      <Text style={[styles.badgeText, { color: t.fg }]}>{label}</Text>
-    </View>
-  );
+  return <Pill label={label} tone={tone} size="compact" />;
 }
 
 export function Row({ children, style }: { children: ReactNode; style?: StyleProp<ViewStyle> }) {
@@ -174,85 +145,39 @@ export function Row({ children, style }: { children: ReactNode; style?: StylePro
 }
 
 export function Chip({ label, selected, onPress }: { label: string; selected: boolean; onPress: () => void }) {
+  const { colors } = useTheme();
   return (
     <Pressable
       accessibilityRole="checkbox"
       accessibilityState={{ checked: selected }}
-      onPress={onPress}
-      style={[styles.chip, selected && styles.chipSelected]}
+      accessibilityLabel={label}
+      hitSlop={6}
+      onPress={() => {
+        haptic('selection');
+        onPress();
+      }}
+      style={({ pressed }) => [
+        styles.chip,
+        { backgroundColor: selected ? colors.tint : colors.surface, borderColor: selected ? colors.tint : colors.separator },
+        pressed && { opacity: 0.8 },
+      ]}
     >
-      <Text style={[styles.chipText, selected && styles.chipTextSelected]}>{label}</Text>
+      <Text variant="subheadline" emphasis style={{ color: selected ? colors.onTint : colors.label }}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: space.lg, gap: space.md, flexGrow: 1 },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
-  button: {
-    minHeight: 48,
-    borderRadius: radius.md,
-    paddingHorizontal: space.lg,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  buttonDisabled: { opacity: 0.45 },
-  buttonPressed: { opacity: 0.8 },
-  buttonText: { fontSize: 16, fontWeight: '600' },
-  card: {
-    backgroundColor: colors.card,
-    borderRadius: radius.md,
-    padding: space.lg,
-    gap: space.sm,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
-  },
-  title: { fontSize: 28, fontWeight: '700', color: colors.text },
-  heading: { fontSize: 18, fontWeight: '600', color: colors.text },
-  body: { fontSize: 15, color: colors.text, lineHeight: 21 },
-  muted: { color: colors.muted },
-  error: { color: colors.danger, fontSize: 14 },
-  field: { gap: space.xs },
-  label: { fontSize: 14, fontWeight: '600', color: colors.text },
-  hint: { fontSize: 12, color: colors.muted },
-  input: {
-    backgroundColor: colors.card,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.sm,
-    paddingHorizontal: space.md,
-    paddingVertical: space.sm,
-    fontSize: 16,
-    color: colors.text,
-    minHeight: 44,
-  },
-  badge: { paddingHorizontal: space.sm, paddingVertical: 2, borderRadius: radius.pill, alignSelf: 'flex-start' },
-  badgeText: { fontSize: 12, fontWeight: '600' },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   row: { flexDirection: 'row', alignItems: 'center', gap: space.sm, flexWrap: 'wrap' },
   chip: {
+    minHeight: TOUCH_TARGET - 8,
     paddingHorizontal: space.md,
     paddingVertical: space.sm,
     borderRadius: radius.pill,
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.card,
+    justifyContent: 'center',
   },
-  chipSelected: { backgroundColor: colors.primary, borderColor: colors.primary },
-  chipText: { color: colors.text, fontWeight: '500' },
-  chipTextSelected: { color: colors.primaryText },
-});
-
-const buttonStyles = StyleSheet.create({
-  primary: { backgroundColor: colors.primary },
-  secondary: { backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border },
-  danger: { backgroundColor: colors.danger },
-  ghost: { backgroundColor: 'transparent' },
-});
-
-const buttonTextStyles = StyleSheet.create({
-  primary: { color: colors.primaryText },
-  secondary: { color: colors.text },
-  danger: { color: colors.primaryText },
-  ghost: { color: colors.primary },
 });

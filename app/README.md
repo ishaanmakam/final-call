@@ -73,10 +73,51 @@ If the URL or key is missing the app shows a "Setup needed" screen instead of cr
 ## Scripts
 
 ```powershell
-npm run typecheck   # tsc --noEmit
-npm test            # vitest run (pure modules in src/lib)
-npm run doctor      # expo-doctor
+npm run typecheck        # tsc --noEmit
+npm test                 # vitest run (pure modules in src/lib and src/theme)
+npm run doctor           # expo-doctor
+npm run web:export       # expo export --platform web (set EXPO_PUBLIC_DEMO=1 for fixture data)
+npm run screenshots      # export the demo web build, then capture every screen (see below)
+npm run screenshots:quick  # capture again without re-exporting
 ```
+
+## Design system
+
+`PRODUCT.md` (product truth) and `DESIGN.md` (tokens, type scale, colors, motion, haptics, the check-in moment, copy glossary) are the design authority for the app. Tokens live in `src/theme/tokens.ts` and are tested (`src/theme/*.test.ts`: WCAG AA contrast for every documented pair in light and dark, spring/easing invariants, reduced-motion mapping, countdown formatting). Primitives live in `src/components/` (`Button`, `Card`, `ListRow`/`ListGroup`, `StatusPill`, `AvatarStack`, `Countdown`, `ProgressRing`, `Sheet`, `Toast`, `EmptyState`, `Skeleton`, `TextField`, `SegmentedControl`, `Screen`, `Text`, `Icon`); `src/components/ui.tsx` is a compatibility layer for the phase-1 screens.
+
+## Demo mode
+
+`EXPO_PUBLIC_DEMO=1` runs the whole app against in-memory fixtures (`src/api/demo/`): a group of four friends, four pacts, today's instances in every window state, four weeks of results with open/accepted/rejected/defaulted reviews, balances and obligations, a profile with a Venmo username. No Supabase call is made; auth is a fake session (`demo-user`), location is a fake fix after a 1.2 s pause, push is off. The demo RPCs mutate the fixtures, so a check-in, a vote or "Mark paid" shows up on refetch.
+
+```powershell
+$env:EXPO_PUBLIC_DEMO = '1'; npx expo start        # PowerShell
+EXPO_PUBLIC_DEMO=1 npx expo start                   # bash
+```
+
+Route params steer the scenario (web: the URL query; native: any `router.push` with params):
+
+| Param | Effect |
+| --- | --- |
+| `?verdict=in_fence\|out_of_fence\|unjudgeable\|rejected_simulated` | what a demo check-in returns |
+| `?empty=1` | a group with nothing in it yet (empty states) |
+| `?state=offline` / `?state=error` / `?state=queued` | every query fails like a dead network / fails with a server error / only the check-in request fails (so it is queued) |
+| `?perm=denied\|blocked` | location permission outcome on the Check In tap |
+| `?signedOut=1` | no session (shows sign-in) |
+| `?freeze=1` | stops the clock at the fixture anchor (deterministic countdowns) |
+
+Demo ids: group `g1` (empty group `g-empty`), pacts `p1`..`p4`, today's instances `i-open`, `i-before`, `i-closed`, `i-void`, invite code `KANE9AM`.
+
+## Screenshots
+
+`scripts/screenshot.mjs` exports the demo web build (`dist/`, gitignored), serves it on a local port with an SPA fallback, and drives the installed Chrome through Playwright (`channel: 'chrome'`, no browser download) to capture every route in `ROUTES` at iPhone 15 size (393x852, 3x) in light and dark with reduced motion, into `screenshots/<route>.<light|dark>.png`, then writes `screenshots/index.html` (a contact sheet, light next to dark). The PNGs are committed; they are the review artifact.
+
+```powershell
+npm run screenshots                       # full run (export + capture)
+node scripts/screenshot.mjs --skip-export # reuse dist/
+node scripts/screenshot.mjs --only checkin --scheme dark
+```
+
+Routes that need interaction (the pact wizard's later steps, each check-in verdict, the located place picker) list `actions` in `ROUTES`: `fill` a labelled field, `click` a button by its accessible name, `wait` milliseconds. Web rendering uses the platform system font stack (Segoe UI on Windows), so letterforms differ from SF on a device; layout, color and copy are what the captures are for.
 
 ## Layout
 

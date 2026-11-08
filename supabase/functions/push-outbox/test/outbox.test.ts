@@ -10,6 +10,7 @@ import {
   processOutbox,
   renderNotification,
   resolveOutcomes,
+  retryDelayMs,
   sendExpoBatch,
 } from "../outbox.ts";
 
@@ -70,7 +71,7 @@ describe("renderNotification", () => {
     )!;
     expect(r.title).toBe("Check-in open: 9am class");
     expect(r.body).toBe("Kane Hall by 9:00. $5 pledge on the line.");
-    expect(r.data).toEqual({ kind: "window_open", outbox_id: 1, instance_id: "i1", pact_id: "p1", group_id: "g1" });
+    expect(r.data).toEqual({ kind: "window_open", outbox_id: 1, instance_id: "i1", pact_id: "p1", group_id: "g1", url: "/checkin/i1" });
   });
 
   it("deadline_soon computes minutes left from deadline_at", () => {
@@ -415,7 +416,7 @@ describe("processOutbox", () => {
       () => [{ status: "error", message: "HTTP 503: down" }],
     );
     const summary = await processOutbox(deps);
-    expect(calls.failed).toEqual([{ id: 9, error: "HTTP 503: down" }]);
+    expect(calls.failed).toEqual([{ id: 9, error: "HTTP 503: down", retryAt: "2026-11-09T16:46:00.000Z" }]);
     expect(calls.sent).toEqual([]);
     expect(summary.retried).toBe(1);
   });
@@ -441,5 +442,68 @@ describe("bearerMatches", () => {
     expect(bearerMatches("secret-key", "secret-key")).toBe(false);
     expect(bearerMatches(null, "secret-key")).toBe(false);
     expect(bearerMatches("Bearer ", "")).toBe(false);
+  });
+});
+
+// ---------- review fixes (docs/REVIEW.md F1-F4) ----------
+
+describe("deep-link url in push data (F1)", () => {
+  const base = { instance_id: "i1", pact_id: "p1", group_id: "g1" };
+  it("window_open and deadline_soon open the check-in screen", () => {
+    expect(renderNotification(row("window_open", { ...base, pact_title: "A" }), NOW)!.data.url).toBe("/checkin/i1");
+    expect(renderNotification(row("deadline_soon", { ...base, pact_title: "A", deadline_at: "2026-11-09T17:00:00Z" }), NOW)!.data.url).toBe("/checkin/i1");
+  });
+  it("result and review_opened open the group feed, settlement opens the ledger", () => {
+    expect(renderNotification(row("result", { ...base, status: "success" }), NOW)!.data.url).toBe("/groups/g1/feed");
+    expect(renderNotification(row("review_opened", { ...base, review_kind: "appeal" }), NOW)!.data.url).toBe("/groups/g1/feed");
+    expect(renderNotification(row("settlement", { group_id: "g1", net_cents: 0 }), NOW)!.data.url).toBe("/groups/g1/ledger");
+  });
+  it("omits url when the ids it needs are missing", () => {
+    expect(renderNotification(row("settlement", { net_cents: 0 }), NOW)!.data.url).toBeUndefined();
+    expect(renderNotification(row("window_open", { pact_title: "A" }), NOW)!.data.url).toBeUndefined();
+  });
+});
+
+describe("stale reminders are dropped, not sent late (F2)", () => {
+  it("window_open / deadline_soon whose deadline has passed are dropped", () => {
+    const rows: OutboxRow[] = [
+      row("deadline_soon", { pact_title: "A", deadline_at: "2026-11-09T16:30:00Z" }, { id: 1 }),
+      row("window_open", { pact_title: "A", deadline_at: "2026-11-09T16:00:00Z" }, { id: 2 }),
+      row("deadline_soon", { pact_title: "A", deadline_at: "2026-11-09T17:00:00Z" }, { id: 3 }),
+      row("result", { status: "success", deadline_at: "2026-11-09T16:00:00Z" }, { id: 4 }),
+    ];
+    const plan = planMessages(rows, [{ user_id: "u1", token: "T" }], NOW);
+    expect(plan.drops).toEqual([
+      { id: 1, error: "stale: deadline passed" },
+      { id: 2, error: "stale: deadline passed" },
+    ]);
+    expect(plan.messages.map((m) => m.rowId)).toEqual([3, 4]);
+  });
+});
+
+describe("retry backoff (F3)", () => {
+  it("backs off by attempt count: 1, 5, 15, 60 minutes", () => {
+    expect([1, 2, 3, 4].map(retryDelayMs)).toEqual([60_000, 300_000, 900_000, 3_600_000]);
+    expect(retryDelayMs(0)).toBe(60_000);
+    expect(retryDelayMs(9)).toBe(3_600_000);
+  });
+
+  it("processOutbox stamps each retried row with retryAt derived from its attempts", async () => {
+    const failed: { id: number; error: string; retryAt?: string }[] = [];
+    const deps = {
+      now: () => NOW,
+      claim: async () => [row("settlement", { net_cents: 0 }, { id: 1, attempts: 1 }), row("settlement", { net_cents: 0 }, { id: 2, attempts: 3 })],
+      tokensFor: async () => [{ user_id: "u1", token: "A" }],
+      send: async (m: unknown[]) => m.map(() => ({ status: "error", message: "HTTP 503: down" }) as ExpoTicket),
+      markSent: async () => {},
+      markFailed: async (f: { id: number; error: string; retryAt?: string }[]) => void failed.push(...f),
+      markDropped: async () => {},
+      deleteTokens: async () => {},
+    };
+    await processOutbox(deps);
+    expect(failed).toEqual([
+      { id: 1, error: "HTTP 503: down", retryAt: "2026-11-09T16:46:00.000Z" },
+      { id: 2, error: "HTTP 503: down", retryAt: "2026-11-09T17:00:00.000Z" },
+    ]);
   });
 });

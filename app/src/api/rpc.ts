@@ -1,5 +1,7 @@
 import { attemptId, type CheckinAttempt, type SendOutcome } from '../lib/checkinQueue';
 import { classifyRpcError, userMessage, type RpcErrorKind } from '../lib/errors';
+import * as demo from './demo';
+import { DEMO } from './demo/settings';
 import { supabase } from './supabase';
 import type { CheckinRow, ReviewKind, RpcArgs, RpcName, RpcReturn } from './types';
 
@@ -52,12 +54,12 @@ async function call<N extends RpcName>(name: N, args: RpcArgs<N>, timeoutMs?: nu
   }
 }
 
-export const createGroup = (name: string, settlementTz: string) =>
+const createGroupReal = (name: string, settlementTz: string) =>
   call('create_group', { p_name: name, p_settlement_tz: settlementTz });
 
-export const joinGroup = (inviteCode: string) => call('join_group', { p_invite_code: inviteCode.trim() });
+const joinGroupReal = (inviteCode: string) => call('join_group', { p_invite_code: inviteCode.trim() });
 
-export const leaveGroup = (groupId: string) => call('leave_group', { p_group: groupId });
+const leaveGroupReal = (groupId: string) => call('leave_group', { p_group: groupId });
 
 export interface CreatePactInput {
   groupId: string;
@@ -71,7 +73,7 @@ export interface CreatePactInput {
   tz: string;
 }
 
-export const createPact = (p: CreatePactInput) =>
+const createPactReal = (p: CreatePactInput) =>
   call('create_pact', {
     p_group: p.groupId,
     p_title: p.title,
@@ -90,16 +92,16 @@ export interface JoinPactInput {
   label: string;
 }
 
-export const joinPact = (p: JoinPactInput) =>
+const joinPactReal = (p: JoinPactInput) =>
   call('join_pact', { p_pact: p.pactId, p_lat: p.lat, p_lng: p.lng, p_radius_m: p.radiusM, p_label: p.label });
 
-export const setPactPaused = (pactId: string, paused: boolean) =>
+const setPactPausedReal = (pactId: string, paused: boolean) =>
   call('set_pact_paused', { p_pact: pactId, p_paused: paused });
 
 /** 15 s cap so a dead network at 8:59 falls through to the offline queue quickly. */
 export const CHECK_IN_TIMEOUT_MS = 15_000;
 
-export const checkIn = (a: CheckinAttempt): Promise<CheckinRow> =>
+const checkInReal = (a: CheckinAttempt): Promise<CheckinRow> =>
   call(
     'check_in',
     {
@@ -115,7 +117,7 @@ export const checkIn = (a: CheckinAttempt): Promise<CheckinRow> =>
   );
 
 /** Transport adapter for the offline queue. */
-export async function sendQueuedCheckin(a: CheckinAttempt): Promise<SendOutcome<CheckinRow>> {
+async function sendQueuedCheckinReal(a: CheckinAttempt): Promise<SendOutcome<CheckinRow>> {
   try {
     return { kind: 'ok', result: await checkIn(a) };
   } catch (e) {
@@ -124,7 +126,7 @@ export async function sendQueuedCheckin(a: CheckinAttempt): Promise<SendOutcome<
   }
 }
 
-export const declareFreeze = (instanceId: string) => call('declare_freeze', { p_instance: instanceId });
+const declareFreezeReal = (instanceId: string) => call('declare_freeze', { p_instance: instanceId });
 
 export interface OpenReviewInput {
   instanceId: string;
@@ -134,7 +136,7 @@ export interface OpenReviewInput {
   photoPath?: string | null;
 }
 
-export const openReview = (r: OpenReviewInput) =>
+const openReviewReal = (r: OpenReviewInput) =>
   call('open_review', {
     p_instance: r.instanceId,
     p_subject: r.subjectUserId,
@@ -143,17 +145,36 @@ export const openReview = (r: OpenReviewInput) =>
     p_photo_path: r.photoPath ?? null,
   });
 
-export const castVote = (reviewId: string, supports: boolean) =>
+const castVoteReal = (reviewId: string, supports: boolean) =>
   call('cast_vote', { p_review: reviewId, p_supports: supports });
 
-export const markObligationPaid = (obligationId: string) =>
+const markObligationPaidReal = (obligationId: string) =>
   call('mark_obligation_paid', { p_obligation: obligationId });
 
-export const confirmObligation = (obligationId: string) =>
+const confirmObligationReal = (obligationId: string) =>
   call('confirm_obligation', { p_obligation: obligationId });
 
-export const disputeObligation = (obligationId: string) =>
+const disputeObligationReal = (obligationId: string) =>
   call('dispute_obligation', { p_obligation: obligationId });
 
-export const registerPushToken = (token: string, platform: string) =>
+const registerPushTokenReal = (token: string, platform: string) =>
   call('register_push_token', { p_token: token, p_platform: platform });
+
+// ---------- demo-mode switch ----------
+// With EXPO_PUBLIC_DEMO=1 every RPC resolves against the in-memory fixtures (see ./demo).
+
+export const createGroup = DEMO ? demo.createGroup : createGroupReal;
+export const joinGroup = DEMO ? demo.joinGroup : joinGroupReal;
+export const leaveGroup = DEMO ? demo.leaveGroup : leaveGroupReal;
+export const createPact = DEMO ? demo.createPact : createPactReal;
+export const joinPact = DEMO ? demo.joinPact : joinPactReal;
+export const setPactPaused = DEMO ? demo.setPactPaused : setPactPausedReal;
+export const checkIn = DEMO ? demo.checkIn : checkInReal;
+export const sendQueuedCheckin = DEMO ? demo.sendQueuedCheckin : sendQueuedCheckinReal;
+export const declareFreeze = DEMO ? demo.declareFreeze : declareFreezeReal;
+export const openReview = DEMO ? demo.openReview : openReviewReal;
+export const castVote = DEMO ? demo.castVote : castVoteReal;
+export const markObligationPaid = DEMO ? demo.markObligationPaid : markObligationPaidReal;
+export const confirmObligation = DEMO ? demo.confirmObligation : confirmObligationReal;
+export const disputeObligation = DEMO ? demo.disputeObligation : disputeObligationReal;
+export const registerPushToken = DEMO ? demo.registerPushToken : registerPushTokenReal;

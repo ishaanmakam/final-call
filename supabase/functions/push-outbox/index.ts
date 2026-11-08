@@ -27,6 +27,18 @@ function groupByError(rows: RowError[]): Map<string, number[]> {
   return out;
 }
 
+/** Retryable failures grouped by (error, retryAt) so each group is one UPDATE. */
+function groupByErrorAndRetry(rows: RowError[]): { error: string; retryAt: string | null; ids: number[] }[] {
+  const out = new Map<string, { error: string; retryAt: string | null; ids: number[] }>();
+  for (const r of rows) {
+    const key = `${r.retryAt ?? ""}\u0000${r.error}`;
+    const g = out.get(key) ?? { error: r.error, retryAt: r.retryAt ?? null, ids: [] };
+    g.ids.push(r.id);
+    out.set(key, g);
+  }
+  return [...out.values()];
+}
+
 function check(error: { message: string } | null, what: string): void {
   if (error) throw new Error(`${what}: ${error.message}`);
 }
@@ -57,11 +69,13 @@ Deno.serve(async (req) => {
           .in("id", ids);
         check(error, "mark sent");
       },
+      // The lease doubles as the backoff: claimed_until = retryAt keeps the row out of the next
+      // claims until then (1, 5, 15, 60 minutes by attempt; attempts >= 5 are never re-claimed).
       markFailed: async (failures) => {
-        for (const [message, ids] of groupByError(failures)) {
+        for (const { error: message, retryAt, ids } of groupByErrorAndRetry(failures)) {
           const { error } = await db
             .from("notification_outbox")
-            .update({ last_error: message, claimed_until: null })
+            .update({ last_error: message, claimed_until: retryAt })
             .in("id", ids);
           check(error, "mark failed");
         }

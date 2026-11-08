@@ -2,6 +2,7 @@ import 'react-native-url-polyfill/auto';
 import { createClient } from '@supabase/supabase-js';
 import * as SecureStore from 'expo-secure-store';
 import { AppState, Platform } from 'react-native';
+import { createChunkedStore } from '../lib/secureChunks';
 import type { Database } from './types';
 
 const url = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
@@ -9,13 +10,17 @@ const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
 
 export const isSupabaseConfigured = url.startsWith('http') && anonKey.length > 0;
 
-/** Session (and PKCE verifier) live in the iOS Keychain via expo-secure-store. */
-const secureStorage = {
-  getItem: (key: string) => SecureStore.getItemAsync(key),
-  setItem: (key: string, value: string) =>
-    SecureStore.setItemAsync(key, value, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK }),
-  removeItem: (key: string) => SecureStore.deleteItemAsync(key),
-};
+/**
+ * Session (and PKCE verifier) live in the iOS Keychain via expo-secure-store. SecureStore caps a
+ * value at 2048 bytes and a session JSON is bigger, so values are split into <= 1900-byte chunks
+ * (see lib/secureChunks.ts). Keychain writes have no cross-item transaction; a torn write reads
+ * back as "no session", never as a corrupt one.
+ */
+const secureStorage = createChunkedStore({
+  getItem: (key) => SecureStore.getItemAsync(key),
+  setItem: (key, value) => SecureStore.setItemAsync(key, value, { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK }),
+  removeItem: (key) => SecureStore.deleteItemAsync(key),
+});
 
 export const supabase = createClient<Database>(
   isSupabaseConfigured ? url : 'http://localhost:54321',

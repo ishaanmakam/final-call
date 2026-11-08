@@ -14,7 +14,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   version: '0.1.0',
   orientation: 'portrait',
   icon: './assets/icon.png',
-  userInterfaceStyle: 'light',
+  userInterfaceStyle: 'automatic',
   ios: {
     bundleIdentifier: BUNDLE_ID,
     supportsTablet: false,
@@ -24,6 +24,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       // lets Linking.canOpenURL detect the Venmo app for "Pay on Venmo"
       LSApplicationQueriesSchemes: ['venmo'],
       ITSAppUsesNonExemptEncryption: false,
+      // lets Reanimated animations run at 120 Hz on ProMotion iPhones
+      CADisableMinimumFrameDurationOnPhone: true,
     },
   },
   android: {
@@ -35,7 +37,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       monochromeImage: './assets/android-icon-monochrome.png',
     },
   },
-  web: { favicon: './assets/favicon.png' },
+  // web exists only for the screenshot harness and demos (single-page output, SPA fallback)
+  web: { favicon: './assets/favicon.png', bundler: 'metro', output: 'single' },
   plugins: [
     'expo-router',
     'expo-secure-store',

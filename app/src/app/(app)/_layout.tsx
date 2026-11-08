@@ -1,24 +1,33 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, Redirect, Stack, usePathname } from 'expo-router';
 import { useCallback, useEffect } from 'react';
-import { Alert, Text } from 'react-native';
+import { Alert, Platform } from 'react-native';
 import type { CheckinRow } from '@/api/types';
-import { colors } from '@/components/theme';
+import { Text } from '@/components/Text';
 import { Loading } from '@/components/ui';
 import { useAuth } from '@/lib/auth';
 import type { QueueEvent } from '@/lib/checkinQueue';
 import { useCheckinQueueRunner } from '@/lib/checkinQueueRuntime';
 import { registerForPush, useNotificationRouting } from '@/lib/push';
+import { useReducedMotion, useTheme } from '@/theme';
 
 const verdictText: Record<CheckinRow['verdict'], string> = {
   in_fence: 'You were at your place.',
   out_of_fence: 'You were outside your place.',
-  unjudgeable: 'GPS was too weak to judge.',
+  unjudgeable: 'GPS was too weak to judge, so the day counts as unverified, which never costs you.',
   rejected_simulated: 'The location looked simulated and was rejected.',
 };
 
+function notify(title: string, message: string) {
+  // Alert is a no-op on the web; the offline queue is native-only in practice anyway.
+  if (Platform.OS === 'web') return;
+  Alert.alert(title, message);
+}
+
 function SignedIn({ userId }: { userId: string }) {
   const qc = useQueryClient();
+  const { colors } = useTheme();
+  const reduced = useReducedMotion();
 
   useEffect(() => {
     void registerForPush();
@@ -31,11 +40,11 @@ function SignedIn({ userId }: { userId: string }) {
       void qc.invalidateQueries({ queryKey: ['instance', event.entry.instanceId] });
       void qc.invalidateQueries({ queryKey: ['group'] });
       if (event.type === 'sent') {
-        Alert.alert('Offline check-in delivered', verdictText[event.result.verdict]);
+        notify('Offline check-in delivered', verdictText[event.result.verdict]);
       } else if (event.type === 'rejected') {
-        Alert.alert('Offline check-in not accepted', event.error);
+        notify('Offline check-in not accepted', event.error);
       } else {
-        Alert.alert('Offline check-in dropped', 'It could not be sent within 24 hours.');
+        notify('Offline check-in dropped', 'It could not be sent within 24 hours.');
       }
     },
     [qc],
@@ -45,18 +54,30 @@ function SignedIn({ userId }: { userId: string }) {
   return (
     <Stack
       screenOptions={{
-        headerTintColor: colors.primary,
-        headerTitleStyle: { color: colors.text },
+        headerTintColor: colors.tint,
+        headerTitleStyle: { color: colors.label },
+        headerStyle: { backgroundColor: colors.bg },
+        headerShadowVisible: false,
         contentStyle: { backgroundColor: colors.bg },
+        // Reduce Motion: crossfade instead of the push slide
+        animation: reduced ? 'fade' : 'default',
       }}
     >
       <Stack.Screen
         name="groups/index"
         options={{
           title: 'Groups',
+          headerLargeTitle: true,
           headerRight: () => (
-            <Link href="/settings" accessibilityLabel="Settings">
-              <Text style={{ color: colors.primary, fontSize: 16 }}>Settings</Text>
+            <Link
+              href="/settings"
+              accessibilityLabel="Settings"
+              accessibilityRole="button"
+              style={Platform.OS === 'web' ? { paddingRight: 16 } : undefined}
+            >
+              <Text variant="body" color="tint">
+                Settings
+              </Text>
             </Link>
           ),
         }}

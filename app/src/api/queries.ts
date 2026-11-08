@@ -4,6 +4,8 @@ import { OPEN_OBLIGATION_STATUSES } from '../lib/obligations';
 import { effectivePlaceAt, nextWindow, placeForWindow, type WindowPlace } from '../lib/places';
 import { summarizeInstance, type InstanceSummary, type MemberDayState } from '../lib/instanceStatus';
 import { localDateInZone, windowState } from '../lib/time';
+import * as demo from './demo';
+import { DEMO } from './demo/settings';
 import { supabase } from './supabase';
 import type {
   CheckinRow,
@@ -53,14 +55,14 @@ export const displayName = (profiles: Map<string, ProfileRow>, userId: string): 
 
 // ---------- profile ----------
 
-export function useProfile(userId: string) {
+function useProfileReal(userId: string) {
   return useQuery({
     queryKey: queryKeys.profile(userId),
     queryFn: async () => await supabase.from('profiles').select('*').eq('id', userId).single().then(must),
   });
 }
 
-export function useUpdateProfile(userId: string) {
+function useUpdateProfileReal(userId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (patch: { display_name?: string; venmo_username?: string | null }) => {
@@ -79,7 +81,7 @@ export interface MyGroup {
   memberCount: number;
 }
 
-export function useMyGroups(userId: string) {
+function useMyGroupsReal(userId: string) {
   return useQuery({
     queryKey: queryKeys.myGroups(userId),
     queryFn: async (): Promise<MyGroup[]> => {
@@ -123,7 +125,7 @@ export interface GroupHome {
   today: TodayItem[];
 }
 
-export function useGroupHome(groupId: string, userId: string) {
+function useGroupHomeReal(groupId: string, userId: string) {
   return useQuery({
     queryKey: queryKeys.groupHome(groupId),
     queryFn: async (): Promise<GroupHome> => {
@@ -205,7 +207,7 @@ export interface PactDetail {
   myFreezes: FreezeRow[];
 }
 
-export function usePactDetail(pactId: string, userId: string) {
+function usePactDetailReal(pactId: string, userId: string) {
   return useQuery({
     queryKey: queryKeys.pact(pactId),
     queryFn: async (): Promise<PactDetail> => {
@@ -241,7 +243,7 @@ export interface PlaceSchedule {
   latestSaved: PactParticipantPlaceRow | null;
 }
 
-export function usePlaceSchedule(pactId: string, userId: string, enabled = true) {
+function usePlaceScheduleReal(pactId: string, userId: string, enabled = true) {
   return useQuery({
     queryKey: [...queryKeys.pact(pactId), 'places', userId] as const,
     enabled,
@@ -295,7 +297,7 @@ export interface InstanceDetail {
   myFreeze: FreezeRow | null;
 }
 
-export function useInstanceDetail(instanceId: string, userId: string) {
+function useInstanceDetailReal(instanceId: string, userId: string) {
   return useQuery({
     queryKey: queryKeys.instance(instanceId),
     queryFn: async (): Promise<InstanceDetail> => {
@@ -363,7 +365,7 @@ export interface Feed {
 
 export const FEED_DAYS = 28;
 
-export function useFeed(groupId: string) {
+function useFeedReal(groupId: string) {
   return useQuery({
     queryKey: queryKeys.feed(groupId),
     queryFn: async (): Promise<Feed> => {
@@ -446,7 +448,7 @@ export interface Ledger {
   profiles: Map<string, ProfileRow>;
 }
 
-export function useLedger(groupId: string) {
+function useLedgerReal(groupId: string) {
   return useQuery({
     queryKey: queryKeys.ledger(groupId),
     queryFn: async (): Promise<Ledger> => {
@@ -503,3 +505,17 @@ export function useRpcMutation<TVars, TResult>(
   });
 }
 
+
+// ---------- demo-mode switch ----------
+// With EXPO_PUBLIC_DEMO=1 every hook resolves against in-memory fixtures (see ./demo). The real
+// implementations above are untouched; the switch is a module constant, so hook order is stable.
+
+export const useProfile = DEMO ? demo.useProfile : useProfileReal;
+export const useUpdateProfile = DEMO ? demo.useUpdateProfile : useUpdateProfileReal;
+export const useMyGroups = DEMO ? demo.useMyGroups : useMyGroupsReal;
+export const useGroupHome = DEMO ? demo.useGroupHome : useGroupHomeReal;
+export const usePactDetail = DEMO ? demo.usePactDetail : usePactDetailReal;
+export const usePlaceSchedule = DEMO ? demo.usePlaceSchedule : usePlaceScheduleReal;
+export const useInstanceDetail = DEMO ? demo.useInstanceDetail : useInstanceDetailReal;
+export const useFeed = DEMO ? demo.useFeed : useFeedReal;
+export const useLedger = DEMO ? demo.useLedger : useLedgerReal;

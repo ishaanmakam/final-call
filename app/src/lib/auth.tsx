@@ -2,6 +2,7 @@ import type { Session } from '@supabase/supabase-js';
 import * as AppleAuthentication from 'expo-apple-authentication';
 import * as Linking from 'expo-linking';
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { DEMO, DEMO_USER_ID, getDemoSettings, subscribeDemoSettings } from '../api/demo/settings';
 import { supabase } from '../api/supabase';
 
 interface AuthState {
@@ -11,7 +12,33 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState>({ session: null, loading: true });
 
-export function AuthProvider({ children }: { children: ReactNode }) {
+/** A session-shaped object for demo mode; nothing here is ever sent anywhere. */
+const demoSession = (): Session =>
+  ({
+    access_token: 'demo',
+    refresh_token: 'demo',
+    token_type: 'bearer',
+    expires_in: 3600,
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+    user: {
+      id: DEMO_USER_ID,
+      aud: 'authenticated',
+      role: 'authenticated',
+      email: 'demo@showup.app',
+      app_metadata: {},
+      user_metadata: {},
+      created_at: new Date(0).toISOString(),
+    },
+  }) as unknown as Session;
+
+function DemoAuthProvider({ children }: { children: ReactNode }) {
+  const [signedOut, setSignedOut] = useState(() => getDemoSettings().signedOut);
+  useEffect(() => subscribeDemoSettings((s) => setSignedOut(s.signedOut)), []);
+  const value = useMemo<AuthState>(() => ({ session: signedOut ? null : demoSession(), loading: false }), [signedOut]);
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+}
+
+function SupabaseAuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ session: null, loading: true });
 
   useEffect(() => {
@@ -37,6 +64,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
+export const AuthProvider = DEMO ? DemoAuthProvider : SupabaseAuthProvider;
+
 export const useAuth = (): AuthState => useContext(AuthContext);
 
 /** Current user id. Only call inside the signed-in route group. */
@@ -49,6 +78,7 @@ export function useUserId(): string {
 export const AUTH_CALLBACK_PATH = 'auth-callback';
 
 export async function signInWithApple(): Promise<void> {
+  if (DEMO) return;
   const credential = await AppleAuthentication.signInAsync({
     requestedScopes: [
       AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
@@ -71,6 +101,7 @@ export async function signInWithApple(): Promise<void> {
 }
 
 export async function sendMagicLink(email: string): Promise<void> {
+  if (DEMO) return;
   const { error } = await supabase.auth.signInWithOtp({
     email: email.trim(),
     options: { emailRedirectTo: Linking.createURL(AUTH_CALLBACK_PATH), shouldCreateUser: true },
@@ -80,11 +111,13 @@ export async function sendMagicLink(email: string): Promise<void> {
 
 /** Completes the PKCE magic-link flow from `showup://auth-callback?code=...`. */
 export async function completeMagicLink(code: string): Promise<void> {
+  if (DEMO) return;
   const { error } = await supabase.auth.exchangeCodeForSession(code);
   if (error) throw error;
 }
 
 export async function signOut(): Promise<void> {
+  if (DEMO) return;
   const { error } = await supabase.auth.signOut();
   if (error) throw error;
 }

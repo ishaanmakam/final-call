@@ -4,6 +4,7 @@ import * as SecureStore from 'expo-secure-store';
 import { router } from 'expo-router';
 import { useEffect } from 'react';
 import { Platform } from 'react-native';
+import { DEMO } from '../api/demo/settings';
 import { registerPushToken } from '../api/rpc';
 import { supabase } from '../api/supabase';
 
@@ -34,6 +35,7 @@ export type PushRegistration =
 
 /** Ask for permission, fetch the Expo push token and store it server-side. */
 export async function registerForPush(): Promise<PushRegistration> {
+  if (DEMO) return { status: 'unavailable', reason: 'Push is off in demo mode.' };
   if (!(await getNotificationsEnabled())) return { status: 'disabled' };
   let perms = await Notifications.getPermissionsAsync();
   if (!perms.granted && perms.canAskAgain) perms = await Notifications.requestPermissionsAsync();

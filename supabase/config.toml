@@ -1,0 +1,78 @@
+# Supabase CLI configuration for `supabase start` / `supabase db push` / `supabase functions serve`.
+# Only keys the CLI knows are listed (unknown keys make the CLI refuse the file). Secrets never go here:
+# the Apple provider secret and the push-outbox Vault secrets are set per environment (see below).
+project_id = "showup"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 17
+
+[db.seed]
+enabled = false
+
+[studio]
+enabled = true
+port = 54323
+
+[auth]
+enabled = true
+# The app's scheme is `showup` (app/app.config.ts). Magic links use PKCE and land on
+# showup://auth-callback, which exchanges ?code= for a session (app/src/app/auth-callback.tsx).
+site_url = "showup://auth-callback"
+additional_redirect_urls = ["showup://auth-callback", "showup://auth-callback/**"]
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+enable_signup = true
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = false
+
+# Native Sign in with Apple: the app sends Apple's identity token to signInWithIdToken, so the
+# client id is the iOS bundle id and no Services ID / secret is needed for native-only sign-in.
+# Set the bundle id for your environment; `secret` stays empty for native-only.
+[auth.external.apple]
+enabled = true
+client_id = "com.ishaanmakam.showup"
+secret = "env(SUPABASE_AUTH_EXTERNAL_APPLE_SECRET)"
+
+[storage]
+enabled = true
+file_size_limit = "5MiB"
+
+# Appeal photos. Object path: <group_id>/<user_id>/<file>; RLS policies in
+# 20261107000500_app_support.sql, size/MIME caps in 20261107000600_review_fixes.sql.
+[storage.buckets.review-photos]
+public = false
+file_size_limit = "5MiB"
+allowed_mime_types = ["image/jpeg", "image/png", "image/heic", "image/heif", "image/webp"]
+
+[edge_runtime]
+enabled = true
+policy = "per_worker"
+
+# push-outbox checks `Authorization: Bearer <SUPABASE_SERVICE_ROLE_KEY>` itself (constant-time
+# compare in outbox.ts), so gateway JWT verification is off. pg_cron sends that exact key, read
+# from Vault (`service_role_key`), see 20261107000400_cron.sql.
+[functions.push-outbox]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/push-outbox/index.ts"
+
+# Local stack notes (not config keys):
+#   * pg_cron and pg_net ship with the local image; the cron migration enables them. Vault secrets
+#     must be created once per environment before push-outbox runs:
+#       select vault.create_secret('http://host.docker.internal:54321', 'project_url');  -- local
+#       select vault.create_secret('<service role key>', 'service_role_key');
+#   * `supabase functions serve push-outbox --no-verify-jwt` for local runs.
+#   * `supabase test db` runs supabase/tests/pgtap/*.sql (copy to supabase/tests/database/ if needed).

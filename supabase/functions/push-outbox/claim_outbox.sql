@@ -1,5 +1,7 @@
--- push-outbox claim RPC. Owned by the notifications agent; the lead folds this into a migration
--- (it must run after the foundation migration that creates notification_outbox).
+-- push-outbox claim RPC. The canonical copy lives in
+-- supabase/migrations/20261107000500_app_support.sql (section 3); this file is kept only so
+-- test/claim_outbox.test.ts can exercise the function against a bare table, and a test asserts
+-- the two function bodies are identical. Edit the migration first, then mirror it here.
 --
 -- Why a lease column: FOR UPDATE SKIP LOCKED only protects rows for the duration of the claim
 -- transaction, and that transaction commits as soon as the RPC returns, long before the Edge
@@ -12,15 +14,15 @@
 alter table public.notification_outbox
   add column if not exists claimed_until timestamptz null;
 
-create index if not exists notification_outbox_unsent_idx
+create index if not exists notification_outbox_claim_idx
   on public.notification_outbox (id)
-  where sent_at is null;
+  where sent_at is null and attempts < 5;
 
 create or replace function public.claim_outbox(p_limit int default 100, p_now timestamptz default now())
 returns setof public.notification_outbox
 language sql
 security definer
-set search_path = public
+set search_path = pg_catalog, public, pg_temp
 as $$
   update public.notification_outbox o
      set attempts = o.attempts + 1,

@@ -45,6 +45,8 @@ export interface PlannedMessage {
 export interface RowError {
   id: number;
   error: string;
+  /** ISO instant before which the row must not be re-claimed (retryable failures only). */
+  retryAt?: string;
 }
 
 export interface DeadToken {
@@ -110,6 +112,33 @@ export function formatLocalTime(p: { deadline_local?: unknown; deadline_at?: unk
 // ---------- rendering ----------
 
 const DATA_KEYS = ["group_id", "pact_id", "instance_id", "review_id", "settlement_id"] as const;
+
+/** In-app path the client opens when the notification is tapped (app/src/lib/push.ts prefers data.url). */
+export function deepLinkUrl(kind: string, p: Record<string, unknown>): string | undefined {
+  const instance = str(p.instance_id);
+  const group = str(p.group_id);
+  switch (kind) {
+    case "window_open":
+    case "deadline_soon":
+      return instance ? `/checkin/${instance}` : undefined;
+    case "result":
+    case "review_opened":
+      return group ? `/groups/${group}/feed` : undefined;
+    case "settlement":
+      return group ? `/groups/${group}/ledger` : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/** Reminders about a window that has already closed must not go out late. */
+export function isStale(row: OutboxRow, p: Record<string, unknown>, now: Date): boolean {
+  if (row.kind !== "window_open" && row.kind !== "deadline_soon") return false;
+  const at = str(p.deadline_at);
+  if (!at) return false;
+  const ms = new Date(at).getTime();
+  return Number.isFinite(ms) && now.getTime() > ms;
+}
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" && v.trim() !== "" ? v : undefined;
@@ -220,6 +249,8 @@ export function renderNotification(row: OutboxRow, now: Date = new Date()): Rend
   if (!copy) return null;
   const data: Record<string, unknown> = { kind: row.kind, outbox_id: row.id };
   for (const k of DATA_KEYS) if (p[k] !== undefined && p[k] !== null) data[k] = p[k];
+  const url = deepLinkUrl(row.kind, p);
+  if (url) data.url = url;
   return { ...copy, data };
 }
 
@@ -246,6 +277,11 @@ export function planMessages(
   const messages: PlannedMessage[] = [];
   const drops: RowError[] = [];
   for (const row of rows) {
+    const payload = row.payload && typeof row.payload === "object" ? row.payload : {};
+    if (isStale(row, payload, now)) {
+      drops.push({ id: row.id, error: "stale: deadline passed" });
+      continue;
+    }
     const rendered = renderNotification(row, now);
     if (!rendered) {
       drops.push({ id: row.id, error: `cannot render kind '${row.kind}'` });
@@ -347,6 +383,16 @@ export async function sendExpoBatch(
   return json.data as ExpoTicket[];
 }
 
+// ---------- retry backoff ----------
+
+/** Minutes to wait before re-claiming a row after its n-th failed attempt (attempts as bumped by claim_outbox). */
+const RETRY_DELAY_MINUTES = [1, 5, 15, 60] as const;
+
+export function retryDelayMs(attempts: number): number {
+  const idx = Math.min(Math.max(Math.trunc(attempts) - 1, 0), RETRY_DELAY_MINUTES.length - 1);
+  return RETRY_DELAY_MINUTES[idx]! * 60_000;
+}
+
 // ---------- orchestration ----------
 
 export interface OutboxDeps {
@@ -389,6 +435,11 @@ export async function processOutbox(
   }
 
   const outcomes = resolveOutcomes(messages, tickets);
+  const attemptsById = new Map(rows.map((r) => [r.id, r.attempts]));
+  const retry: RowError[] = outcomes.retry.map((r) => ({
+    ...r,
+    retryAt: new Date(now.getTime() + retryDelayMs(attemptsById.get(r.id) ?? 1)).toISOString(),
+  }));
   const dropped = [...drops, ...outcomes.drop];
   const seen = new Set<string>();
   const dead = outcomes.deadTokens.filter((t) => {
@@ -399,14 +450,14 @@ export async function processOutbox(
   });
 
   if (outcomes.sent.length) await deps.markSent(outcomes.sent);
-  if (outcomes.retry.length) await deps.markFailed(outcomes.retry);
+  if (retry.length) await deps.markFailed(retry);
   if (dropped.length) await deps.markDropped(dropped);
   if (dead.length) await deps.deleteTokens(dead);
 
   return {
     claimed: rows.length,
     sent: outcomes.sent.length,
-    retried: outcomes.retry.length,
+    retried: retry.length,
     dropped: dropped.length,
     tokensDeleted: dead.length,
   };

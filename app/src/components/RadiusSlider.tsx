@@ -1,7 +1,13 @@
-import { useMemo, useRef, useState } from 'react';
-import { PanResponder, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
-import { colors, radius, space } from './theme';
-import { Button } from './ui';
+import { useEffect, useState } from 'react';
+import { StyleSheet, View, type LayoutChangeEvent } from 'react-native';
+import { GestureDetector, usePanGesture } from 'react-native-gesture-handler';
+import Animated, { useAnimatedReaction, useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
+import { scheduleOnRN } from 'react-native-worklets';
+import { haptic } from '../theme/haptics';
+import { useTheme } from '../theme/ThemeProvider';
+import { TOUCH_TARGET, radius, space } from '../theme/tokens';
+import { Button } from './Button';
+import { Text } from './Text';
 
 interface Props {
   value: number;
@@ -11,71 +17,118 @@ interface Props {
   step?: number;
 }
 
-const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+const THUMB = 28;
+
+const clamp = (v: number, lo: number, hi: number) => {
+  'worklet';
+  return Math.min(hi, Math.max(lo, v));
+};
 
 /**
- * Pure-JS slider (PanResponder) so the dev build needs no extra native module.
- * Also exposes increment/decrement accessibility actions and +/- buttons.
+ * Radius slider on gesture-handler + Reanimated: the thumb and fill follow the finger on the UI
+ * thread; React hears about the value only when it crosses a step (never per frame). Keyboard and
+ * VoiceOver users get the +/- buttons and the adjustable actions.
  */
 export function RadiusSlider({ value, onChange, min = 25, max = 500, step = 5 }: Props) {
+  const { colors } = useTheme();
   const [width, setWidth] = useState(0);
-  const startX = useRef(0);
-  const latest = useRef({ width, onChange, min, max, step });
-  latest.current = { width, onChange, min, max, step };
+  const ratio = useSharedValue((clamp(value, min, max) - min) / (max - min));
+  const startRatio = useSharedValue(0);
+  const dragging = useSharedValue(false);
+  const trackWidth = useSharedValue(0);
+  const stepped = useSharedValue(value);
 
-  const valueFromX = (x: number): number => {
-    const { width: w, min: lo, max: hi, step: st } = latest.current;
-    if (w <= 0) return lo;
-    const ratio = clamp(x / w, 0, 1);
-    return clamp(Math.round((lo + ratio * (hi - lo)) / st) * st, lo, hi);
-  };
+  // outside changes (buttons, initial load) move the thumb when the finger is not on it
+  useEffect(() => {
+    if (!dragging.get()) {
+      ratio.set((clamp(value, min, max) - min) / (max - min));
+      stepped.set(value);
+    }
+  }, [value, min, max, ratio, dragging, stepped]);
 
-  const responder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: () => true,
-        onPanResponderTerminationRequest: () => false,
-        // children are pointerEvents="none", so locationX is relative to the track itself
-        onPanResponderGrant: (evt) => {
-          startX.current = evt.nativeEvent.locationX;
-          latest.current.onChange(valueFromX(startX.current));
-        },
-        onPanResponderMove: (_evt, gesture) => latest.current.onChange(valueFromX(startX.current + gesture.dx)),
-      }),
-    [],
+  useAnimatedReaction(
+    () => {
+      const raw = min + ratio.get() * (max - min);
+      return clamp(Math.round(raw / step) * step, min, max);
+    },
+    (next, prev) => {
+      if (prev !== null && next !== prev && dragging.get()) {
+        stepped.set(next);
+        scheduleOnRN(onChange, next);
+        if (next % 25 === 0) scheduleOnRN(haptic, 'selection');
+      }
+    },
+    [min, max, step, onChange],
   );
 
-  const onLayout = (e: LayoutChangeEvent) => setWidth(e.nativeEvent.layout.width);
+  const pan = usePanGesture({
+    activeOffsetX: [-4, 4],
+    onBegin: (e) => {
+      'worklet';
+      const w = trackWidth.get();
+      if (w > 0) ratio.set(clamp(e.x / w, 0, 1));
+    },
+    onActivate: () => {
+      'worklet';
+      dragging.set(true);
+      startRatio.set(ratio.get());
+    },
+    onUpdate: (e) => {
+      'worklet';
+      const w = trackWidth.get();
+      if (w > 0) ratio.set(clamp(startRatio.get() + e.translationX / w, 0, 1));
+    },
+    onFinalize: () => {
+      'worklet';
+      dragging.set(false);
+      // snap the thumb to the committed step
+      ratio.set((stepped.get() - min) / (max - min));
+    },
+  });
 
-  const ratio = (clamp(value, min, max) - min) / (max - min);
-  const bump = (delta: number) => onChange(clamp(value + delta, min, max));
+  const fillStyle = useAnimatedStyle(() => ({ width: `${ratio.get() * 100}%` }));
+  const thumbStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: Math.max(0, ratio.get() * trackWidth.get() - THUMB / 2) }, { scale: dragging.get() ? 1.1 : 1 }],
+  }));
+
+  const onLayout = (e: LayoutChangeEvent) => {
+    setWidth(e.nativeEvent.layout.width);
+    trackWidth.set(e.nativeEvent.layout.width);
+  };
+
+  const bump = (delta: number) => onChange(Math.min(max, Math.max(min, value + delta)));
 
   return (
     <View style={styles.wrap}>
-      <Text style={styles.value}>{value} m radius</Text>
-      <View
-        onLayout={onLayout}
-        style={styles.hit}
-        accessible
-        accessibilityRole="adjustable"
-        accessibilityLabel="Place radius"
-        accessibilityValue={{ min, max, now: value, text: `${value} meters` }}
-        accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
-        onAccessibilityAction={(e) => bump(e.nativeEvent.actionName === 'increment' ? 25 : -25)}
-        {...responder.panHandlers}
-      >
-        <View pointerEvents="none" style={styles.track}>
-          <View style={[styles.fill, { width: `${ratio * 100}%` }]} />
+      <Text variant="headline" tabular>
+        {value} m radius
+      </Text>
+      <GestureDetector gesture={pan}>
+        <View
+          onLayout={onLayout}
+          style={styles.hit}
+          accessible
+          accessibilityRole="adjustable"
+          accessibilityLabel="Place radius"
+          accessibilityValue={{ min, max, now: value, text: `${value} meters` }}
+          accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
+          onAccessibilityAction={(e) => bump(e.nativeEvent.actionName === 'increment' ? 25 : -25)}
+        >
+          <View pointerEvents="none" style={[styles.track, { backgroundColor: colors.fillStrong }]}>
+            <Animated.View style={[styles.fill, { backgroundColor: colors.tint }, fillStyle]} />
+          </View>
+          <Animated.View
+            pointerEvents="none"
+            style={[styles.thumb, { backgroundColor: colors.surfaceElevated, borderColor: colors.tint, shadowColor: colors.shadow }, width === 0 && styles.hidden, thumbStyle]}
+          />
         </View>
-        <View pointerEvents="none" style={[styles.thumb, { left: Math.max(0, ratio * width - 14) }]} />
-      </View>
+      </GestureDetector>
       <View style={styles.buttons}>
-        <Button title={`-${step * 5}`} variant="secondary" onPress={() => bump(-step * 5)} style={styles.small} />
-        <Text style={styles.range}>
+        <Button title={`-${step * 5}`} variant="secondary" size="small" onPress={() => bump(-step * 5)} accessibilityLabel={`Shrink by ${step * 5} meters`} />
+        <Text variant="footnote" color="secondary">
           {min}–{max} m
         </Text>
-        <Button title={`+${step * 5}`} variant="secondary" onPress={() => bump(step * 5)} style={styles.small} />
+        <Button title={`+${step * 5}`} variant="secondary" size="small" onPress={() => bump(step * 5)} accessibilityLabel={`Grow by ${step * 5} meters`} />
       </View>
     </View>
   );
@@ -83,21 +136,21 @@ export function RadiusSlider({ value, onChange, min = 25, max = 500, step = 5 }:
 
 const styles = StyleSheet.create({
   wrap: { gap: space.sm },
-  value: { fontSize: 16, fontWeight: '600', color: colors.text },
-  hit: { height: 40, justifyContent: 'center' },
-  track: { height: 6, borderRadius: radius.pill, backgroundColor: colors.border, overflow: 'hidden' },
-  fill: { height: 6, backgroundColor: colors.primary },
+  hit: { height: TOUCH_TARGET, justifyContent: 'center' },
+  track: { height: 6, borderRadius: radius.pill, overflow: 'hidden' },
+  fill: { position: 'absolute', left: 0, top: 0, bottom: 0 },
   thumb: {
     position: 'absolute',
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: colors.card,
+    left: 0,
+    width: THUMB,
+    height: THUMB,
+    borderRadius: THUMB / 2,
     borderWidth: 2,
-    borderColor: colors.primary,
-    top: 6,
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
   },
+  hidden: { opacity: 0 },
   buttons: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  small: { minHeight: 36, paddingHorizontal: space.md },
-  range: { color: colors.muted, fontSize: 12 },
 });

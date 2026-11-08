@@ -88,3 +88,15 @@ describe("claim_outbox", () => {
     expect(res.rows[0]).toEqual({ anon: false, auth: false, svc: true });
   });
 });
+
+describe("claim_outbox.sql stays identical to the migration (F4)", () => {
+  it("the function body in claim_outbox.sql equals the one in 20261107000500_app_support.sql", () => {
+    const migration = readFileSync(new URL("../../../migrations/20261107000500_app_support.sql", import.meta.url), "utf8");
+    const extract = (sql: string) => {
+      const m = /create or replace function public\.claim_outbox[\s\S]*?\$\$;/.exec(sql);
+      if (!m) throw new Error("claim_outbox definition not found");
+      return m[0].replace(/\s+/g, " ").trim();
+    };
+    expect(extract(claimSql)).toBe(extract(migration));
+  });
+});
