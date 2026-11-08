@@ -251,3 +251,13 @@ Made during the UI/UX overhaul on branch `ui-overhaul` without the founder. Same
 | V-7 | Negative balances in the simulator's ledger tiles, home card and settle-up running balance were red | `.neg` is the label colour; `.pos` stays green; the gate-close figure keeps the forfeit tone for a Missed day, as in the app. | UB2 applies to the simulator too. |
 | V-8 | A deleted member's objected-but-pending place row | Goes with the other pending rows (`effective_from > now()`); the objection survives in `place_events` (`place_id` set null, actor shown as "Deleted member") and the place in force stays. Documented in CONTRACT, tested in redteam-final F-3b. | Follows the contract's "pending place changes are deleted" literally; the feed is the record of the objection, the place row is not. |
 | V-9 | A deleted member's historical place coordinates | Kept, readable to former co-members under `pact_participant_places` RLS; not nulled. | Reviews of the week in progress need the place the check-ins were judged against; the privacy policy says past results stay and that places are visible to the group. Revisit with a 30-day null like check-in coordinates if the policy tightens. |
+
+## Challenges defaults (2026-11-08)
+
+Made while generalizing pacts into challenge kinds (spec: `docs/superpowers/specs/2026-11-08-challenge-kinds-design.md`). Founder decisions: IOU-only stays (F6); running is the first new kind; friends-first.
+
+| # | Question | Default | Why |
+|---|----------|---------|-----|
+| C0-1 | Verification source for runs | Apple Health workouts on device (`@kingstinct/react-native-healthkit`) and Strava via an Edge Function; no live in-app GPS recording. | Both carry device/source provenance and a manual-entry flag; live recording needs background location, which the privacy stance forbids. |
+| C0-2 | Fail-open for goal kinds | No `unverified` for distance/workouts/steps/custom: evidence is on the device; activities started before the deadline that arrive within 24 h recompute the result with a correction, like a late check-in. | There is no server-side tracking that can fail on the user; connectivity failures are covered by the late-sync window. |
+| C0-3 | Web app | The Expo app exported for web under `/final-call/app/` on the same Pages site as the simulator; email sign-in only on web; Health sync iOS-only, Strava works on web. | One codebase, one backend; the web build already exists for screenshots. |
