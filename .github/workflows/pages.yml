@@ -1,14 +1,23 @@
-name: Pages (web simulator)
+name: Pages (web simulator + web app)
 
-# Builds web/ (which imports packages/rules/src directly) and publishes dist/ to GitHub Pages at
-# https://ishaanmakam.github.io/final-call/. One-time setup in the repo: Settings → Pages → Source
-# "GitHub Actions". Runs only when the simulator or the rules oracle change on main.
+# Builds the site published at https://ishaanmakam.github.io/final-call/ and deploys it to GitHub Pages:
+#   /              the web simulator (web/, which imports packages/rules/src directly)
+#   /app/          the real app, `expo export --platform web` of app/ with base path /final-call/app
+#                  (app/scripts/build-web.mjs; docs/DEPLOY.md "Web app")
+# One-time setup in the repo: Settings → Pages → Source "GitHub Actions". Runs when the simulator, the
+# rules oracle or the app change on main.
+#
+# Repository secrets for the real app: EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY (the anon
+# key is public by design; RLS and the SECURITY DEFINER RPCs are the boundary). Without them the app renders
+# its "Setup needed" screen, so set the repository variable WEB_APP_DEMO=true to publish the fixture-backed
+# demo instead (no backend, no sign-in) until the project exists.
 on:
   push:
     branches: [main]
     paths:
       - 'web/**'
       - 'packages/rules/**'
+      - 'app/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -23,9 +32,9 @@ concurrency:
 
 jobs:
   build:
-    name: build web/dist
+    name: build web/dist (+ app at /app/)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -35,6 +44,7 @@ jobs:
           cache-dependency-path: |
             packages/rules/package-lock.json
             web/package-lock.json
+            app/package-lock.json
       - run: npm ci
         working-directory: packages/rules
       - run: npm ci
@@ -47,6 +57,30 @@ jobs:
         working-directory: web
         env:
           VITE_BASE: /final-call/
+
+      # The real app, exported for the web under /final-call/app/. `--demo` only when WEB_APP_DEMO is 'true'.
+      - run: npm ci
+        working-directory: app
+      - name: Build the app for the web
+        working-directory: app
+        run: node scripts/build-web.mjs ${{ vars.WEB_APP_DEMO == 'true' && '--demo' || '' }}
+        env:
+          EXPO_WEB_BASE_URL: /final-call/app
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+      - name: Place the app at web/dist/app/
+        run: |
+          rm -rf web/dist/app
+          mkdir -p web/dist/app
+          cp -R app/dist-web/. web/dist/app/
+          # GitHub Pages serves 404.html for unknown paths: the app's deep links (/app/groups/g1, the
+          # magic-link callback /app/auth-callback?code=…) must load the app's index.html, not the simulator's.
+          # The simulator has no deep routes, so one 404 page for the whole site is the app's shell; the
+          # bundle's absolute asset URLs (/final-call/app/_expo/…) resolve from anywhere.
+          cp app/dist-web/index.html web/dist/404.html
+          test -f web/dist/app/index.html
+          test -f web/dist/index.html
+
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

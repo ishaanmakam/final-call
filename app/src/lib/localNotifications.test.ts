@@ -257,3 +257,77 @@ describe('upcomingFromQueryCache: what the cached queries already know', () => {
     expect(p.schedule).toEqual([]);
   });
 });
+
+describe('weekly pacts (CB): Friday nudge when behind, Final call Sunday 6 PM', () => {
+  const MON = Date.UTC(2026, 10, 9, 8, 0, 0); // Mon 9 Nov 2026 00:00 PST
+  const weekly = (over: Partial<UpcomingInstance> = {}): UpcomingInstance =>
+    inst({
+      instanceId: 'w1',
+      pactTitle: '15 miles a week',
+      windowOpenAt: iso(MON),
+      deadlineAt: iso(MON + 7 * 24 * H),
+      status: 'open',
+      period: 'weekly',
+      pactId: 'p1',
+      localDate: '2026-11-09',
+      behindLine: '12.0 mi to go',
+      ...over,
+    });
+
+  it('plans the Friday 18:00 nudge with the to-go line and the Sunday 18:00 Final call, both to the pact', () => {
+    const p = planLocalNotifications([weekly()], new Set(), MON + 2 * 24 * H);
+    expect(p.schedule.map((n) => n.identifier)).toEqual(['friday:w1', 'final:w1']);
+    const [friday, final] = p.schedule;
+    expect(new Date(friday!.at).toISOString()).toBe('2026-11-14T02:00:00.000Z'); // Fri 18:00 PST
+    expect(friday!.title).toBe('15 miles a week');
+    expect(friday!.body).toBe('12.0 mi to go. Two days left this week.');
+    expect(friday!.url).toBe('/pacts/p1');
+    expect(new Date(final!.at).toISOString()).toBe('2026-11-16T02:00:00.000Z'); // Sun 18:00 PST
+    expect(final!.title).toBe('Final call: 15 miles a week');
+    expect(final!.body).toBe('The week closes at midnight. 12.0 mi to go.');
+    expect(final!.url).toBe('/pacts/p1');
+  });
+
+  it('skips the Friday nudge when the goal is already reached, keeps nothing once reached by Sunday', () => {
+    const ahead = planLocalNotifications([weekly({ behindLine: null })], new Set(), MON + 2 * 24 * H);
+    expect(ahead.schedule.map((n) => n.identifier)).toEqual(['final:w1']);
+    expect(ahead.schedule[0]!.body).toBe('The week closes at midnight.');
+    expect(planLocalNotifications([weekly({ succeeded: true })], new Set(['friday:w1', 'final:w1']), MON + 2 * 24 * H)).toEqual({ schedule: [], cancel: ['friday:w1', 'final:w1'] });
+  });
+
+  it('on Saturday only the Final call is still ahead; after the week nothing', () => {
+    expect(planLocalNotifications([weekly()], new Set(), MON + 5 * 24 * H + 12 * H).schedule.map((n) => n.identifier)).toEqual(['final:w1']);
+    expect(planLocalNotifications([weekly()], new Set(), MON + 8 * 24 * H).schedule).toEqual([]);
+  });
+
+  it('never gives a weekly pact a Boarding reminder, and never gives a daily pact a Friday one', () => {
+    const ids = planLocalNotifications([weekly(), inst()], new Set(), MON + 2 * 24 * H).schedule.map((n) => n.identifier);
+    expect(ids).not.toContain('boarding:w1');
+    expect(ids).not.toContain('friday:i1');
+    expect(isOurIdentifier('friday:x')).toBe(true);
+  });
+
+  it('a daily steps or custom pact and a race get no local reminders (nothing to board; the server pushes the Final call)', () => {
+    expect(planLocalNotifications([inst({ kind: 'steps', period: 'daily' })], new Set(), T).schedule).toEqual([]);
+    expect(planLocalNotifications([inst({ kind: 'custom', period: 'daily' })], new Set(), T).schedule).toEqual([]);
+    expect(planLocalNotifications([inst({ kind: 'distance', period: 'once' })], new Set(), T).schedule).toEqual([]);
+    expect(planLocalNotifications([inst({ kind: 'show_up', period: 'daily' })], new Set(), T).schedule).toHaveLength(2);
+  });
+
+  it('the cache reader carries the pact, period, local date and the to-go line from a weekly today item', () => {
+    const ME = 'me';
+    const pact = { id: 'p7', title: '15 miles a week', tz: TZ, paused: false, period: 'weekly', kind: 'distance', goal_value: 24140, goal_unit: 'm' };
+    const row = { id: 'w1', pact_id: 'p7', status: 'open', local_date: '2026-11-09', window_open_at: iso(MON), deadline_at: iso(MON + 7 * 24 * H) };
+    const home = (myState: string, value: number, reachedAt: string | null) => ({
+      today: [{ instance: row, pact, participantIds: [ME], summary: {}, myState, goal: { progress: [{ user_id: ME, value, goal: 24140, reached_at: reachedAt }], standings: [] } }],
+    });
+    const reader = (data: unknown) => ({
+      getQueriesData: <T,>(f: { queryKey: readonly unknown[] }) =>
+        (f.queryKey[0] === 'group' ? [[['group', 'g1', 'home'], data]] : []) as unknown as Array<[readonly unknown[], T | undefined]>,
+    });
+    const xs = upcomingFromQueryCache(reader(home('waiting', 18024, null)), ME, MON + 2 * 24 * H, 'mi');
+    expect(xs).toHaveLength(1);
+    expect(xs[0]).toMatchObject({ instanceId: 'w1', pactId: 'p7', period: 'weekly', localDate: '2026-11-09', behindLine: '3.8 mi to go', succeeded: false });
+    expect(upcomingFromQueryCache(reader(home('checked_in', 26000, iso(MON + H))), ME, MON + 2 * 24 * H, 'mi')[0]).toMatchObject({ behindLine: null, succeeded: true });
+  });
+});

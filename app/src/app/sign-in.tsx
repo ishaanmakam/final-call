@@ -11,8 +11,10 @@ import { pendingNext } from '@/lib/pendingNextRuntime';
 import { userMessage } from '@/lib/errors';
 import { gutter, radius, space, useTheme } from '@/theme';
 
-const PITCH = "Pledge a few dollars to be where you said you'd be. Show up and you split what the others forfeit. Miss, and your pledge goes to the pool.";
+const PITCH = 'Pledge a few dollars to show up, run the miles or get the workouts in. Make it and you split what the others forfeit. Miss, and your pledge goes to the pool.';
 const PRIVACY = 'Your location is read once, only when you tap Check In during a window. Never in the background.';
+/** the web simulator that shares the Pages site with this app (docs/DEPLOY.md §13) */
+const SIMULATOR_URL = 'https://ishaanmakam.github.io/final-call/';
 
 export default function SignIn() {
   const { session, loading } = useAuth();
@@ -108,7 +110,7 @@ export default function SignIn() {
                 Check your email
               </Text>
               <Text variant="subheadline" color="secondary" align="center">
-                We sent a sign-in link to {sentTo}. Open it on this phone.
+                We sent a sign-in link to {sentTo}. {Platform.OS === 'web' ? 'Open it in this browser.' : 'Open it on this phone.'}
               </Text>
               <View style={styles.sentActions}>
                 {Platform.OS === 'ios' ? (
@@ -187,6 +189,20 @@ export default function SignIn() {
               ·
             </Text>
             <Button title="Terms" variant="tertiary" size="small" onPress={() => router.push('/legal/terms')} accessibilityHint="Opens the terms of use" />
+            {Platform.OS === 'web' ? (
+              <>
+                <Text variant="footnote" color="tertiary" accessibilityElementsHidden importantForAccessibility="no">
+                  ·
+                </Text>
+                <Button
+                  title="Simulator"
+                  variant="tertiary"
+                  size="small"
+                  onPress={() => void Linking.openURL(SIMULATOR_URL).catch(() => undefined)}
+                  accessibilityHint="Opens the Final Call simulator, which runs a group through a season without an account"
+                />
+              </>
+            ) : null}
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

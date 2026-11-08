@@ -14,6 +14,7 @@ only prove the client wiring on a real iOS build.
 | Push drainer | `supabase/functions/push-outbox` | `cd supabase/functions/push-outbox && npx tsc --noEmit && npx vitest run` | Outbox batching, Expo receipts, token pruning (`index.ts` itself is Deno-only; CI runs `deno check` advisory) | seconds |
 | App | `app` | `cd app && npx tsc --noEmit && npx vitest run` | Strict types for every screen; unit tests for every `features/*` copy and state table and every `lib/*` helper | ~1 min |
 | Screenshots | `app` | `cd app; $env:EXPO_PUBLIC_DEMO='1'; npm run screenshots` | Every route in demo mode, light and dark, as the review artifact in `app/screenshots/` | minutes |
+| Web app smoke | `app` | `cd app && npm run web:smoke` | The web export served under `/final-call/app/` as Pages serves it: six deep links render the right heading with no page or console errors; 1280×800 light + dark captures in `app/screenshots-web/` | ~3 min |
 | Device flows | `.maestro` | `maestro test .maestro/` (Mac) or the EAS workflow below (no Mac) | Sign-in, check-in, settle-up and appeal on a real iOS Simulator build | ~5 min + a build |
 | Maestro lint | `.maestro/lint.mjs` | `node .maestro/lint.mjs` | Every flow parses, uses known commands and declared `${VARS}`, `runFlow` targets exist; the EAS workflow and `eas.json` agree | instant |
 
@@ -174,13 +175,43 @@ plus the paths in `.github/workflows/ci.yml` (`maestro-lint`) and this file.
 6. **Lint before pushing.** `node .maestro/lint.mjs` catches indentation slips (a command with two
    keys), unknown commands, undeclared `${VARS}` and missing `runFlow` files; CI runs the same script.
 
+## Web app
+
+The iOS app also ships as a web app (`npx expo export --platform web`, published by
+`.github/workflows/pages.yml` at https://ishaanmakam.github.io/final-call/app/; docs/DEPLOY.md §13).
+Three scripts in `app/scripts/`:
+
+- `build-web.mjs [--demo] [--base /final-call/app] [--output-dir dist-web]`: the export with the
+  base path (`experiments.baseUrl` in `app.config.ts`, from `EXPO_WEB_BASE_URL`). It deletes a stale
+  `dist-web/` first and fails if `index.html` references any asset outside the base path.
+  `EXPO_PUBLIC_SUPABASE_*` come from the environment; `--demo` sets `EXPO_PUBLIC_DEMO=1`.
+- `serve-web.mjs [--dist dist-web] [--base /final-call/app] [--port 8081]`: a static server that
+  mounts the export under the base path with the SPA fallback (a path under the base that is not a
+  file serves `index.html`; a path outside it is a 404, as on Pages).
+- `web-smoke.mjs [--skip-build] [--only name]`: builds the demo export, serves it, and in Chrome
+  (Playwright channel `chrome`, 1280×800, light and dark, reduced motion) opens `/` (must land on
+  `/groups`), `/sign-in?signedOut=1` (the Email field and the magic-link button), `/groups`,
+  `/groups/g1`, `/checkin/i-open` and `/legal/privacy`, all under `/final-call/app/`. Each must show
+  its heading, stay under the base path, and log no page error, console error or 4xx/5xx response.
+  Captures and a contact sheet go to `app/screenshots-web/` (committed, like `app/screenshots/`).
+
+What is web-specific lives in `*.web.ts` / `*.web.tsx` siblings that Metro picks for
+`--platform web` (`lib/location.web.ts`, `lib/push.web.ts`, `lib/openVenmo.web.ts`,
+`lib/localNotificationsRuntime.web.ts`, `features/health/healthRuntime.web.ts`) and in
+`app/public/index.html` (the HTML template: a centered 600 px column on wide screens). `tsc` type-checks
+the web siblings as standalone files; the unit tests do not run them. The demo build still shows the
+look-alike "Sign in with Apple" button that the screenshot harness wants (`sign-in.tsx`:
+`useState(DEMO && Platform.OS !== 'ios')`); a real web build has no Apple button at all.
+
 ## Continuous integration
 
 `.github/workflows/ci.yml` runs on every push, pull request and by hand (`workflow_dispatch`), with
 superseded runs cancelled (`concurrency`). Jobs: `rules`, `db`, `push-outbox`, `app` (the four
-suites above), `maestro-lint`, `scripts-typecheck` (only when `scripts/package.json` exists) and
-`web` (only when `web/package.json` exists; runs that package's `typecheck`, `test` and `build`
-scripts when present). The last two detect their folder in a step after checkout rather than in a
+suites above), `web-app` (`node scripts/build-web.mjs --demo` with the Pages base path; fails
+without `dist-web/index.html` or with assets outside `/final-call/app/`; the Playwright smoke
+needs an installed Chrome and stays local), `maestro-lint`, `scripts-typecheck` (only when
+`scripts/package.json` exists) and `web` (only when `web/package.json` exists; runs that package's
+`typecheck`, `test` and `build` scripts when present). The last two detect their folder in a step after checkout rather than in a
 job-level `if: hashFiles(...)`, which is evaluated before the workspace exists and always skips.
 
 The EAS workflow `app/.eas/workflows/maestro.yml` is the device half; GitHub Actions has no iOS

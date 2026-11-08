@@ -12,23 +12,29 @@ import { summarizeInstance } from '../../lib/instanceStatus';
 import { OPEN_OBLIGATION_STATUSES } from '../../lib/obligations';
 import { derivePlaceState, effectivePlaceAt, haversineM, nextWindow, placeForWindow } from '../../lib/places';
 import { gateClosePollInterval } from '../../lib/gatePoll';
-import { localDateInZone } from '../../lib/time';
+import { addDaysToLocalDate, zonedLocalToUtc } from '../../lib/time';
 import type {
   Feed,
   FeedItem,
+  GoalSnapshot,
   GroupHome,
   InstanceDetail,
   Ledger,
   MyGroup,
   PactDetail,
+  PactGoalDetail,
   PlaceSchedule,
   TodayItem,
 } from '../queries';
+import { pickGoalInstances } from '../queries';
 import type { CreatePactInput, JoinPactInput, OpenReviewInput } from '../rpc';
-import type { CheckinRow, GroupSettlementStatsRow, InstanceMemberNetRow, PactInstanceRow, PactParticipantPlaceRow, PactPlaceVisibleRow, PactSeasonRecapRow, PactStreakRow, PlaceDistanceRow, PlaceEventKind, ProfileRow, ResultRow } from '../types';
+import type { ActivityRow, ActivitySubmission, CheckinRow, GroupSettlementStatsRow, InstanceMemberNetRow, InstanceProgressRow, PactActivityRow, PactInstanceRow, PactParticipantPlaceRow, PactPlaceVisibleRow, PactRow, PactSeasonRecapRow, PactStreakRow, PlaceDistanceRow, PlaceEventKind, ProfileRow, ResultRow } from '../types';
+import { ACTIVITY_TYPES } from '../types';
 import type { GroupStats, PactStats } from '../statsQueries';
+import { isGoalKind } from '../../features/goal/goal';
+import { currentLocalDate, progressRows, standingsFrom, summaryFromProgress } from '../../features/goal/progress';
 import { seasonEnd, seasonOf } from '../../features/stats/season';
-import { DEMO_T0, EMPTY_GROUP_ID, GROUP_ID, INSTANCES, INVITE_CODE, SETTLE_VARIANTS, netsFor, outcomeResults, store } from './fixtures';
+import { DEMO_T0, EMPTY_GROUP_ID, GROUP_ID, INSTANCES, INVITE_CODE, SETTLE_VARIANTS, USERS, WEEK_INSTANCES, netsFor, outcomeResults, store } from './fixtures';
 import { DEMO, DEMO_USER_ID, demoKey, demoSettingsFromParams, getDemoSettings, setDemoSettings, type DemoSettings } from './settings';
 
 export { DEMO, DEMO_USER_ID, getDemoSettings, type DemoSettings } from './settings';
@@ -53,7 +59,7 @@ const PROFILE_DEPENDENT_KEYS = (userId: string) => [['profile', userId], ['group
 export function useDemoSettings(): DemoSettings {
   const params = useGlobalSearchParams<Record<string, string | string[]>>();
   const settings = demoSettingsFromParams(params as Record<string, string | string[] | undefined>);
-  useEffect(() => setDemoSettings(settings), [settings.verdict, settings.empty, settings.state, settings.perm, settings.signedOut, settings.freeze, settings.settle, settings.fix, settings.precise, settings.budget, settings.skew, settings.outcome]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => setDemoSettings(settings), [settings.verdict, settings.empty, settings.state, settings.perm, settings.signedOut, settings.freeze, settings.settle, settings.fix, settings.precise, settings.budget, settings.skew, settings.outcome, settings.week]); // eslint-disable-line react-hooks/exhaustive-deps
   return settings;
 }
 
@@ -227,7 +233,8 @@ export function useGroupHome(groupId: string, userId: string, enabled = true) {
       }
       const members = store.members.filter((m) => m.group_id === group.id && !m.left_at);
       const pacts = store.pacts.filter((p) => p.group_id === group.id);
-      const todayByPact = new Map(pacts.map((p) => [p.id, localDateInZone(Date.now(), p.tz)]));
+      // daily: today; weekly: this week's Monday; a race: its start (features/goal/progress.ts)
+      const todayByPact = new Map(pacts.map((p) => [p.id, currentLocalDate(p, Date.now())]));
       const todays = store.instances.filter(
         (i) => pacts.some((p) => p.id === i.pact_id) && (todayByPact.get(i.pact_id) === i.local_date || i.id.startsWith('i-')),
       );
@@ -240,6 +247,12 @@ export function useGroupHome(groupId: string, userId: string, enabled = true) {
         const pact = pacts.find((p) => p.id === instance.pact_id)!;
         const participantIds = store.participants.filter((p) => p.pact_id === pact.id && !p.left_at).map((p) => p.user_id);
         const view = instanceView(instance, s);
+        if (isGoalKind(pact.kind)) {
+          const goal = goalSnapshot(view.instance, pact, participantIds);
+          const summary = summaryFromProgress(participantIds, view.instance.deadline_at, goal.progress, view.results);
+          today.push({ instance: view.instance, pact, participantIds, summary, myState: summary.byUser[userId] ?? null, goal });
+          continue;
+        }
         const summary = summarizeInstance({
           participantIds,
           deadlineAt: view.instance.deadline_at,
@@ -269,14 +282,16 @@ export function usePactDetail(pactId: string, userId: string) {
         .filter((i) => i.pact_id === pact.id && Date.parse(i.deadline_at) >= since)
         .sort((a, b) => Date.parse(a.deadline_at) - Date.parse(b.deadline_at))
         .slice(0, 10);
+      const goalKind = isGoalKind(pact.kind);
       return {
         pact,
         participants,
         profiles: profileMap(),
         upcoming: s.empty ? [] : upcoming,
         myFreezes: store.freezes.filter((f) => f.pact_id === pact.id && f.user_id === userId),
-        places: s.empty ? [] : visiblePlaces(pact.id),
-        distances: s.empty ? [] : placeDistances(pact.id),
+        places: s.empty || goalKind ? [] : visiblePlaces(pact.id),
+        distances: s.empty || goalKind ? [] : placeDistances(pact.id),
+        ...(goalKind ? { goal: goalDetail(pact, participants.map((p) => p.user_id), s) } : {}),
       };
     },
   });
@@ -365,11 +380,145 @@ function instanceView(base: PactInstanceRow, s: DemoSettings): { instance: PactI
     results = outcomeResults(s.outcome);
     if (s.outcome === 'void') instance = { ...base, status: 'voided', carry_in_cents: null };
     if (s.outcome !== 'win') checkins = checkins.filter((c) => c.user_id !== DEMO_USER_ID);
+  } else if (s.week === 'closed' && base.id === WEEK_INSTANCES.current) {
+    // ?week=closed: the week ended a minute ago; you fell short at 11.2 / 15 mi, Maya made it
+    const deadline = DEMO_T0 - 70_000;
+    instance = { ...base, window_open_at: new Date(deadline - 7 * 86_400_000).toISOString(), deadline_at: new Date(deadline).toISOString(), status: 'closed', carry_in_cents: 0, closed_at: new Date(deadline + 30_000).toISOString() };
+    const decided = instance.closed_at;
+    results = [
+      { instance_id: base.id, user_id: USERS.you, status: 'failed', first_success_at: null, decided_at: decided },
+      { instance_id: base.id, user_id: USERS.maya, status: 'success', first_success_at: new Date(DEMO_T0 - 2 * 86_400_000).toISOString(), decided_at: decided },
+      { instance_id: base.id, user_id: USERS.diego, status: 'failed', first_success_at: null, decided_at: decided },
+      { instance_id: base.id, user_id: USERS.priya, status: 'failed', first_success_at: null, decided_at: decided },
+    ];
   }
   const pact = store.pacts.find((p) => p.id === instance.pact_id);
   const nets = instance.status === 'closed' || instance.status === 'settled' ? netsFor(instance, results, pact?.stake_cents ?? 0, pact?.group_id) : [];
   return { instance, results, checkins, nets };
 }
+
+// ---------- goal kinds (CB): demo stand-ins for instance_progress, instance_standings, pact_activities ----------
+
+/** Does an activity's type count for this pact (CONTRACT `activity_matches_pact`): steps pacts take 'steps', the rest their types. */
+const matchesPact = (pact: PactRow, type: string): boolean =>
+  pact.kind === 'steps' ? type === 'steps' : pact.kind === 'custom' ? false : pact.activity_types === null || pact.activity_types.includes(type as never);
+
+/** The activities of a pact's roster that match its types and fall inside an instance's window, any verdict (the `pact_activities` view). */
+function pactActivitiesFor(pact: PactRow, instance: PactInstanceRow, participantIds: readonly string[]): PactActivityRow[] {
+  const open = Date.parse(instance.window_open_at);
+  const deadline = Date.parse(instance.deadline_at);
+  return store.activities
+    .filter((a) => participantIds.includes(a.user_id) && matchesPact(pact, a.activity_type))
+    .filter((a) => {
+      const t = Date.parse(a.started_at);
+      return t >= open && t < deadline;
+    })
+    .map((a) => ({
+      pact_id: pact.id,
+      instance_id: instance.id,
+      user_id: a.user_id,
+      activity_id: a.id,
+      source: a.source,
+      activity_type: a.activity_type,
+      started_at: a.started_at,
+      ended_at: a.ended_at,
+      distance_m: a.distance_m,
+      duration_s: a.duration_s,
+      steps: a.steps,
+      device: a.device,
+      app_bundle: a.app_bundle,
+      is_manual: a.is_manual,
+      verdict: a.verdict,
+      reject_reason: a.reject_reason,
+    }));
+}
+
+/** Custom kind: a mark is the whole goal (`mark_done`). */
+function customProgress(instance: PactInstanceRow, participantIds: readonly string[]): InstanceProgressRow[] {
+  return participantIds.map((user_id) => {
+    const mark = store.marks.find((m) => m.instance_id === instance.id && m.user_id === user_id);
+    return { instance_id: instance.id, user_id, value: mark ? 1 : 0, goal: 1, activity_count: mark ? 1 : 0, reached_at: mark?.marked_at ?? null };
+  });
+}
+
+function progressFor(instance: PactInstanceRow, pact: PactRow, participantIds: readonly string[]): InstanceProgressRow[] {
+  if (pact.kind === 'custom') return customProgress(instance, participantIds);
+  return progressRows(instance, pact, participantIds, pactActivitiesFor(pact, instance, participantIds));
+}
+
+function goalSnapshot(instance: PactInstanceRow, pact: PactRow, participantIds: readonly string[]): GoalSnapshot {
+  const progress = progressFor(instance, pact, participantIds);
+  return { progress, standings: standingsFrom(progress) };
+}
+
+function goalDetail(pact: PactRow, participantIds: readonly string[], s: DemoSettings): PactGoalDetail {
+  const now = Date.now();
+  const { current: baseCurrent, last } = pickGoalInstances(pact, store.instances.filter((i) => i.pact_id === pact.id), now);
+  const current = baseCurrent ? instanceView(baseCurrent, s).instance : null;
+  const instances = [current, last].filter((i): i is PactInstanceRow => i !== null);
+  const progress = instances.flatMap((i) => progressFor(i, pact, participantIds));
+  const results = instances.flatMap((i) => instanceView(i, s).results);
+  const nets = instances.flatMap((i) => instanceView(i, s).nets);
+  const activities = instances
+    .flatMap((i) => pactActivitiesFor(pact, i, participantIds))
+    .sort((a, b) => Date.parse(b.started_at) - Date.parse(a.started_at));
+  return { current, last, progress, standings: instances.flatMap((i) => standingsFrom(progress.filter((p) => p.instance_id === i.id))), results, nets, activities };
+}
+
+/** `submit_activities` over the fixtures: the spec's verdicts, idempotent per (user, source, external_id). */
+export const submitActivities = async (items: ActivitySubmission[]): Promise<number> => {
+  await gate(getDemoSettings());
+  const now = Date.now();
+  let written = 0;
+  for (const item of items) {
+    const existing = store.activities.find((a) => a.user_id === DEMO_USER_ID && a.source === item.source && a.external_id === item.external_id);
+    if (existing) {
+      if (existing.raw_hash === item.raw_hash) continue;
+      if (existing.steps !== null && item.steps !== null) {
+        Object.assign(existing, { steps: item.steps, ended_at: item.ended_at, raw_hash: item.raw_hash, submitted_at: new Date(now).toISOString() });
+        written += 1;
+        continue;
+      }
+      throw new DbError({ message: 'an activity with this id was already submitted with different details', code: '23514' });
+    }
+    let verdict: ActivityRow['verdict'] = 'accepted';
+    let reason: string | null = null;
+    const start = Date.parse(item.started_at);
+    const end = Date.parse(item.ended_at);
+    if (item.is_manual) (verdict = 'rejected_manual'), (reason = 'entered by hand');
+    else if (end > now + 5 * 60_000) (verdict = 'rejected_future'), (reason = 'ends in the future');
+    else if (!(ACTIVITY_TYPES as readonly string[]).includes(item.activity_type) && item.activity_type !== 'steps') (verdict = 'rejected_type'), (reason = 'unknown activity type');
+    else {
+      const overlap = store.activities.some((a) => {
+        if (a.user_id !== DEMO_USER_ID || a.verdict !== 'accepted' || a.source === item.source) return false;
+        const s = Math.max(start, Date.parse(a.started_at));
+        const e = Math.min(end, Date.parse(a.ended_at));
+        return e > s && (e - s) / Math.max(1, end - start) >= 0.8;
+      });
+      if (overlap) (verdict = 'rejected_duplicate'), (reason = 'already counted from another source');
+    }
+    store.activities.push({ id: id('a'), user_id: DEMO_USER_ID, ...item, submitted_at: new Date(now).toISOString(), verdict, reject_reason: reason });
+    written += 1;
+  }
+  return written;
+};
+
+/** `mark_done` over the fixtures: once per instance before its deadline. */
+export const markDone = async (instanceId: string, photoPath: string | null = null): Promise<undefined> => {
+  await gate(getDemoSettings());
+  const inst = store.instances.find((i) => i.id === instanceId);
+  if (!inst) throw new DbError({ message: 'instance not found', code: 'P0002' });
+  if (Date.parse(inst.deadline_at) <= Date.now()) throw new DbError({ message: 'the deadline has passed', code: '23514' });
+  const existing = store.marks.find((m) => m.instance_id === instanceId && m.user_id === DEMO_USER_ID);
+  const pact = store.pacts.find((x) => x.id === inst.pact_id);
+  if (pact?.proof_required && !photoPath && !existing?.photo_path) throw new DbError({ message: 'This challenge needs a photo', code: '23514' });
+  if (existing) {
+    if (photoPath && !existing.photo_path) existing.photo_path = photoPath;
+    return undefined;
+  }
+  store.marks.push({ instance_id: instanceId, user_id: DEMO_USER_ID, marked_at: new Date().toISOString(), photo_path: photoPath });
+  return undefined;
+};
 
 export const FEED_DAYS = 28;
 
@@ -488,7 +637,8 @@ export const deleteMyAccount = async (): Promise<undefined> => {
 
 export const createPact = async (p: CreatePactInput): Promise<string> => {
   await gate(getDemoSettings());
-  const pact = {
+  const kind = p.kind ?? 'show_up';
+  const pact: PactRow = {
     id: id('p'),
     group_id: p.groupId,
     title: p.title,
@@ -500,17 +650,52 @@ export const createPact = async (p: CreatePactInput): Promise<string> => {
     paused: false,
     created_by: DEMO_USER_ID,
     created_at: new Date().toISOString(),
+    kind,
+    period: p.period ?? 'daily',
+    goal_value: kind === 'show_up' ? null : (p.goalValue ?? null),
+    goal_unit: kind === 'show_up' ? null : (p.goalUnit ?? null),
+    activity_types: p.activityTypes ?? null,
+    race_start: p.raceStart ?? null,
+    race_end: p.raceEnd ?? null,
+    proof_required: kind === 'custom' && p.needsPhoto === true,
   };
   store.pacts.push(pact);
+  // the first instance, so the pact screen has something to show: this week, the race, or the next day
+  if (pact.period !== 'daily') {
+    const start = pact.period === 'once' && pact.race_start ? pact.race_start : currentLocalDate(pact, Date.now());
+    const endDate = pact.period === 'once' && pact.race_end ? addDaysToLocalDate(pact.race_end, 1) : addDaysToLocalDate(start, 7);
+    store.instances.push({
+      id: id('w'),
+      pact_id: pact.id,
+      local_date: start,
+      window_open_at: new Date(zonedLocalToUtc(start, '00:00:00', pact.tz)).toISOString(),
+      deadline_at: new Date(zonedLocalToUtc(endDate, '00:00:00', pact.tz)).toISOString(),
+      status: 'open',
+      carry_in_cents: null,
+      closed_at: null,
+      deadline_soon_sent_at: null,
+    });
+  }
   return pact.id;
 };
 
 export const joinPact = async (p: JoinPactInput): Promise<undefined> => {
   await gate(getDemoSettings());
   const now = new Date().toISOString();
+  const pactRow = store.pacts.find((x) => x.id === p.pactId);
   const existing = store.participants.find((x) => x.pact_id === p.pactId && x.user_id === DEMO_USER_ID && !x.left_at);
-  if (existing) Object.assign(existing, { place_lat: p.lat, place_lng: p.lng, place_radius_m: p.radiusM, place_label: p.label });
-  else store.participants.push({ pact_id: p.pactId, user_id: DEMO_USER_ID, place_lat: p.lat, place_lng: p.lng, place_radius_m: p.radiusM, place_label: p.label, joined_at: now, left_at: null });
+  // goal kinds join without a place: no history row, no place event
+  if (pactRow && isGoalKind(pactRow.kind)) {
+    if (!existing) store.participants.push({ pact_id: p.pactId, user_id: DEMO_USER_ID, place_lat: null, place_lng: null, place_radius_m: null, place_label: null, joined_at: now, left_at: null });
+    return undefined;
+  }
+  if (p.lat == null || p.lng == null || p.radiusM == null) throw new DbError({ message: 'a place is required for this pact', code: '23514' });
+  const lat = p.lat;
+  const lng = p.lng;
+  const radiusM = p.radiusM;
+  const label = p.label ?? null;
+  if (existing) Object.assign(existing, { place_lat: lat, place_lng: lng, place_radius_m: radiusM, place_label: label });
+  else store.participants.push({ pact_id: p.pactId, user_id: DEMO_USER_ID, place_lat: lat, place_lng: lng, place_radius_m: radiusM, place_label: label, joined_at: now, left_at: null });
   // a change is gated (another member must confirm it, or 24 h pass) when anybody else is in the group
   const groupId = store.pacts.find((x) => x.id === p.pactId)?.group_id;
   const others = store.members.some((m) => m.group_id === groupId && m.user_id !== DEMO_USER_ID && !m.left_at);
@@ -525,10 +710,10 @@ export const joinPact = async (p: JoinPactInput): Promise<undefined> => {
     id: id('ph'),
     pact_id: p.pactId,
     user_id: DEMO_USER_ID,
-    lat: p.lat,
-    lng: p.lng,
-    radius_m: p.radiusM,
-    label: p.label,
+    lat,
+    lng,
+    radius_m: radiusM,
+    label,
     effective_from: effective,
     created_at: now,
     requires_ack: gated,

@@ -57,6 +57,10 @@ export function App() {
           </div>
           <div className="spacer" />
           <span className="t-footnote c-secondary">Every money number comes from packages/rules.</span>
+          {/* the real app, deployed next to the simulator at <base>/app/ (.github/workflows/pages.yml) */}
+          <a className="t-footnote open-app" href={`${import.meta.env.BASE_URL}app/`}>
+            Open the app
+          </a>
           <div className="segmented" role="radiogroup" aria-label="Appearance">
             {(['system', 'light', 'dark'] as ThemeChoice[]).map((t) => (
               <button key={t} type="button" role="radio" aria-checked={theme === t} onClick={() => actions.setTheme(t)}>

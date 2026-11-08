@@ -3,6 +3,7 @@ import * as AppleAuthentication from 'expo-apple-authentication';
 import * as Crypto from 'expo-crypto';
 import * as Linking from 'expo-linking';
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Platform } from 'react-native';
 import { DEMO, DEMO_USER_ID, getDemoSettings, subscribeDemoSettings } from '../api/demo/settings';
 import { supabase } from '../api/supabase';
 import { nonceFromBytes } from '../features/auth/appleNonce';
@@ -81,6 +82,20 @@ export function useUserId(): string {
 export const AUTH_CALLBACK_PATH = 'auth-callback';
 
 /**
+ * Where the magic link lands: `finalcall://auth-callback` on the phone. On the web, expo-linking's
+ * `createURL` resolves against the origin and drops the Pages base path (`/final-call/app`), so the
+ * URL is built from `window.location.origin` plus the inlined `EXPO_BASE_URL` (CD-8; the redirect
+ * list in supabase/config.toml carries exactly this URL).
+ */
+export function authCallbackUrl(): string {
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    const base = (process.env.EXPO_BASE_URL ?? '').replace(/\/+$/, '');
+    return `${window.location.origin}${base}/${AUTH_CALLBACK_PATH}`;
+  }
+  return Linking.createURL(AUTH_CALLBACK_PATH);
+}
+
+/**
  * Replay protection (features/auth/appleNonce.ts): Apple gets the SHA-256 of a fresh random nonce
  * and embeds it in the identity token; Supabase gets the raw nonce, hashes it and compares.
  */
@@ -115,7 +130,7 @@ export async function sendMagicLink(email: string): Promise<void> {
   if (DEMO) return;
   const { error } = await supabase.auth.signInWithOtp({
     email: email.trim(),
-    options: { emailRedirectTo: Linking.createURL(AUTH_CALLBACK_PATH), shouldCreateUser: true },
+    options: { emailRedirectTo: authCallbackUrl(), shouldCreateUser: true },
   });
   if (error) throw error;
 }

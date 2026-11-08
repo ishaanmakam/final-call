@@ -63,8 +63,10 @@ export interface WindowPlace {
 export function placeForWindow(
   places: readonly PactParticipantPlaceRow[],
   windowOpenAt: string,
-  participant: { place_label: string | null; place_radius_m: number } | null,
+  participant: { place_label: string | null; place_radius_m: number | null } | null,
 ): WindowPlace | null {
+  // goal kinds join without a place (challenge kinds): nothing to judge against
+  if (participant && participant.place_radius_m === null && places.length === 0) return null;
   const inForce = effectivePlaceAt(places, windowOpenAt);
   const earliest = places
     .filter((p) => !p.requires_ack && p.objected_at === null)
@@ -75,7 +77,7 @@ export function placeForWindow(
   const row = inForce ?? earliest;
   if (row) return { label: row.label, radiusM: row.radius_m };
   if (places.length > 0) return null;
-  return participant ? { label: participant.place_label, radiusM: participant.place_radius_m } : null;
+  return participant && participant.place_radius_m !== null ? { label: participant.place_label, radiusM: participant.place_radius_m } : null;
 }
 
 /** Haversine metres, the same formula as the server's _haversine_m. Display only. */

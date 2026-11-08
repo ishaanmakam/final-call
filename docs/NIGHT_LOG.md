@@ -91,3 +91,57 @@ See "Only a real iPhone or the founder's accounts can verify" above. Two one-tim
 3. **RT-1** — the opener of a challenge can no longer vote (reverses D3); a 2-person pact's challenges are decided by the other person alone, which is also why the automatic budget challenge is opened in the subject's name.
 4. **N2-1 … N2-9 + RT-6** — the Unverified budget: the 3rd unverified day in a calendar month per pact auto-opens a challenge; forged late taps remain accepted for friends but are bounded by this (open question 5).
 5. **P3-1 / P3-9** — account deletion drops the `profiles → auth.users` FK so the anonymized profile outlives the identity; App Store reviewer access (seeded account vs runtime demo switch) is still your call before submission.
+
+# Day 2 (2026-11-08): challenge kinds, running, web app — branch `challenges` (from `night-1`)
+
+Founder: "IOU-only for now, and build." Spec: `docs/superpowers/specs/2026-11-08-challenge-kinds-design.md`. Decisions: "Challenges defaults" table in `docs/DECISIONS.md` (C0, CA, CB, CC, CD, CI rows).
+
+## Lanes (all landed, integrating)
+- A backend + oracle: `20261109000100_challenge_kinds.sql` (kinds show_up / distance / workouts / steps / custom; periods daily / weekly / once; `activities` with verdicts; `instance_progress`, `instance_standings`, `pact_activities`; `submit_activities`, `mark_done`; late evidence within 24 h → correction; monthly freezes for weekly pacts; implausible-pace and cross-source duplicate rejection). Oracle RULES_VERSION 4 with `computeProgress`/`goalResult`; differential-kinds test (120 random instances). db 369 / rules 56 at hand-off.
+- B app: kind picker step, goal steps, goal pact detail (ring, standings, evidence, activities with Challenge), weekly TodayCards, Apple Health sync (`@kingstinct/react-native-healthkit`), Friday nudge + Sunday Final call reminders, demo `p7`/`p8`, 34 screenshots.
+- C Strava: `supabase/functions/strava-sync` (OAuth via signed state, webhook, backfill, token refresh; 56 tests), `20261109000200_strava.sql` (service-only tokens, `my_integrations`, `disconnect_integration`), client helper + 8 tests.
+- D web app: Expo web export under `/final-call/app/` (`scripts/build-web.mjs`, `serve-web.mjs`, `web-smoke.mjs`, `public/index.html` centered column), Pages workflow builds and publishes it next to the simulator with a 404.html SPA fallback, `location.web.ts`, redirect URLs, CI `web-app` job, 12 web screenshots.
+- Integrator: rebuilding the Strava client helper that lane B's stub overwrote, Settings Strava row, weekly push copy, `proof_required` for custom pacts, docs reconciliation, full suites + screenshots.
+
+## Next
+Commit "Challenges" when the integrator is green; push; red-team the new rules + audit (phase E); PR `challenges` → `night-1` (stacked) or → `main` after PR 1 merges.
+
+## Day 2 verification (fresh agent, uncommitted until the lead commits)
+
+Brief: red-team the kinds (money and fairness), audit the new screens from the captures, docs, final runs. Everything below is on the working tree of `challenges`.
+
+### Red team (`supabase/tests/redteam-kinds.test.ts`, 17 tests; `20261109000400_kinds_fixes.sql`; CE-1..CE-11; `docs/REDTEAM.md` "Challenge kinds (day 2)")
+- 9 proven holes, all fixed test-first: leave-and-rejoin mid-week dropped you from the open week (RK-1); members of a 00:00–23:59 steps pact could never leave the group (RK-9); a `rejected_future` row came back as a bare `accepted` without the pace or duplicate check (RK-2); a steps re-send could move a day's total into another day (RK-3) or, after the 24 h cut-off, erase an honest success / inflate a miss on the next recompute (RK-4); the same run twice from one source counted twice (RK-5); a moving time longer than the activity hid an implausible pace and padded a workout (RK-6); `source: 'manual'` with `is_manual: false` counted and the phone could claim the Strava source (RK-7); no batch cap (RK-8).
+- 8 suspicions proven safe and kept as regressions (RK-10..RK-17): mid-week join, late evidence after settlement still challengeable (D31), runs across Sunday midnight, 2-person challenge of a goal success, review resolution vs evidence past the cut-off, pause mid-week, no unverified on goal kinds, evidence of the wrong kind.
+- Oracle `RULES_VERSION` 5 (`activityVerdict`: any-source duplicates, `manual` source, duration clamp); differential-kinds green (120 instances, same-source twins now exercised).
+- Strava function: `STRAVA_SUBSCRIPTION_ID` gate (`foreign_subscription`), `ensureSubscription` returns the id for the log, three red-team tests (forged event, foreign subscription, state re-pointing / TTL). HealthKit mapper: hand-entered step samples make the day `is_manual` (CE-10), three tests.
+
+### Audit of the new screens (captures in `app/screenshots/`, `app/screenshots-web/`; `audit.native.md` dimensions)
+| Dimension | Before | After | What changed |
+|---|---|---|---|
+| Accessibility | 3 | 3 | standings a11y labels say "short" after the close; nothing below 44 pt found |
+| Performance | 4 | 4 | lists are short; rings and bars animate on the UI thread |
+| Appearance & theming | 3 | 4 | Settings "Strava connected" drew two cards with a seam (a fragment inside `ListGroup`); one group now |
+| Platform conformance | 3 | 4 | the Strava row had a button and a chevron (two affordances); the wizard's unit switch sits under the number it changes |
+| Adaptivity | 3 | 3 | web column at 600 px verified in both schemes; iPad untested |
+| **Total** | **16/20** | **18/20** | |
+
+Fixes (all in `app/src`): activity durations in words ("8 min", "1 hr 5 min"; "8:00" next to a date read as eight o'clock); a workouts pact's accepted session under 10 minutes is greyed "Under 10 minutes · doesn't count" instead of looking like it counted; standings say "3.8 mi short" after the gate closed; the unjoined card's copy follows the kind ("your rides sync", "mark each day done"); Evidence footer cut to two clauses and "any member" (the glossary keeps "pact" for show-up); the "Goal / Goal" header-row duplicate is "Details"; Settings Strava footer shortened; sign-in pitch covers running and workouts, not only showing up; `ProgressBar` eases in-out (movement on screen) and snaps under Reduce Motion. Motion review of `features/goal/*` and `GoalHeader`: ring uses the `reveal` spring on value change and snaps under Reduce Motion (ok); bar fixed as above; the percentage inside the ring and the ring colour switch without animation (accepted: rare moments, no count-up primitive for a percentage). Nothing airport-voiced outside its moment; units are the locale's throughout (mi in every capture).
+
+### Counts (final runs)
+| Suite | Count |
+|---|---|
+| supabase/tests (PGlite) + tsc | 29 files, 396 tests |
+| packages/rules + tsc | 57 |
+| push-outbox + tsc | 61 |
+| strava-sync + tsc | 59 |
+| app (tsc + vitest) | 45 files, 588 |
+| web (tsc + vitest + build) | 36 |
+| scripts tsc, Maestro lint | clean |
+Screenshots: 202 app (`app/screenshots/index.html`, full re-run), 12 web app (`app/screenshots-web/index.html`, `web-smoke.mjs`).
+
+### Needs a device or the founder's accounts
+- HealthKit: the `HKWasUserEntered` metadata predicate on `queryQuantitySamples` (CE-10), the permission prompt on joining a goal pact, a real sync, a Fitness-app edit minting a new UUID (RK-5 expects it rejected as a duplicate), and whether Strava mirrors manual entries into Health (K30).
+- Strava: the API application, secrets, the webhook handshake and the subscription id (PLAN step 7); the connect flow from iOS (`finalcall://settings?strava=…`) and from the web app on Pages.
+- The weekly Final call push at Sunday 18:00 and the Friday local nudge on a phone.
+- iPad / landscape for the new screens (the captures are iPhone 15 and a 1280×800 browser).

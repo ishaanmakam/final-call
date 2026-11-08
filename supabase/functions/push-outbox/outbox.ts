@@ -119,8 +119,12 @@ export function deepLinkUrl(kind: string, p: Record<string, unknown>): string | 
   const group = str(p.group_id);
   switch (kind) {
     case "window_open":
-    case "deadline_soon":
+    case "deadline_soon": {
+      // goal kinds (CA-17 payload) have no check-in screen: the pact page carries progress and the Sync row
+      const pact = str(p.pact_id);
+      if (isGoalKind(p) && pact) return `/pacts/${pact}`;
       return instance ? `/checkin/${instance}` : undefined;
+    }
     case "result":
     case "review_opened":
       return group ? `/groups/${group}/feed` : undefined;
@@ -177,6 +181,78 @@ function minutesLeft(p: Record<string, unknown>, now: Date): number {
   return Math.max(1, Math.round(num(p.minutes_left) ?? DEFAULT_MINUTES_LEFT));
 }
 
+// ---------- challenge kinds (CA-17: kind, period, goal_value, goal_unit ride on every instance push) ----------
+
+const METRES_PER_MILE = 1609.344;
+
+/** distance / workouts / steps / custom: anything but the original show_up pact */
+function isGoalKind(p: Record<string, unknown>): boolean {
+  const kind = str(p.kind);
+  return kind !== undefined && kind !== "show_up";
+}
+
+/** `goal_value` arrives as a JSON number (jsonb numeric); PostgREST-style strings are tolerated. */
+function goalNumber(v: unknown): number | undefined {
+  if (typeof v === "number") return Number.isFinite(v) ? v : undefined;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+function trimDecimal(n: number, digits: number): string {
+  return n.toFixed(digits).replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+}
+
+/**
+ * The server does not know the reader's locale (CI-1): metres read as kilometres when the goal is a
+ * round number of km (10000 m -> "10 km"), as miles otherwise (24140 m -> "15 mi"); counts and
+ * steps carry their unit word. With `value`, renders "<value> of <goal> <unit>".
+ */
+function formatGoal(p: Record<string, unknown>, value?: number): string | null {
+  const goal = goalNumber(p.goal_value);
+  const kind = str(p.kind);
+  const unit = str(p.goal_unit) ?? (kind === "distance" ? "m" : kind === "steps" ? "steps" : kind === "workouts" ? "count" : undefined);
+  if (goal === undefined || goal <= 0 || !unit) return null;
+  const pair = (g: string, v: string | undefined, word: string) => (v !== undefined ? `${v} of ${g} ${word}` : `${g} ${word}`);
+  switch (unit) {
+    case "m": {
+      const km = goal >= 1000 && goal % 1000 === 0;
+      const conv = (m: number) => (km ? trimDecimal(m / 1000, 1) : trimDecimal(m / METRES_PER_MILE, 1));
+      return pair(conv(goal), value === undefined ? undefined : conv(value), km ? "km" : "mi");
+    }
+    case "count": {
+      const word = goal === 1 && value === undefined ? "workout" : "workouts";
+      return pair(trimDecimal(goal, 0), value === undefined ? undefined : trimDecimal(value, 0), word);
+    }
+    case "steps":
+      return pair(Math.round(goal).toLocaleString("en-US"), value === undefined ? undefined : Math.round(value).toLocaleString("en-US"), "steps");
+    default:
+      return null;
+  }
+}
+
+/** "6 hours" / "1 hour" from the hour mark up, minutes below it. */
+function timeLeftLabel(minutes: number): string {
+  if (minutes >= 60) {
+    const h = Math.max(1, Math.round(minutes / 60));
+    return `${h} hour${h === 1 ? "" : "s"}`;
+  }
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
+function periodWord(p: Record<string, unknown>): string {
+  switch (str(p.period)) {
+    case "weekly":
+      return "this week";
+    case "once":
+      return "the race";
+    default:
+      return "today";
+  }
+}
+
 function renderCopy(row: OutboxRow, p: Record<string, unknown>, now: Date): { title: string; body: string } | null {
   const pact = str(p.pact_title);
   const place = str(p.place_label);
@@ -197,7 +273,15 @@ function renderCopy(row: OutboxRow, p: Record<string, unknown>, now: Date): { ti
     }
     case "deadline_soon": {
       const n = minutesLeft(p, now);
-      const left = `${n} minute${n === 1 ? "" : "s"} left to check in${place ? ` at ${place}` : ""}.`;
+      let left: string;
+      if (isGoalKind(p)) {
+        // weekly pacts get one Final call at Sunday 18:00 local (CA-5): six hours, not minutes
+        const goal = str(p.kind) === "custom" ? null : formatGoal(p);
+        const todo = goal ? `reach ${goal}` : `mark ${periodWord(p)} done`;
+        left = `${timeLeftLabel(n)} left to ${todo}.`;
+      } else {
+        left = `${n} minute${n === 1 ? "" : "s"} left to check in${place ? ` at ${place}` : ""}.`;
+      }
       return {
         title: `Final call: ${pact ?? "your pact"}`,
         body: pledge ? `${left} Miss it and you forfeit your ${pledge}.` : left,
@@ -206,25 +290,32 @@ function renderCopy(row: OutboxRow, p: Record<string, unknown>, now: Date): { ti
     case "result": {
       const title = `Gate closed: ${pact ?? "your pact"}`;
       const pledgeOr = pledge ?? "Your pledge";
+      // goal kinds: "16.5 of 15 mi" when the payload carries the participant's value, the goal alone otherwise
+      const goalOnly = isGoalKind(p) ? formatGoal(p) : null;
+      const value = goalNumber(p.value);
+      const withValue = goalOnly && value !== undefined ? formatGoal(p, value) : null;
       switch (p.status) {
         case "success": {
           const net = num(p.net_cents) ?? 0;
+          const made = withValue ? `You made it: ${withValue}.` : goalOnly ? `You made it: ${goalOnly} reached.` : "You made it.";
           return {
             title,
-            body: net > 0 ? `You made it. +${formatCents(net)} from the pool.` : "You made it. Your pledge is safe.",
+            body: net > 0 ? `${made} +${formatCents(net)} from the pool.` : `${made} Your pledge is safe.`,
           };
         }
-        case "failed":
+        case "failed": {
+          const missed = withValue ? `Missed: ${withValue}.` : goalOnly ? `Missed: short of ${goalOnly}.` : "Missed.";
           return {
             title,
             body: p.rolled_over === true
-              ? `Missed. ${pledgeOr} forfeited. Nobody made it, so the pool rolls over.`
-              : `Missed. ${pledgeOr} forfeited to the pool. Appeal before settlement if that's wrong.`,
+              ? `${missed} ${pledgeOr} forfeited. Nobody made it, so the pool rolls over.`
+              : `${missed} ${pledgeOr} forfeited to the pool. Appeal before settlement if that's wrong.`,
           };
+        }
         case "unverified":
           return { title, body: "Unverified. No forfeit: your check-in couldn't be judged." };
         case "frozen":
-          return { title, body: "Frozen. No pledge today." };
+          return { title, body: `Frozen. No pledge ${periodWord(p)}.` };
         case "void":
           return { title, body: "Didn't count. Fewer than 2 were in it, so no pledges today." };
         case "excluded":

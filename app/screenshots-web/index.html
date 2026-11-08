@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Final Call web app screenshots</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; --fg: #101418; --muted: #5E6773; --bg: #F5F6F8; --card: #fff; --line: #D9DEE5; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #F3F5F8; --muted: #A6AFBD; --bg: #0C1017; --card: #161C26; --line: #2A3240; } }
+  body { margin: 0; padding: 24px; font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--fg); background: var(--bg); }
+  h1 { font-size: 22px; margin: 0 0 4px; } p { margin: 0 0 24px; color: var(--muted); }
+  main { display: grid; gap: 24px; }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 12px 12px 8px; }
+  h2 { font-size: 14px; font-weight: 600; margin: 0 0 10px 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  figure { margin: 0; } figcaption { font-size: 12px; color: var(--muted); text-align: center; padding: 6px 0 2px; }
+  img, .missing div { width: 100%; aspect-ratio: 1280 / 800; border-radius: 12px; border: 1px solid var(--line); display: block; object-fit: cover; object-position: top; background: #000; }
+</style></head>
+<body>
+<h1>Final Call web app</h1>
+<p>6 routes served under /final-call/app/, 1280x800, light and dark, reduced motion, demo fixtures. Generated 2026-11-08T22:23:40.189Z by app/scripts/web-smoke.mjs.</p>
+<main>
+<section><h2>root</h2><div class="pair"><figure><img src="root.light.png" alt="root light" loading="lazy"><figcaption>light</figcaption></figure><figure><img src="root.dark.png" alt="root dark" loading="lazy"><figcaption>dark</figcaption></figure></div></section>
+<section><h2>sign-in</h2><div class="pair"><figure><img src="sign-in.light.png" alt="sign-in light" loading="lazy"><figcaption>light</figcaption></figure><figure><img src="sign-in.dark.png" alt="sign-in dark" loading="lazy"><figcaption>dark</figcaption></figure></div></section>
+<section><h2>groups</h2><div class="pair"><figure><img src="groups.light.png" alt="groups light" loading="lazy"><figcaption>light</figcaption></figure><figure><img src="groups.dark.png" alt="groups dark" loading="lazy"><figcaption>dark</figcaption></figure></div></section>
+<section><h2>group-home</h2><div class="pair"><figure><img src="group-home.light.png" alt="group-home light" loading="lazy"><figcaption>light</figcaption></figure><figure><img src="group-home.dark.png" alt="group-home dark" loading="lazy"><figcaption>dark</figcaption></figure></div></section>
+<section><h2>checkin</h2><div class="pair"><figure><img src="checkin.light.png" alt="checkin light" loading="lazy"><figcaption>light</figcaption></figure><figure><img src="checkin.dark.png" alt="checkin dark" loading="lazy"><figcaption>dark</figcaption></figure></div></section>
+<section><h2>legal.privacy</h2><div class="pair"><figure><img src="legal.privacy.light.png" alt="legal.privacy light" loading="lazy"><figcaption>light</figcaption></figure><figure><img src="legal.privacy.dark.png" alt="legal.privacy dark" loading="lazy"><figcaption>dark</figcaption></figure></div></section>
+</main>
+</body></html>

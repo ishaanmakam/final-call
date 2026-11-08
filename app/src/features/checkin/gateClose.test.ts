@@ -74,6 +74,37 @@ describe('tallying', () => {
   });
 });
 
+describe('goal kinds: made it, not showed up (CI-6)', () => {
+  it('a weekly distance forfeit names who made it, and the win says this week', () => {
+    const g = gateClose(
+      input({
+        goal: true,
+        period: 'weekly',
+        myResult: result(ME, 'failed'),
+        results: [result(ME, 'failed'), result('u-maya', 'success'), result('u-dev', 'failed')],
+        nets: [net(ME, -500, 1000), net('u-maya', 1000, 1000), net('u-dev', -500, 1000)],
+      }),
+    );
+    expect(g.subline).toBe('Maya made it');
+    expect(g.compact).toBe('Forfeited $5.00 · Maya made it');
+    const w = gateClose(
+      input({
+        goal: true,
+        period: 'weekly',
+        myResult: result(ME, 'success'),
+        results: [result(ME, 'success'), result('u-maya', 'failed')],
+        nets: [net(ME, 500, 500), net('u-maya', -500, 500)],
+      }),
+    );
+    expect(w.headline).toBe("You're +$5.00 this week");
+    expect(w.amount).toEqual({ before: "You're ", cents: 500, after: ' this week' });
+    const safe = gateClose(input({ goal: true, period: 'once', myResult: result(ME, 'success'), results: [result(ME, 'success'), result('u-maya', 'success')], nets: [] }));
+    expect(safe.compact).toBe('Made it · Everyone made it');
+    const frozen = gateClose(input({ goal: true, period: 'weekly', frozen: true, myResult: null, instanceStatus: 'open' }));
+    expect(frozen.subline).toBe('You called this week off in advance.');
+  });
+});
+
 describe('posted: you showed up', () => {
   it('headline carries the winnings, subline who missed and how the pool split', () => {
     const results = [result(ME, 'success'), result('u-maya', 'success'), result('u-priya', 'success'), result('u-dev', 'failed'), result('u-jordan', 'failed')];

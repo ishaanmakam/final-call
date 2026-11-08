@@ -1,17 +1,20 @@
 import { useQueryClient } from '@tanstack/react-query';
 import Constants from 'expo-constants';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Linking, Platform, StyleSheet, Switch, TextInput, View, type TextInputProps } from 'react-native';
 import Animated from 'react-native-reanimated';
+import { DEMO } from '@/api/demo/settings';
 import { useProfile, useUpdateProfile } from '@/api/queries';
 import { deleteMyAccount } from '@/api/rpc';
-import { Button, EmptyState, Icon, ListGroup, ListRow, Screen, SkeletonList, Text } from '@/components';
+import { Button, EmptyState, Icon, ListGroup, ListRow, Screen, SkeletonList, Text, useToast } from '@/components';
+import { disconnectStrava, parseStravaReturn, startStravaConnect, stravaReturnMessage, useStravaStatus } from '@/features/integrations/strava';
 import { confirmDestructive } from '@/features/settings/confirm';
 import { profilePatch, type ProfileSaved } from '@/features/settings/profileForm';
 import { deleteAccountAndSignOut, signOut, useUserId } from '@/lib/auth';
 import { checkinQueue, kickQueue, subscribeToQueue } from '@/lib/checkinQueueRuntime';
 import { classifyRpcError, userMessage } from '@/lib/errors';
+import { deviceTimeZone, formatDateInZone } from '@/lib/time';
 import { clearPushOnSignOut, disablePush, enablePush, getNotificationsEnabled } from '@/lib/push';
 import { TOUCH_TARGET, haptic, space, transition, type as typeScale, useTheme } from '@/theme';
 
@@ -21,6 +24,8 @@ const ABOUT_FOOTNOTE =
   'Your location is read once, only when you tap Check In. Raw coordinates are deleted after 30 days. No real money moves through Final Call; it keeps the tally and hands out Venmo links at settle-up.';
 const DELETE_FOOTNOTE =
   'Deleting your account leaves every group, erases your sign-in and push tokens, and renames you "Deleted member". Past results and settle-ups stay in your groups\' history, because your friends\' balances came from them.';
+const INTEGRATIONS_FOOTNOTE =
+  'Each activity arrives as you finish it, plus the last 30 days when you connect; only workouts, never your route. Disconnecting keeps what already counted.';
 const SAVED_MS = 2000;
 
 /** A grouped-list row whose value is typed in place: label left, input right, autosaves on end-editing. */
@@ -89,6 +94,85 @@ export default function Settings() {
   const [signingOut, setSigningOut] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  const toast = useToast();
+  const strava = useStravaStatus();
+  const [stravaBusy, setStravaBusy] = useState(false);
+  const params = useLocalSearchParams<{ strava?: string; reason?: string }>();
+  const handledReturn = useRef<string | null>(null);
+
+  // Back from Strava: the function's callback lands on finalcall://settings?strava=… (iOS) or this
+  // page with the same query (web). Read it once from the launch URL / location, from later URL events
+  // while this screen is up, and from the route params expo-router parsed, then refresh the row.
+  const invalidateStrava = strava.invalidate;
+  const handleReturn = useCallback(
+    (url: string | null | undefined) => {
+      const ret = parseStravaReturn(url);
+      if (!ret) return;
+      const key = `${ret.status}:${ret.status === 'error' ? (ret.reason ?? '') : ''}`;
+      if (handledReturn.current === key) return;
+      handledReturn.current = key;
+      toast.show({
+        message: stravaReturnMessage(ret),
+        tone: ret.status === 'connected' ? 'success' : 'forfeit',
+        icon: ret.status === 'connected' ? 'arrow.triangle.2.circlepath' : 'exclamationmark.triangle',
+      });
+      void invalidateStrava();
+      if (Platform.OS === 'web' && typeof window !== 'undefined' && window.history?.replaceState) {
+        // drop the query so a reload does not announce it again
+        window.history.replaceState(null, '', window.location.pathname);
+      }
+    },
+    [invalidateStrava, toast],
+  );
+
+  useEffect(() => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') handleReturn(window.location.href);
+    else void Linking.getInitialURL().then(handleReturn, () => undefined);
+    const sub = Linking.addEventListener('url', ({ url }) => handleReturn(url));
+    return () => sub.remove();
+    // handleReturn changes with the query handle; the dedupe ref keeps repeats quiet
+  }, [handleReturn]);
+
+  useEffect(() => {
+    if (params.strava) handleReturn(`?strava=${encodeURIComponent(params.strava)}${params.reason ? `&reason=${encodeURIComponent(params.reason)}` : ''}`);
+  }, [params.strava, params.reason, handleReturn]);
+
+  const onConnectStrava = async () => {
+    haptic('commit');
+    setStravaBusy(true);
+    try {
+      await startStravaConnect(userId);
+      // iOS and the web leave the app here and come back through handleReturn; the demo connects at once
+      await strava.invalidate();
+      if (DEMO && strava.status !== 'connected') {
+        toast.show({ message: stravaReturnMessage({ status: 'connected' }), tone: 'success', icon: 'arrow.triangle.2.circlepath' });
+      }
+    } catch (e) {
+      toast.show({ message: userMessage(e), tone: 'forfeit', icon: 'exclamationmark.triangle' });
+    } finally {
+      setStravaBusy(false);
+    }
+  };
+
+  const onDisconnectStrava = async () => {
+    const ok = await confirmDestructive({
+      title: 'Disconnect Strava?',
+      message: 'New Strava activities stop counting. Everything that already counted stays.',
+      confirmLabel: 'Disconnect',
+    });
+    if (!ok) return;
+    haptic('commit');
+    setStravaBusy(true);
+    try {
+      await disconnectStrava();
+      await strava.invalidate();
+      toast.show({ message: 'Strava disconnected.', tone: 'neutral', icon: 'arrow.triangle.2.circlepath' });
+    } catch (e) {
+      toast.show({ message: userMessage(e), tone: 'forfeit', icon: 'exclamationmark.triangle' });
+    } finally {
+      setStravaBusy(false);
+    }
+  };
 
   const refreshQueued = useCallback(() => void checkinQueue.pending().then((q) => setQueued(q.length)), []);
 
@@ -306,6 +390,43 @@ export default function Settings() {
             accessibilityHint="Opens iOS Settings for Final Call"
           />
         ) : null}
+      </ListGroup>
+
+      <ListGroup header="Integrations" footer={INTEGRATIONS_FOOTNOTE}>
+        {strava.status === 'connected' ? (
+          // two rows, not a fragment: ListGroup positions its direct children (a fragment is one child and both rows drew their own corners)
+          [
+            <ListRow
+              key="strava"
+              title="Strava"
+              subtitle={`Connected as athlete ${strava.athleteId}${strava.connectedAt ? ` · since ${formatDateInZone(strava.connectedAt, deviceTimeZone())}` : ''}`}
+              leading={<Icon name="arrow.triangle.2.circlepath" size={20} color="success" />}
+              trailing={
+                <Text variant="body" color="success">
+                  Connected
+                </Text>
+              }
+            />,
+            <ListRow
+              key="disconnect"
+              title="Disconnect Strava"
+              destructive
+              disabled={stravaBusy}
+              onPress={() => void onDisconnectStrava()}
+              accessibilityHint="Asks you to confirm first. Activities that already counted stay."
+            />,
+          ]
+        ) : (
+          <ListRow
+            title="Connect Strava"
+            subtitle={strava.status === 'error' ? "Couldn't check your connection. Tap to try again." : 'Runs recorded with Strava or a Garmin count toward your challenges.'}
+            leading={<Icon name="arrow.triangle.2.circlepath" size={20} color="tint" />}
+            chevron
+            disabled={stravaBusy || strava.status === 'loading'}
+            onPress={strava.status === 'error' ? () => void strava.refetch() : () => void onConnectStrava()}
+            accessibilityHint={strava.status === 'error' ? 'Checks your Strava connection again' : 'Opens Strava to allow Final Call to read your activities'}
+          />
+        )}
       </ListGroup>
 
       {queued > 0 ? (

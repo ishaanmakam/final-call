@@ -3,9 +3,10 @@
  */
 import type { PactRow } from '../../api/types';
 import type { InstanceSummary, MemberDayState } from '../../lib/instanceStatus';
-import { displayTimeOfDay, formatDateInZone, nextOccurrence } from '../../lib/time';
+import { describeDays, displayTimeOfDay, formatDateInZone, nextOccurrence } from '../../lib/time';
 import { glossary } from '../../theme/tokens';
 import { FINAL_CALL_MS } from '../checkin/copy';
+import { goalLabel, type DistanceUnit } from '../goal/goal';
 
 /** "2 of 4 checked in", "Everyone's in", "Nobody yet", with your own state folded in. */
 export function todayStatusLine(summary: InstanceSummary, myState: MemberDayState | null): string {
@@ -62,8 +63,8 @@ export function myPillState(myState: MemberDayState | null, closed: boolean): Me
 export function nothingTodayBody(pacts: readonly PactRow[], nowMs: number): string {
   let best: { pact: PactRow; localDate: string; deadlineAt: number } | null = null;
   for (const pact of pacts) {
-    if (pact.paused) continue;
-    const next = nextOccurrence(nowMs, pact.days_of_week, pact.deadline_local, pact.tz);
+    if (pact.paused || pact.period !== 'daily') continue;
+    const next = nextOccurrence(nowMs, pact.days_of_week ?? [], pact.deadline_local, pact.tz);
     if (next && (!best || next.deadlineAt < best.deadlineAt)) best = { pact, ...next };
   }
   if (!best) return 'Nothing scheduled this week.';
@@ -81,4 +82,10 @@ export const closedTimingText = (deadlineText: string): string => `Gate closed $
 /** Row detail under a pact: "Weekdays · by 9:00 AM · $5.00 pledge". */
 export function pactDetailLine(days: string, deadlineLocal: string, pledge: string): string {
   return `${days} · by ${displayTimeOfDay(deadlineLocal)} · ${pledge} ${glossary.stake}`;
+}
+
+/** Row detail under a goal pact: "15.0 mi a week · $5.00 pledge", "10,000 steps a day · Weekdays · $1.00 pledge". */
+export function goalDetailLine(pact: PactRow, unit: DistanceUnit, pledge: string): string {
+  const days = pact.period === 'daily' ? describeDays(pact.days_of_week ?? []) : null;
+  return [goalLabel(pact, unit), days, `${pledge} ${glossary.stake}`].filter(Boolean).join(' · ');
 }

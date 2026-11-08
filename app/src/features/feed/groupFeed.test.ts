@@ -25,6 +25,14 @@ const pact: PactRow = {
   paused: false,
   created_by: 'me',
   created_at: '2026-10-01T00:00:00Z',
+  kind: 'show_up',
+  period: 'daily',
+  goal_value: null,
+  goal_unit: null,
+  activity_types: null,
+  race_start: null,
+  race_end: null,
+  proof_required: false,
 };
 
 const instance = (id: string, localDate: string, deadlineIso: string, extra: Partial<PactInstanceRow> = {}): PactInstanceRow => ({

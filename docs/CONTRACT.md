@@ -15,6 +15,10 @@ review_status:     'open' | 'accepted' | 'rejected' | 'defaulted'
 ledger_account_kind: 'member' | 'pot' | 'carry'
 entry_kind:        'stake' | 'payout' | 'rollover' | 'settlement_payment' | 'correction'
 obligation_status: 'pending' | 'marked_paid' | 'confirmed' | 'superseded'
+pact_kind:         'show_up' | 'distance' | 'workouts' | 'steps' | 'custom'      -- 20261109000100 (Kinds)
+pact_period:       'daily' | 'weekly' | 'once'
+activity_source:   'healthkit' | 'strava' | 'manual'
+activity_verdict:  'accepted' | 'rejected_manual' | 'rejected_duplicate' | 'rejected_type' | 'rejected_future'
 ```
 
 ## Tables
@@ -30,8 +34,14 @@ pacts(id uuid pk, group_id, title, days_of_week smallint[] (ISO 1=Mon..7=Sun), w
       created_by, created_at,
       season_start date null, season_weeks smallint null check 1..12)   -- window_open_local < deadline_local (same local day);
                                  -- season columns both set or both null (20261108000700; see Seasons and stats)
-pact_participants(pact_id, user_id, place_lat float8, place_lng float8, place_radius_m int check 25..500,
-      place_label text, joined_at, left_at null, pk(pact_id,user_id))
+   -- 20261109000100 (Kinds): kind pact_kind default 'show_up', period pact_period default 'daily', goal_value numeric null,
+   --   goal_unit text null check in ('m','count','steps'), activity_types text[] null, race_start date null, race_end date null,
+   --   proof_required boolean not null default false (20261109000300; custom only; mark_done then needs a photo);
+   --   days_of_week is null for weekly / once pacts (check pacts_days_by_period); per-kind checks pacts_kind_rules, pacts_race_dates,
+   --   pacts_activity_types_known; trigger pacts_lock_after_open: kind, period, goal_*, activity_types, race_*, tz cannot change
+   --   once an instance has opened (23514)
+pact_participants(pact_id, user_id, place_lat float8 null, place_lng float8 null, place_radius_m int null check 25..500,
+      place_label text, joined_at, left_at null, pk(pact_id,user_id))   -- place columns null for goal kinds (20261109000100)
 pact_instances(id uuid pk, pact_id, local_date date, window_open_at timestamptz, deadline_at timestamptz,
       status instance_status default 'scheduled', carry_in_cents bigint null, closed_at null, unique(pact_id, local_date))
 checkins(id uuid pk, instance_id, user_id, client_captured_at timestamptz, server_received_at timestamptz default now(),
@@ -54,11 +64,36 @@ obligations(id uuid pk, settlement_id, group_id, from_user, to_user, amount_cent
       status obligation_status default 'pending', marked_paid_at null, confirmed_at null)
 notification_outbox(id bigserial pk, user_id, kind text, payload jsonb, created_at, sent_at null, attempts int default 0, last_error text null)
 push_tokens(user_id, token text, platform text, updated_at, pk(user_id, token))
+activities(id uuid pk, user_id, source activity_source, external_id text (1..200), activity_type text, started_at timestamptz,
+      ended_at timestamptz (> started_at), distance_m float8 null (>= 0), duration_s int (>= 0), steps int null (>= 0), device text null,
+      app_bundle text null, is_manual bool default false, raw_hash text null, submitted_at timestamptz default now(),
+      verdict activity_verdict, reject_reason text null, unique(user_id, source, external_id))   -- 20261109000100; see Activities
+custom_completions(instance_id, user_id, marked_at timestamptz default now(), photo_path text null (<= 500), pk(instance_id, user_id))
+      -- custom kind: written by mark_done only; select for the instance's group members
 ```
 
 Also: `billable_member_balances(group_id, user_id, balance_cents)` (what settlement bills), `job_failures` (server-only log; a failing group never blocks other groups' settlement).
 
 Views: `account_balances(account_id, group_id, kind, user_id, pact_id, instance_id, balance_cents)` and `member_balances(group_id, user_id, balance_cents)`; both derived by summing `ledger_lines`. No stored balances anywhere. `unverified_month_counts(pact_id, user_id, month date, count int)`: unverified results per person, pact and calendar month of `local_date` on closed/settled instances (security_invoker; group members see their group's rows). `instance_member_nets(instance_id, group_id, user_id, net_cents, pot_cents)` (night-1, Q1): what one instance did to each member's ledger, summed from `ledger_lines` over that instance's entries (stake, payout, correction); one row per member whose lines sum to a non-zero amount, so a day that moved no money has none; `pot_cents` repeats on every row and is everything paid into that instance's pool as it stands now: every forfeit (the negative member nets) plus the carry the day drew (the carry account's negative net on the instance), so it follows corrections (`20261108000900_final_fixes.sql`, V-1; before that it was the first posting's pot lines and never moved). Security_invoker over the ledger tables' RLS (group members), read-only; the check-in screen and group home read it at gate close instead of computing money on the client. Zero-sum per instance: the member nets plus the carry account's lines for the instance sum to zero.
+
+### Views for challenge kinds (`20261109000100_challenge_kinds.sql`; all `security_invoker`, `select` to `authenticated` and `service_role`, nothing to `anon`)
+
+```
+instance_progress(instance_id, user_id, value numeric, goal numeric, activity_count int, reached_at timestamptz)
+   -- one row per roster member of every distance / workouts / steps instance (roster = results rows once closed, else
+   -- participants with joined_at <= window_open_at and not left before it; no place gate). value = sum of distance_m /
+   -- count / sum of steps over ACCEPTED activities with started_at in [window_open_at, deadline_at) whose type matches the
+   -- pact (activity_matches_pact: steps pacts take type 'steps', the others their activity_types; workouts need
+   -- duration_s >= 600), whenever they were submitted (late evidence is shown even when it no longer moves money).
+   -- reached_at = ended_at of the activity that first brought the running total (started_at, id order) to the goal.
+instance_standings(instance_id, user_id, rank int, value numeric, goal numeric, reached_at timestamptz)
+   -- instance_progress ranked per instance: reached first (by reached_at), then by value desc, then user_id.
+pact_activities(pact_id, instance_id, user_id, activity_id, source, activity_type, started_at, ended_at, distance_m, duration_s,
+                steps, device, app_bundle, is_manual, verdict, reject_reason)
+   -- every activity (accepted or rejected) of a roster member that matches the pact's types and started inside one of its
+   -- instance windows; no coordinates, no routes. RLS on activities (policy activities_select): your own rows, plus other
+   -- members' rows that match a shared goal pact and fall inside one of its windows; nothing else of theirs.
+```
 
 ## Ledger invariants (enforced in the database)
 
@@ -87,7 +122,31 @@ Reviews then override, in resolution order: appeal accepted → success (first_s
 - Idempotency keys: `stake:<instance_id>`, `payout:<instance_id>`, `rollover:<instance_id>`.
 - Corrections: when a result changes after posting (review or late check-in), recompute the instance's target net per member account using the same rules and the stored `carry_in_cents`, compare with what is posted for that instance, post the difference as one `correction` entry keyed `correction:<instance_id>:<n>` (n increments). Never mutate past entries.
 
-**Roster**: an instance counts participants with `joined_at <= window_open_at` and (`left_at` null or `left_at > window_open_at`) **and a place in force at `window_open_at`** (`_place_at` not null; see Places); once closed, the roster is fixed as the users with a result row. A participant whose only place was objected to has no place in force: they get no result row and no ledger line for that instance (and if that leaves fewer than 2 active, the instance is void). `leave_group` is refused (23514) while you're on the roster of an instance in its window.
+**Roster**: an instance counts participants with `joined_at <= window_open_at` and (`left_at` null or `left_at > window_open_at`) **and, for `show_up` pacts, a place in force at `window_open_at`** (`_place_at` not null; see Places; goal kinds have no place gate, `20261109000100`); once closed, the roster is fixed as the users with a result row. A participant whose only place was objected to has no place in force: they get no result row and no ledger line for that instance (and if that leaves fewer than 2 active, the instance is void). `leave_group` is refused (23514) while you're on the roster of a **show_up** instance in its window (`20261109000400`, RK-9; it was every daily pact, which locked members of a 00:00–23:59 steps pact into the group); goal and custom kinds are open for hours or days, so leaving is allowed and keeps you on the open instance's roster (`left_at > window_open_at`): you are scored at close (CA-7). Rejoining a goal pact while you are still on such a roster (left after it opened, not closed yet) keeps your `joined_at`, so the instance still scores you (RK-1); any other rejoin counts from now (next roster).
+
+**Kinds** (`20261109000100_challenge_kinds.sql`; spec `docs/superpowers/specs/2026-11-08-challenge-kinds-design.md`). `pacts.kind` picks what success means; `pacts.period` how instances are cut. Everything below the result (void rule, payout, carry, corrections, reviews, settlement, obligations) is unchanged.
+
+| kind | period | success at close | evidence |
+|---|---|---|---|
+| `show_up` | daily | one in-fence check-in in the window (rules above) | GPS tap |
+| `distance` | weekly or once | accepted activities of `activity_types` started in the window total `>= goal_value` metres (`goal_unit = 'm'`) | activities |
+| `workouts` | weekly | `>= goal_value` accepted activities of `activity_types`, each `duration_s >= 600` (`goal_unit = 'count'`) | activities |
+| `steps` | daily | accepted `steps` samples started in the day total `>= goal_value` (`goal_unit = 'steps'`) | activities of type `steps` |
+| `custom` | daily or weekly | a `custom_completions` row with `marked_at <= deadline_at` (`mark_done`) | self-report |
+
+- Instances: `daily` as before (`days_of_week`, `window_open_local`, `deadline_local`). `weekly`: one instance per ISO week, `local_date` = the Monday, `window_open_at` = Monday 00:00 and `deadline_at` = the following Monday 00:00 in the pact zone (`_local_to_utc` at both ends, so a DST week is 167 or 169 h); generated for every Monday within the 7-day horizon whose open is still ahead (the current week while it has not started, and the next one). `once`: one instance, `local_date` = `race_start`, window `race_start` 00:00 → `race_end + 1 day` 00:00; a race whose start is already past is never generated (CA-12). Weekly / once pacts store `days_of_week` null and nominal `window_open_local` 00:00 / `deadline_local` 23:59 (CA-3). The body under the `generate_instances` heartbeat wrapper (`_generate_instances_v1`) was replaced in place with the per-period version (CA-1).
+- Result for `distance` / `workouts` / `steps`: `success` with `first_success_at` = `reached_at` when the progress at the deadline is `>= goal_value`, else `failed`. **Never `unverified`** (C0-2). Only activities with `submitted_at <= deadline_at + 24 h` count for the result (`_goal_progress(instance, user, cutoff)`); `_base_result` dispatches on kind (the show_up body is `_base_result_v1`), so `_close_instance`, `_computed_result`, `_refresh_result` and `_reclose_instance` are unchanged. `frozen` applies to every kind; the void rule is unchanged.
+- Late evidence: after `submit_activities` writes an accepted activity whose `started_at` lies in the window of an already closed (closed, settled or voided-at-close) instance of a goal pact the user is on, and `now() <= deadline_at + 24 h`, that user's result is recomputed (`_refresh_result`) and `apply_instance_correction` posts the difference, pushed as a `result` correction, exactly like a late offline check-in. Later evidence is stored and shown (`pact_activities`, `instance_progress`) but moves no money.
+- `custom`: `mark_done` before the deadline → `success` at `marked_at`; nothing marked → `failed`. Every success is challengeable; appeals work on every kind.
+- Freeze: `declared_at < window_open_at` as before; weekly and once pacts allow **one per calendar month** per pact (`freezes.iso_week` holds `YYYY-MM` of the instance's `local_date`; daily pacts keep `IYYY-"W"IW`).
+- Settlement boundary: a week's instance ends exactly at the settlement week's end (Monday 00:00), so `_settle_group_week` settles instances with `deadline_at <= week_end`, and `default_open_reviews(group, p_until)` (same signature) also resolves reviews on weekly / once instances with `deadline_at = p_until`; daily instances never end exactly at midnight, so nothing changes for them (CA-8).
+- Pushes: weekly / once instances open **without** a `window_open` push (CA-5); their one `deadline_soon` ("Final call") goes out at 18:00 local on the day before the deadline (Sunday 18:00 for a week, `race_end` 18:00 for a race; `minutes_left` 360) to roster members who are not frozen and have not reached the goal (custom: have not marked done). `result` pushes are unchanged. `_instance_payload` now also carries `kind`, `period`, `goal_value`, `goal_unit`. `tick_instances` is wrapped once more: the previous public body is `_tick_instances_v3`; `_tick_periodic(p_now)` runs first in its own subtransaction.
+
+**Activities** (`20261109000100`). `submit_activities(p_activities jsonb) returns int` (client, `auth.uid()`) and `submit_activities_for(p_user uuid, p_activities jsonb) returns int` (service role; the Strava function) both call the core `submit_activities_at(p_user, p_activities, p_now)` (service-only, tests). `p_activities` is a JSON array of at most 1000 items (RK-8) `{source, external_id, activity_type, started_at, ended_at, distance_m, duration_s, steps, device, app_bundle, is_manual, raw_hash}`; `duration_s` null = elapsed seconds, and a `duration_s` above elapsed + 60 s is stored as elapsed (moving time never exceeds the activity; RK-6). Validation (22023, the whole batch is refused): source in the enum, `external_id` 1..200, `activity_type` present, instants parse and `ended_at > started_at`, `distance_m` 0..1e7, `duration_s >= 0`, `steps >= 0`, a `steps` sample needs `steps`. The client RPC also refuses any item with `source = 'strava'` (22023): that source only ever arrives through `submit_activities_for` from the Strava function (RK-7). Known types: running, walking, cycling, swimming, hiking, rowing, strength, yoga, other (`known_activity_types()`), plus `steps` for a daily step sample (CA-2). Verdict (`_activity_verdict`, `20261109000400`), in this order: unknown type → `rejected_type` 'unknown activity type'; `is_manual` **or `source = 'manual'`** → `rejected_manual` (RK-7); `ended_at > now() + 5 min` → `rejected_future`; `distance_m / greatest(duration_s, 1)` above 12 m/s (running, walking, hiking, swimming, rowing) or 25 m/s (cycling) → `rejected_type` 'implausible pace' (CA-4); time overlap `>= 80 %` of the shorter activity with an already **accepted** activity of the same user from **any** source, the same one included (steps samples excluded) → `rejected_duplicate` 'duplicate of <source> <external_id>', first accepted wins (CA-6, RK-5: a watch and a phone both writing HealthKit, or an edit that mints a new UUID, count once); else `accepted`. Idempotency per `(user, source, external_id)`: same `raw_hash` (nulls equal) → no-op, except that a `rejected_future` row whose end has passed is re-judged with the whole chain above (CA-10, RK-2); a different hash updates a `steps` row (steps, ended_at, duration_s, hash, verdict; a daily total grows) when its `started_at` is unchanged (a re-send that moves the day is a no-op, RK-3) and its `ended_at` is later than the stored one (or equal with more steps; an older snapshot is a no-op), and only until 24 h after the deadline of the earliest steps instance the user is on whose window holds it (after that the day's total is final for everyone, a no-op: RK-4); a changed hash is `23514` for anything else. Returns the number of rows inserted or updated (CA-13). Clients never write `activities` directly (select only, RLS above).
+
+`mark_done(p_instance uuid, p_photo_path text default null) returns void` (client; core `mark_done_at(p_user, p_instance, p_photo_path, p_now)`): custom pacts only (23514), roster members only (42501), while `window_open_at <= now() <= deadline_at` and the instance is not closed (23514 'the deadline has passed'); `photo_path <= 500` (22023); a repeat keeps the first `marked_at` and may add the photo. `pacts.proof_required` (20261109000300; `create_pact(..., p_proof_required boolean default false)`, custom kind only, 22023 otherwise, locked once a window has opened): when true, a mark without a photo is refused with 23514 'This challenge needs a photo' unless the caller's earlier mark already carries one.
+
+`create_pact` (full signature in the RPC list): the 7-argument call is unchanged (`show_up`, daily). `p_kind` / `p_period` must agree with the Kinds table (22023); `p_goal_value` required `> 0` for distance / workouts / steps (whole number for workouts and steps), `p_goal_unit` defaults to the kind's unit and must match it; `p_activity_types` defaults to `{running}` for distance and to all nine types for workouts (CA-14), must be known and non-empty, and must be null for other kinds; `p_race_start` / `p_race_end` required for `once` (`start <= end`, start not in the past in the pact zone), null otherwise; `p_days` is used for daily pacts only (ignored for weekly / once); steps pacts always open at 00:00 and default the deadline to 23:59 (CA-3). `join_pact`: place arguments are required for `show_up` only (22023 when missing); for goal kinds they are ignored, no `pact_participant_places` row is written and the open-window refusal does not apply (the roster rule keeps a mid-week joiner off the open week; CA-9); a rejoin while still on the roster of an instance that has opened and not closed keeps `joined_at` (RK-1).
 
 **Places** (`20261108000100_place_accountability.sql`): `pact_participant_places(id uuid unique, pact_id, user_id, lat, lng, radius_m, label, effective_from, created_at, requires_ack bool, acknowledged_at, acknowledged_by, objected_at, objected_by, objection_reason text ≤280, effective_event_at)` is the place history, written only by `join_pact`, `acknowledge_place`, `object_place` and the tick.
 - A **first place** (joining the pact) is in force at once (`requires_ack = false`, `effective_from = now()`).
@@ -101,7 +160,7 @@ Reviews then override, in resolution order: appeal accepted → success (first_s
 
 **Check-in limits**: at most 20 per user per instance (retries with the same `p_client_attempt_id` don't count). Client time is only validated on the late path. Late check-ins are accepted until `deadline_at + 24h`, even on settled instances; they post a correction billed at the next settlement.
 
-**Freeze**: `declared_at < window_open_at`; one per (pact, user, ISO week of the instance's local_date).
+**Freeze**: `declared_at < window_open_at`; one per (pact, user, ISO week of the instance's local_date) for daily pacts; one per (pact, user, calendar month of local_date) for weekly / once pacts (see Kinds).
 
 **Review**: subject appeals their own `failed`; any other roster member challenges `success` or `unverified`. At most one appeal and one challenge per (instance, subject), ever. Voters = the instance roster except the subject, limited to current group members, **and except the opener of a challenge** (RT-1, `20261108000400`: they profit from acceptance; in a 2-person pact a human challenge therefore has no voters and defaults, while the automatic unverified-budget challenge, opened in the subject's name, is decided by the other member). Former members may appeal their own result but not challenge. A settled instance accepts only a challenge of a result that a late tap changed after settlement (`results.decided_at > pact_instances.settled_at`). A day **voided at close** (`status = 'voided'`, `closed_at` set) accepts only a challenge of an `unverified` result (RT-2); accepting it recomputes every result on the day and, if that leaves 2 or more active, revives the day: `status = 'closed'` (same `closed_at`), payout posted with `carry_in_cents = 0` (a revived day never draws carry deposited after it), `result` pushes queued. Majority of votes cast decides (`supports` = true means agree with the opener); ties → rejected. Reviews still open at settlement time → `defaulted`, which leaves the result standing for both kinds (an unvoted appeal keeps the `failed`; it is not `excluded`). When any review of a result resolves, the unverified budget is re-checked for that result (RT-4).
 
@@ -117,8 +176,15 @@ Reviews then override, in resolution order: appeal accepted → success (first_s
 create_group(p_name text, p_settlement_tz text) returns uuid
 join_group(p_invite_code text) returns uuid
 leave_group(p_group uuid) returns void
-create_pact(p_group uuid, p_title text, p_days smallint[], p_window_open time, p_deadline time, p_stake_cents int, p_tz text) returns uuid
-join_pact(p_pact uuid, p_lat float8, p_lng float8, p_radius_m int, p_label text) returns void
+create_pact(p_group uuid, p_title text, p_days smallint[], p_window_open time, p_deadline time, p_stake_cents int, p_tz text,
+            p_kind pact_kind default 'show_up', p_period pact_period default 'daily', p_goal_value numeric default null,
+            p_goal_unit text default null, p_activity_types text[] default null, p_race_start date default null,
+            p_race_end date default null, p_proof_required boolean default false) returns uuid
+                                                       -- 20261109000100 (+ p_proof_required 20261109000300); the 7-argument call is a daily show_up pact
+join_pact(p_pact uuid, p_lat float8 default null, p_lng float8 default null, p_radius_m int default null, p_label text default null) returns void
+                                                       -- place required for show_up only (see Kinds)
+submit_activities(p_activities jsonb) returns int      -- see Activities; rows inserted or updated
+mark_done(p_instance uuid, p_photo_path text default null) returns void   -- custom kind; see Kinds
 set_pact_paused(p_pact uuid, p_paused bool) returns void
 check_in(p_instance uuid, p_lat float8, p_lng float8, p_accuracy_m float8, p_client_captured_at timestamptz, p_is_simulated bool) returns checkins
 declare_freeze(p_instance uuid) returns uuid
@@ -134,6 +200,9 @@ pact_place_distances(p_pact uuid) returns table(...)   -- members of the pact's 
 delete_my_account() returns void                       -- the caller only; see Account deletion
 set_pact_season(p_pact uuid, p_start date, p_weeks smallint) returns void
                                                        -- owner or pact creator (42501); (null, null) clears; half a season 22023; weeks 1..12 (23514)
+disconnect_integration(p_provider text) returns void   -- deletes the caller's integration_tokens row ('strava' only, 22023 otherwise); idempotent; activities stay.
+                                                       -- Strava storage (20261109000200): integration_tokens(user_id, provider, athlete_id, access_token, refresh_token, expires_at, scope, connected_at; pk(user_id, provider); service only,
+                                                       -- clients may read only (provider, athlete_id, connected_at) of their own rows through view my_integrations), strava_webhook_events(id, event, received_at, processed_at, error, attempts; service only)
 ```
 
 ### Seasons and stats (`20261108000700_seasons.sql`, night-1 Q2)
@@ -173,10 +242,15 @@ A second call for an already-deleted profile returns without error. The client (
 ## Server jobs (service role / pg_cron only; revoke from anon, authenticated)
 
 ```
-generate_instances(p_days_ahead int default 7, p_now timestamptz default now()) returns int
+generate_instances(p_days_ahead int default 7, p_now timestamptz default now()) returns int   -- daily, weekly and once (see Kinds)
 tick_instances(p_now timestamptz default now()) returns void     -- open due, close due (compute results + post payout)
+submit_activities_for(p_user uuid, p_activities jsonb) returns int   -- the Strava function; same rules as submit_activities (Activities)
+default_open_reviews(p_group uuid, p_until timestamptz) returns int   -- unchanged signature; since 20261109000100 also instances of
+                                                                 -- weekly / once pacts with deadline_at = p_until (see Kinds, CA-8)
 settle_due_groups(p_now timestamptz default now()) returns int
 purge_old_locations(p_now timestamptz default now()) returns int -- null lat/lng older than 30 days
+upsert_integration_token(p_user uuid, p_provider text, p_athlete_id text, p_access_token text, p_refresh_token text, p_expires_at timestamptz, p_scope text default null) returns void
+                                                                 -- strava-sync Edge Function only; replaces tokens, keeps connected_at; an athlete re-connecting from another account moves (old row deleted)
 ```
 All jobs take `p_now` so tests can control time. Re-running any job is a no-op. `tick_instances` and `settle_due_groups` process each instance/group in its own subtransaction; failures go to `job_failures` and are retried next run. Global lock order (deadlock avoidance) is documented at the top of `20261107000300_payouts_settlement.sql`.
 
@@ -200,7 +274,7 @@ Expected cadences: `tick_instances` 1 min, `generate_instances` 15 min, `settle_
 
 Everything in this section is service-role only (RLS on, nothing granted to `anon`/`authenticated`, functions revoked from `public`).
 
-Notification outbox rows are inserted by: instance opening (kind `window_open`), 15 min before deadline for participants without a success (`deadline_soon`), result posted or a voided day revived (`result`), review opened (`review_opened`), settlement (`settlement`), place set / confirmed / objected / counting by timeout (`place_changed`, see Place events), an obligation marked paid (`obligation_marked_paid`, to the payee) or disputed (`obligation_disputed`, to the payer).
+Notification outbox rows are inserted by: instance opening (kind `window_open`; daily pacts only, weekly / once open silently), 15 min before deadline for participants without a success (`deadline_soon`; for weekly / once instances at 18:00 local the day before the deadline, to those short of the goal; see Kinds), result posted or a voided day revived (`result`), review opened (`review_opened`), settlement (`settlement`), place set / confirmed / objected / counting by timeout (`place_changed`, see Place events), an obligation marked paid (`obligation_marked_paid`, to the payee) or disputed (`obligation_disputed`, to the payer).
 
 ## File ownership (parallel agents must stay in their lane)
 

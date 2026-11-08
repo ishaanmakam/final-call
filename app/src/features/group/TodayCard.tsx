@@ -3,13 +3,16 @@ import { useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { displayName, useInstanceNets, type TodayItem } from '../../api/queries';
-import type { ProfileRow, ResultRow } from '../../api/types';
+import { toNumber, type ProfileRow, type ResultRow } from '../../api/types';
 import { AvatarStack, Button, Card, Countdown, ProgressRing, StatusPill, Text } from '../../components';
 import { formatTimeInZone, msUntil, type WindowState } from '../../lib/time';
 import { useNow } from '../../lib/useNow';
 import { PRESS_SCALE, space, transition, useReducedMotion } from '../../theme';
 import { gateClose } from '../checkin/gateClose';
 import { useWindowPhase } from '../checkin/useWindowPhase';
+import { isGoalKind, progressFraction, standingsSummary, timeLeftText } from '../goal/goal';
+import { weekTimingLine } from '../goal/progress';
+import { useDistanceUnit } from '../goal/useDistanceUnit';
 import { checkedInIds, closedTimingText, myPillState, openTimingPrefix, resultTally, todayStatusLine } from './today';
 
 export interface TodayCardProps {
@@ -40,9 +43,12 @@ function LiveTiming({ deadlineAt, tz }: { deadlineAt: string; tz: string }) {
   );
 }
 
-function timingText(phase: WindowState, item: TodayItem): string {
+function timingText(phase: WindowState, item: TodayItem, nowMs: number): string {
   const { instance, pact } = item;
-  if (instance.status === 'voided') return "Didn't count today";
+  if (instance.status === 'voided') return pact.period === 'daily' ? "Didn't count today" : "Didn't count this week";
+  // weekly / race cards: "This week · Boarding · 2 days left" in the airport voice (features/goal/progress.ts)
+  if (pact.period === 'weekly') return `This week · ${weekTimingLine(instance, pact.tz, nowMs).text}`;
+  if (pact.period === 'once') return phase === 'closed' ? 'Gate closed · the race is over' : `Race · ${timeLeftText(instance.deadline_at, nowMs)}`;
   if (phase === 'before') return `Opens ${formatTimeInZone(instance.window_open_at, pact.tz)} · by ${formatTimeInZone(instance.deadline_at, pact.tz)}`;
   return closedTimingText(formatTimeInZone(instance.deadline_at, pact.tz));
 }
@@ -65,8 +71,9 @@ function resultsFromSummary(item: TodayItem): ResultRow[] {
  * ("+$2.00 · Diego missed"), with the money read from the ledger.
  */
 export function TodayCard({ item, userId, profiles }: TodayCardProps) {
-  const { instance, pact, summary, participantIds, myState } = item;
+  const { instance, pact, summary, participantIds, myState, goal } = item;
   const reduced = useReducedMotion();
+  const unit = useDistanceUnit();
   const [pressed, setPressed] = useState(false);
   const phase = useWindowPhase(instance.window_open_at, instance.deadline_at);
   const closed = ['closed', 'settled', 'voided'].includes(instance.status) || phase === 'closed';
@@ -78,9 +85,14 @@ export function TodayCard({ item, userId, profiles }: TodayCardProps) {
   const posted = ['closed', 'settled', 'voided'].includes(instance.status);
   const nets = useInstanceNets(instance.id, closed && amIn && posted);
   const allIn = summary.total > 0 && summary.checkedIn === summary.total;
-  const showCheckIn = amIn && open && myState !== 'checked_in' && !pill;
-  const openCheckin = () => router.push(`/checkin/${instance.id}`);
-  const timingLabel = open ? `${formatTimeInZone(instance.deadline_at, pact.tz)} deadline` : timingText(phase, item);
+  // goal kinds (CB): the ring is your own progress, the status line the standings, and tapping opens the pact
+  const goalKind = isGoalKind(pact.kind);
+  const myProgress = goal?.progress.find((p) => p.user_id === userId) ?? null;
+  const myFraction = myProgress ? progressFraction(toNumber(myProgress.value), toNumber(myProgress.goal)) : null;
+  const showCheckIn = amIn && open && myState !== 'checked_in' && !pill && !goalKind;
+  const openCheckin = () => router.push(goalKind ? `/pacts/${pact.id}` : `/checkin/${instance.id}`);
+  const nameOf = (id: string) => (id === userId ? 'You' : displayName(profiles, id));
+  const timingLabel = open && !goalKind ? `${formatTimeInZone(instance.deadline_at, pact.tz)} deadline` : timingText(phase, item, Date.now());
 
   let status: string;
   let gateTone: 'success' | 'forfeit' | null = null;
@@ -98,12 +110,16 @@ export function TodayCard({ item, userId, profiles }: TodayCardProps) {
       carryInCents: instance.carry_in_cents,
       frozen: myState === 'frozen',
       sinceDeadlineMs: Date.now() - Date.parse(instance.deadline_at),
+      goal: goalKind,
+      period: pact.period,
     });
     // the money line waits for the ledger read; until then the plain tally
     status = posted && nets.isPending && gate.amount ? resultTally(summary) : gate.compact;
     if (gate.state === 'posted' && gate.amount) gateTone = gate.tone === 'forfeit' ? 'forfeit' : 'success';
   } else if (instance.status === 'voided') {
     status = 'Fewer than two people were in it, so nothing counts.';
+  } else if (goalKind && goal) {
+    status = standingsSummary(goal.standings, userId, nameOf, pact, unit);
   } else {
     status = closed ? resultTally(summary) : todayStatusLine(summary, myState);
   }
@@ -115,26 +131,40 @@ export function TodayCard({ item, userId, profiles }: TodayCardProps) {
           <Text variant="headline" numberOfLines={2}>
             {pact.title}
           </Text>
-          {open ? (
+          {open && !goalKind ? (
             <LiveTiming deadlineAt={instance.deadline_at} tz={pact.tz} />
           ) : (
-            <Text variant="subheadline" color="secondary">
-              {timingText(phase, item)}
+            <Text variant="subheadline" color={goalKind && timingLabel.startsWith('This week · Final call') ? 'forfeit' : 'secondary'}>
+              {timingLabel}
             </Text>
           )}
         </View>
         {instance.status !== 'voided' ? (
-          <ProgressRing
-            size={52}
-            strokeWidth={4}
-            progress={summary.total > 0 ? summary.checkedIn / summary.total : 0}
-            color={allIn ? 'success' : 'tint'}
-            accessibilityLabel={`${summary.checkedIn} of ${summary.total} checked in`}
-          >
-            <Text variant="caption1" emphasis tabular>
-              {summary.checkedIn}/{summary.total}
-            </Text>
-          </ProgressRing>
+          myFraction !== null ? (
+            <ProgressRing
+              size={52}
+              strokeWidth={4}
+              progress={myFraction}
+              color={myFraction >= 1 ? 'success' : closed ? 'forfeit' : 'tint'}
+              accessibilityLabel={`${Math.round(myFraction * 100)} percent of your goal`}
+            >
+              <Text variant="caption1" emphasis tabular>
+                {Math.round(myFraction * 100)}%
+              </Text>
+            </ProgressRing>
+          ) : (
+            <ProgressRing
+              size={52}
+              strokeWidth={4}
+              progress={summary.total > 0 ? summary.checkedIn / summary.total : 0}
+              color={allIn ? 'success' : 'tint'}
+              accessibilityLabel={goalKind ? `${summary.checkedIn} of ${summary.total} reached the goal` : `${summary.checkedIn} of ${summary.total} checked in`}
+            >
+              <Text variant="caption1" emphasis tabular>
+                {summary.checkedIn}/{summary.total}
+              </Text>
+            </ProgressRing>
+          )
         ) : null}
       </View>
       <View style={styles.row}>
@@ -148,12 +178,12 @@ export function TodayCard({ item, userId, profiles }: TodayCardProps) {
     </Card>
   );
 
-  if (!amIn || instance.status === 'voided') return body;
+  if ((!amIn && !goalKind) || instance.status === 'voided') return body;
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`${pact.title}, ${timingLabel}, ${status}`}
-      accessibilityHint="Opens check-in"
+      accessibilityHint={goalKind ? 'Opens the challenge' : 'Opens check-in'}
       onPress={openCheckin}
       onPressIn={() => setPressed(true)}
       onPressOut={() => setPressed(false)}

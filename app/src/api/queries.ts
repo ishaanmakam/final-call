@@ -4,7 +4,9 @@ import { OPEN_OBLIGATION_STATUSES } from '../lib/obligations';
 import { effectivePlaceAt, nextWindow, placeForWindow, type WindowPlace } from '../lib/places';
 import { summarizeInstance, type InstanceSummary, type MemberDayState } from '../lib/instanceStatus';
 import { gateClosePollInterval } from '../lib/gatePoll';
-import { localDateInZone, windowState } from '../lib/time';
+import { currentLocalDate, summaryFromProgress } from '../features/goal/progress';
+import { isGoalKind } from '../features/goal/goal';
+import { windowState } from '../lib/time';
 import * as demo from './demo';
 import { DEMO } from './demo/settings';
 import { supabase } from './supabase';
@@ -14,8 +16,11 @@ import type {
   GroupMemberRow,
   GroupRow,
   InstanceMemberNetRow,
+  InstanceProgressRow,
+  InstanceStandingRow,
   MemberBalanceRow,
   ObligationRow,
+  PactActivityRow,
   PactInstanceRow,
   PactParticipantPlaceRow,
   PactParticipantRow,
@@ -116,12 +121,22 @@ function useMyGroupsReal(userId: string) {
 
 // ---------- group home ----------
 
+/** Goal kinds: everyone's progress and the ranked standings for one instance (`instance_progress`, `instance_standings`). */
+export interface GoalSnapshot {
+  progress: InstanceProgressRow[];
+  standings: InstanceStandingRow[];
+}
+
 export interface TodayItem {
+  /** today's instance; for a weekly pact this week's (local_date = Monday); for a race, the race */
   instance: PactInstanceRow;
   pact: PactRow;
   participantIds: string[];
+  /** for goal kinds, "checked in" means "reached the goal" (summaryFromProgress) */
   summary: InstanceSummary;
   myState: MemberDayState | null;
+  /** present for goal kinds */
+  goal?: GoalSnapshot;
 }
 
 export interface GroupHome {
@@ -150,7 +165,8 @@ function useGroupHomeReal(groupId: string, userId: string, enabled = true) {
       if (pactIds.length === 0) {
         return { group, members, profiles, pacts, unjoinedPactIds: new Set(), today: [] };
       }
-      const todayByPact = new Map(pacts.map((p) => [p.id, localDateInZone(now, p.tz)]));
+      // daily pacts: today; weekly: this week's Monday; a race: its start (features/goal/progress.ts)
+      const todayByPact = new Map(pacts.map((p) => [p.id, currentLocalDate(p, now)]));
       const [participants, instances] = await Promise.all([
         supabase.from('pact_participants').select('*').in('pact_id', pactIds).is('left_at', null).then(must),
         supabase
@@ -162,9 +178,10 @@ function useGroupHomeReal(groupId: string, userId: string, enabled = true) {
       ]);
       const todays = instances.filter((i) => todayByPact.get(i.pact_id) === i.local_date);
       const instanceIds = todays.map((i) => i.id);
-      const [checkins, results] =
+      const goalInstanceIds = todays.filter((i) => isGoalKind(pacts.find((p) => p.id === i.pact_id)?.kind ?? 'show_up')).map((i) => i.id);
+      const [checkins, results, progress, standings] =
         instanceIds.length === 0
-          ? [[], []]
+          ? [[], [], [], []]
           : await Promise.all([
               supabase
                 .from('checkins')
@@ -172,16 +189,27 @@ function useGroupHomeReal(groupId: string, userId: string, enabled = true) {
                 .in('instance_id', instanceIds)
                 .then(must),
               supabase.from('results').select('*').in('instance_id', instanceIds).then(must),
+              goalInstanceIds.length === 0 ? [] : supabase.from('instance_progress').select('*').in('instance_id', goalInstanceIds).then(must),
+              goalInstanceIds.length === 0 ? [] : supabase.from('instance_standings').select('*').in('instance_id', goalInstanceIds).order('rank').then(must),
             ]);
       const today: TodayItem[] = todays
         .map((instance) => {
           const pact = pacts.find((p) => p.id === instance.pact_id)!;
           const participantIds = participants.filter((p) => p.pact_id === pact.id).map((p) => p.user_id);
+          const instanceResults = results.filter((r) => r.instance_id === instance.id);
+          if (isGoalKind(pact.kind)) {
+            const goal: GoalSnapshot = {
+              progress: progress.filter((p) => p.instance_id === instance.id),
+              standings: standings.filter((s) => s.instance_id === instance.id),
+            };
+            const summary = summaryFromProgress(participantIds, instance.deadline_at, goal.progress, instanceResults);
+            return { instance, pact, participantIds, summary, myState: summary.byUser[userId] ?? null, goal };
+          }
           const summary = summarizeInstance({
             participantIds,
             deadlineAt: instance.deadline_at,
             checkins: checkins.filter((c) => c.instance_id === instance.id),
-            results: results.filter((r) => r.instance_id === instance.id),
+            results: instanceResults,
           });
           return { instance, pact, participantIds, summary, myState: summary.byUser[userId] ?? null };
         })
@@ -209,25 +237,71 @@ function useGroupHomeReal(groupId: string, userId: string, enabled = true) {
 
 // ---------- pact detail ----------
 
+/**
+ * Goal kinds on the pact screen: the current instance (this week / the race) and the last closed
+ * one, everyone's progress and standings for both, their posted results and ledger nets, and the
+ * activities that count toward (or were rejected for) them, newest first.
+ */
+export interface PactGoalDetail {
+  current: PactInstanceRow | null;
+  last: PactInstanceRow | null;
+  progress: InstanceProgressRow[];
+  standings: InstanceStandingRow[];
+  results: ResultRow[];
+  nets: InstanceMemberNetRow[];
+  activities: PactActivityRow[];
+}
+
 export interface PactDetail {
   pact: PactRow;
   participants: PactParticipantRow[];
   profiles: Map<string, ProfileRow>;
   upcoming: PactInstanceRow[];
   myFreezes: FreezeRow[];
-  /** every current participant's place rows (in force, pending, objected), as the group sees them */
+  /** every current participant's place rows (in force, pending, objected), as the group sees them; empty for goal kinds */
   places: PactPlaceVisibleRow[];
-  /** metres from each place to the other participants' places in force */
+  /** metres from each place to the other participants' places in force; empty for goal kinds */
   distances: PlaceDistanceRow[];
+  /** present for goal kinds */
+  goal?: PactGoalDetail;
+}
+
+/** The pact's current instance (this week / today / the race) and the most recent closed one before it. */
+export function pickGoalInstances(pact: PactRow, instances: readonly PactInstanceRow[], nowMs: number): { current: PactInstanceRow | null; last: PactInstanceRow | null } {
+  const wanted = currentLocalDate(pact, nowMs);
+  const sorted = [...instances].sort((a, b) => Date.parse(a.deadline_at) - Date.parse(b.deadline_at));
+  const current = sorted.find((i) => i.local_date === wanted) ?? sorted.find((i) => Date.parse(i.deadline_at) > nowMs) ?? null;
+  const last = [...sorted].reverse().find((i) => i.id !== current?.id && Date.parse(i.deadline_at) <= nowMs && i.status !== 'voided') ?? null;
+  return { current, last };
+}
+
+async function fetchGoalDetail(pact: PactRow, nowMs: number): Promise<PactGoalDetail> {
+  const since = new Date(nowMs - 21 * 86_400_000).toISOString();
+  const instances = must(
+    await supabase.from('pact_instances').select('*').eq('pact_id', pact.id).gte('deadline_at', since).order('deadline_at').limit(12),
+  );
+  const { current, last } = pickGoalInstances(pact, instances, nowMs);
+  const ids = [current?.id, last?.id].filter((x): x is string => !!x);
+  if (ids.length === 0) return { current, last, progress: [], standings: [], results: [], nets: [], activities: [] };
+  const [progress, standings, results, nets, activities] = await Promise.all([
+    supabase.from('instance_progress').select('*').in('instance_id', ids).then(must),
+    supabase.from('instance_standings').select('*').in('instance_id', ids).order('rank').then(must),
+    supabase.from('results').select('*').in('instance_id', ids).then(must),
+    supabase.from('instance_member_nets').select('*').in('instance_id', ids).then(must),
+    supabase.from('pact_activities').select('*').in('instance_id', ids).order('started_at', { ascending: false }).limit(100).then(must),
+  ]);
+  return { current, last, progress, standings, results, nets, activities };
 }
 
 function usePactDetailReal(pactId: string, userId: string) {
   return useQuery({
     queryKey: queryKeys.pact(pactId),
     queryFn: async (): Promise<PactDetail> => {
-      const since = new Date(Date.now() - 86_400_000).toISOString();
-      const [pact, participants, upcoming, myFreezes, places, distances] = await Promise.all([
-        supabase.from('pacts').select('*').eq('id', pactId).single().then(must),
+      const now = Date.now();
+      const since = new Date(now - 86_400_000).toISOString();
+      const pact = await supabase.from('pacts').select('*').eq('id', pactId).single().then(must);
+      const goalKind = isGoalKind(pact.kind);
+      const [participants, upcoming, myFreezes, places, distances, goal] = await Promise.all([
         supabase.from('pact_participants').select('*').eq('pact_id', pactId).is('left_at', null).then(must),
         supabase
           .from('pact_instances')
@@ -238,12 +312,16 @@ function usePactDetailReal(pactId: string, userId: string) {
           .limit(10)
           .then(must),
         supabase.from('freezes').select('*').eq('pact_id', pactId).eq('user_id', userId).then(must),
-        supabase.from('pact_places_visible').select('*').eq('pact_id', pactId).order('created_at').then(must),
-        supabase.rpc('pact_place_distances', { p_pact: pactId }).then(must),
+        // places exist only for show_up
+        goalKind ? [] : supabase.from('pact_places_visible').select('*').eq('pact_id', pactId).order('created_at').then(must),
+        goalKind ? [] : supabase.rpc('pact_place_distances', { p_pact: pactId }).then(must),
+        goalKind ? fetchGoalDetail(pact, now) : undefined,
       ]);
       const profiles = await fetchProfiles(participants.map((p) => p.user_id));
-      return { pact, participants, profiles, upcoming, myFreezes, places, distances };
+      return { pact, participants, profiles, upcoming, myFreezes, places, distances, ...(goal ? { goal } : {}) };
     },
+    // goal kinds: a friend's sync can change the standings any time; a gentle poll while the week is open
+    refetchInterval: (query) => (query.state.data?.goal?.current && windowState(Date.now(), query.state.data.goal.current.window_open_at, query.state.data.goal.current.deadline_at) === 'open' ? 60_000 : false),
   });
 }
 

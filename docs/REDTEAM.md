@@ -218,3 +218,70 @@ Accepted, not changed: a deleted member's historical places (coordinates) remain
 `pact_participant_places` RLS, consistent with the privacy policy ("past results ... stay") and needed for reviews of the
 week in progress (V-9). A `marked_paid` obligation whose payee deletes their account stays `marked_paid` forever and keeps
 counting as provisionally paid at each settle-up (D7); nobody is hurt but the departed payee, who cannot collect anyway (A39 family).
+
+## Challenge kinds (day 2)
+
+Fresh reviewer after the challenges round (distance / workouts / steps / custom pacts, activity evidence from Apple
+Health and Strava, the web app). Brief as on night-1, plus the spec's red-team list. Method: a PGlite test per
+suspicion in `supabase/tests/redteam-kinds.test.ts` (17 tests, RK-1..RK-17), fixes test-first in
+`supabase/migrations/20261109000400_kinds_fixes.sql`, the oracle at `RULES_VERSION` 5, function tests for the Strava
+webhook and the HealthKit mapper, decisions CE-1..CE-11 in `docs/DECISIONS.md`, CONTRACT "Activities" / "Roster"
+updated. Outcome: **9 proven holes, all fixed** (RK-1..RK-9; four of them could cost an honest runner money, two let a
+lazy member dodge a forfeit, three let a greedy one count more than they ran); 8 suspicions proven safe and kept as
+regressions; 2 hardenings outside SQL (Strava subscription gate, hand-entered steps); accepted risks recorded.
+
+Attackers as before (L lazy, G greedy, 2 colluders, O owner, M modified client, T time zones, H honest) plus
+S = Strava webhook forger, R = leaver who rejoins.
+
+| ID | Attacker | Attack | Outcome |
+|----|----------|--------|---------|
+| K1 | L, R | Short on Sunday: leave the group, rejoin with the invite code, rejoin the pact. `join_pact` reset `joined_at` to now, so the open week's roster (`joined_at <= window_open_at`) no longer held you: no result, no forfeit | **Proven + fixed (RK-1, CE-1)**: a rejoin while still on an open roster keeps `joined_at`; the week scores you. A rejoin after a real absence is a fresh join (next roster) |
+| K2 | L | Leave the group mid-week to dodge the forfeit (no rejoin) | Already safe (CA-7, challenge-kinds suite): `left_at > window_open_at` keeps you on the roster; scored at close |
+| K3 | H | Member of a daily steps pact (open 00:00–23:59) wants to leave the group: `leave_group` said 23514 all day, every day | **Proven + fixed (RK-9, CE-2)**: the refusal is the show_up kind's; a steps / custom leaver stays on the day's roster and is scored |
+| K4 | G, M | A 15-mile "run" in 20 seconds whose `ended_at` is ten minutes ahead: `rejected_future` first, then re-synced unchanged once the end had passed, and the re-judge said `accepted` (no pace or duplicate check) | **Proven + fixed (RK-2, CE-6)**: the re-judge runs the whole chain (`_activity_verdict`) |
+| K5 | G, M | `duration_s` of two hours on a one-minute activity: pace check uses moving time → 3.4 m/s → accepted; a 2-minute "workout" with `duration_s` 900 counted as a ≥ 10 min workout | **Proven + fixed (RK-6, CE-4)**: `duration_s` above elapsed + 60 s is stored as elapsed; the oracle clamps the same way |
+| K6 | G, H | The same run twice from one source: watch + phone both writing HealthKit, or a Fitness edit that mints a new UUID (edit five times, run five times as far). Same-source overlaps were "never duplicates" (CA-6) | **Proven + fixed (RK-5, CE-3)**: the ≥ 80 % overlap rule covers every source; first accepted wins; `RULES_VERSION` 5, differential test green |
+| K7 | M | `source: 'manual', is_manual: false` → accepted; the phone claims `source: 'strava'` so the chip says Strava | **Proven + fixed (RK-7, CE-5)**: `manual` source is hand-entered; the client RPC refuses `strava` items (22023) |
+| K8 | M | 10 000-item batch, each a row lock and a possible recompute | **Proven + fixed (RK-8, CE-8)**: 1000 per call |
+| K9 | G, M | Steps: re-send yesterday's `steps:YYYY-MM-DD` row with today's instants; the row moved to today (a second success) while yesterday's posted result stood | **Proven + fixed (RK-3, CE-7)**: `started_at` is the row's identity; a re-send that moves the day is a no-op |
+| K10 | H | Steps: an honest watch adds late data to Monday on Wednesday (after the 24 h cut-off); the update set `submitted_at` past the cut-off, so the next `_refresh_result` (any review resolving, e.g. a rejected challenge) saw no evidence and flipped the success to a forfeit with a correction | **Proven + fixed (RK-4, CE-7)**: a steps re-send after the cut-off of a steps day the user is on is a no-op; the in-time total stands |
+| K11 | L, M | The reverse of K10: inflate Monday's steps on Wednesday, then appeal; `_resolve_review` recomputes the base result with the inflated row whatever the vote | **Proven + fixed (RK-4, CE-7)** (same rule) |
+| K12 | G | Join the goal pact mid-week with 30 km already run | Already safe (D18, CA-9; RK-10): on the next week's roster only |
+| K13 | L, M | Forge a "Sunday run" within 24 h of the close (or after settlement) to turn a miss into a success and a correction | **Accepted** (same as RT-6): challengeable even after settlement (D31; RK-11 proves the path), pushed to the roster, visible with device / app / source |
+| K14 | L, M | Backdate a run after the 24 h window, then appeal: a review resolving recomputes the base result | Already safe (RK-14): rows with `submitted_at` past the cut-off never count for money; the appeal defaults and nothing moves. An accepted appeal still works (group's call) |
+| K15 | T | Run across Sunday midnight: count it twice, or for the wrong week | Already safe (RK-12): `started_at` is in exactly one window; a late sync of a Sunday-night run posts a correction for the week it started in |
+| K16 | T | Change the pact zone or a race's end once it opened | Already safe (CA-11, challenge-kinds suite): kind, period, goal, types, race dates, proof rule and zone are locked by trigger (23514) |
+| K17 | T | Pact zone west of the settlement zone so the week ends after Monday 00:00 settlement-time | Harmless: the week settles with the following Monday's run (CA-8 takes `deadline_at <= week_end`); review window grows, money unchanged |
+| K18 | G, 2 | Challenge an honest success in a 2-person pact | Already safe (RT-1; RK-13): no voters, defaults, result stands. In a 3-person pact the third member decides; a colluding pair can convict or acquit (A3, accepted) |
+| K19 | O | Pause the pact Sunday night to cancel the week you are missing | Already safe (RK-15): open instances are never voided; the week closes and pays. Pausing before Monday 00:00 voids next week for everyone (A10, accepted) |
+| K20 | O | Change the stake or goal mid-week | No RPC changes stake, goal or dates (`set_pact_paused`, `set_pact_season` only); the lock trigger binds even the service role |
+| K21 | M | `submit_activities_for`, `submit_activities_at`, `mark_done_at`, `_activity_verdict` as authenticated or anon | Already safe (privilege sweep in challenge-kinds + foundation guard; the new helper is revoked) |
+| K22 | M | A `steps` sample on a distance pact; a walk with 20 000 steps on a steps pact | Already safe (RK-17): `activity_matches_pact` counts only the kind's evidence |
+| K23 | L | Custom pact: mark the day done without doing it | By design: self-report; every success is challengeable, the group votes. With `proof_required` a photo is needed (CI-3) |
+| K24 | S | POST a forged event to the public webhook with a victim's `owner_id` and an `object_id` of a "50 km run" | Safe by design + hardened (CE-9): nothing in the event is evidence; the activity is fetched from Strava with the owner's token (only their own activities are readable), so at most their real activity is re-delivered (idempotent). Function test "red team: a forged event…". New `STRAVA_SUBSCRIPTION_ID` drops events for another subscription before any Strava call |
+| K25 | S | Flood the webhook to burn the app's 100 / 15 min Strava budget | **Accepted** (CE-9): real events retry on later deliveries (CC-3); the subscription gate makes the flood cost nothing when the id is wrong |
+| K26 | S, G | OAuth login-CSRF: send a friend your connect link (state signed for you); they authorize their Strava; their runs count for you | **Accepted** (CE-9): friends-first, 15-minute TTL, the victim's own reconnect moves the athlete back (CC-2), the attacker's activity list shows a stranger's device. Before strangers: confirmation page naming the Final Call account |
+| K27 | S | Replay a state, or re-point a signed state at another user | Already safe (function tests): HMAC over the payload, TTL 15 min; `/state` signs only for the JWT's user |
+| K28 | L | Type 10 000 steps into the Health app | **Hardened (CE-10)**: the mapper flags a day with a hand-entered step sample `is_manual`, the server rejects it; needs a device to confirm the HealthKit predicate |
+| K29 | L | Type a workout into Fitness / Health | Already safe: `HKWasUserEntered` → `is_manual` → `rejected_manual` (mapper + server tests) |
+| K30 | L | Create a manual activity on Strava, let Strava write it to Apple Health, sync Health | **Accepted** (CE-11 b): the Health copy carries no manual flag; its `app_bundle` is Strava's and the Strava delivery of the same activity is `rejected_manual`, both visible; challengeable. Whether Strava writes manual entries to Health needs a device check |
+| K31 | 2 | Two people, one watch | **Accepted** (CE-11 c): the group sees the device and the times |
+| K32 | H | Watch died, nothing synced: Missed, not Unverified | By design (C0-2, RK-16): no server-side tracking can fail on the runner; the appeal is the remedy |
+| K33 | H | Sync failed Sunday night; both watch and phone recorded; treadmill run; HealthKit edit with a new UUID; Strava and Health both present | Safe: late sync within 24 h posts a correction (challenge-kinds suite); double recordings count once (K6); treadmill distance passes the pace check; the edit's new UUID is a duplicate of the original (the original's distance stands) |
+
+### Honest-user hazards (kinds)
+
+- **Steps for a day stop updating 24 h after its deadline** (CE-7). A watch that uploads Monday's steps on Wednesday adds nothing; the group sees Monday's total as it stood. Appeal if it matters.
+- **The first recording wins a duplicate.** If the phone's copy had the better distance, the watch's still counts (CE-11 d). Rare; both are shown.
+- **A `steps` day with one typed sample is rejected whole** (CE-10), not reduced by the typed amount. A clear rule the group can explain; appeal exists.
+- **Leaving a steps / custom pact's group mid-day is allowed and still scores you** (CE-2) — the app should say so on the Leave confirmation (not changed here).
+- **A run started 23:50 Sunday counts for the week that just ended**, however long it ran into Monday; the Monday leg adds nothing to the new week (K15). Matches the spec; the pact screen's activity list makes it visible.
+- **A Strava activity mis-typed as a Ride** cannot become a Run after delivery (CC-4); appeal.
+
+### Files
+
+- `supabase/migrations/20261109000400_kinds_fixes.sql` (new), `supabase/tests/redteam-kinds.test.ts` (new); `challenge-kinds` and `differential-kinds` updated for CE-3 / CE-7
+- `packages/rules/src/index.ts` (+ `test/kinds.test.ts`): `RULES_VERSION` 5
+- `supabase/functions/strava-sync/strava.ts`, `index.ts` (+ tests): `subscriptionId` gate, `ensureSubscription` returns the id
+- `app/src/features/health/health.ts`, `healthRuntime.ts` (+ tests): hand-entered step samples
+- `docs/CONTRACT.md` (Activities, Roster, join_pact), `docs/DECISIONS.md` (CE-1..CE-11), this file

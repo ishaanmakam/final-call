@@ -121,3 +121,65 @@ responses with `select * from net._http_response order by created desc limit 10;
 The `service_role_key` secret must be the same value the function sees as
 `SUPABASE_SERVICE_ROLE_KEY` (the legacy JWT-style service key). If the project is switched to the
 new `sb_secret_...` API keys, update both sides together.
+
+## strava-sync
+
+Connects a member's Strava account and turns their Strava activities into evidence for goal
+kinds (distance / workouts): OAuth, token storage, the webhook receiver and a 30-day backfill.
+Storage is `20261109000200_strava.sql` (`integration_tokens`, `strava_webhook_events`,
+view `my_integrations`, RPCs `upsert_integration_token` (service) and `disconnect_integration`
+(client)). Activities go through `submit_activities_for(p_user, p_activities)` from
+`20261109000100_challenge_kinds.sql`, so verdicts (manual → `rejected_manual`, duplicates, future
+times) are the database's, not this function's.
+
+Routes (`https://<ref>.supabase.co/functions/v1/strava-sync/<route>`):
+
+| route | who calls it | what it does |
+|---|---|---|
+| `POST /state` | the app, `Authorization: Bearer <user JWT>` (via `supabase.functions.invoke`) | Verifies the JWT (`auth.getUser`), signs a state `base64url({u: user id, e: expiry, r?: redirect}).hmac` with `STRAVA_STATE_SECRET` (15 min), returns `{state, connect_url}`. `redirect` is honoured only for the app scheme or an origin in `WEB_ORIGIN`. |
+| `GET /connect?state=` | the browser (opened by the app) | Verifies the state and 302s to `https://www.strava.com/oauth/authorize` with `scope=activity:read_all`, `redirect_uri=<this function>/callback`. |
+| `GET /callback?code&scope&state` | Strava → browser | Verifies the state (it is the whole authorization: nothing here trusts a user id from the caller), exchanges the code, `upsert_integration_token`, makes sure the app's single webhook subscription exists (`already exists` counts as success), backfills 30 days of `/athlete/activities` (100 per page, at most 5 pages, stops at the rate limit), then 302s to `finalcall://settings?strava=connected` or the state's web redirect with `?strava=connected` / `?strava=error&reason=access_denied|scope|exchange|server|no_code`. |
+| `GET /webhook` | Strava, once, when the subscription is created | Echoes `hub.challenge` when `hub.verify_token` equals `STRAVA_VERIFY_TOKEN`; 403 otherwise. |
+| `POST /webhook` | Strava, per event | Inserts the event into `strava_webhook_events`, answers 200 at once, then (in `EdgeRuntime.waitUntil`) processes it: `activity create/update` → `GET /activities/{id}` with the owner's token (refresh on 401 or when < 60 s from expiry; a refused refresh deletes the tokens) → one `submit_activities_for` item; `activity delete` → recorded only (activities are append-only evidence); `athlete update {authorized: "false"}` → tokens deleted. Then retries up to 10 older unprocessed events (`attempts < 5`). |
+| anything else | | 404 |
+
+Mapping (`strava.ts` `mapActivity`): `source 'strava'`, `external_id` = activity id, `activity_type`
+from `sport_type` (Run/TrailRun/VirtualRun → running, Walk → walking, Ride/VirtualRide/GravelRide/
+MountainBikeRide → cycling, Swim → swimming, Hike → hiking, Rowing/VirtualRow → rowing,
+WeightTraining/Crossfit → strength, Yoga → yoga, else other; EBikeRide is other on purpose),
+`started_at` = `start_date`, `ended_at` = start + `elapsed_time`, `duration_s` = `moving_time`,
+`distance_m` = `distance` (null when 0), `device` = `device_name`, `is_manual` = `manual` (trainer
+rides are allowed), `raw_hash` = sha256 of those fields.
+
+Rate limits: every Strava response's `X-RateLimit-*` / `X-ReadRateLimit-*` headers are read; a 429
+turns into "retry at the next quarter hour (or UTC midnight for the daily limit)", recorded on the
+event row and picked up by a later delivery's retry pass; the backfill stops one request short of
+the window.
+
+Layout mirrors push-outbox: `index.ts` (Deno: routes, supabase-js, env), `strava.ts` (all pure
+logic over an injected `fetch`; no Deno or Node imports), `test/strava.test.ts` (vitest with a fake
+fetch), `deno.json`, `package.json`, `tsconfig.json`.
+
+```
+cd supabase/functions/strava-sync
+npm install
+npm test            # vitest
+npm run typecheck   # tsc on strava.ts + tests
+deno check index.ts # optional, needs Deno
+```
+
+Secrets (`supabase secrets set NAME=value`):
+
+| name | notes |
+|---|---|
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | injected by Supabase |
+| `STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET` | from https://www.strava.com/settings/api |
+| `STRAVA_VERIFY_TOKEN` | any random string; Strava sends it back on the `GET /webhook` handshake |
+| `STRAVA_STATE_SECRET` | any random 32+ byte string; signs the OAuth state |
+| `APP_SCHEME` | optional, default `finalcall` |
+| `WEB_ORIGIN` | optional, default `https://ishaanmakam.github.io`; comma-separated origins allowed as web redirects |
+| `STRAVA_FUNCTION_URL` | optional; the function's public URL when `SUPABASE_URL` is not it (local `functions serve`: `http://127.0.0.1:54321/functions/v1/strava-sync`) |
+
+Deploy: `supabase functions deploy strava-sync --no-verify-jwt` (also `verify_jwt = false` in
+`config.toml`). Full steps, the Strava application settings and `curl` checks: `docs/DEPLOY.md`
+"Strava". Logs: one JSON line per step, `{"fn":"strava-sync", ...}`.

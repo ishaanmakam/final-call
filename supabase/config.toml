@@ -69,6 +69,9 @@ additional_redirect_urls = [
   "finalcall://auth-callback/**",
   # Expo Go / dev-client deep links while developing (exp://<lan-ip>:8081/--/auth-callback).
   "exp://**/--/auth-callback",
+  # The web app (GitHub Pages, docs/DEPLOY.md "Web app") and `npx expo start --web` locally.
+  "https://ishaanmakam.github.io/final-call/app/auth-callback",
+  "http://localhost:8081/auth-callback",
 ]
 # Access token lifetime (seconds). One hour; the client refreshes silently.
 jwt_expiry = 3600
@@ -151,6 +154,15 @@ deno_version = 2
 enabled = true
 verify_jwt = false
 entrypoint = "./functions/push-outbox/index.ts"
+
+# strava-sync is reached by browsers (/connect, /callback, authenticated by a signed state) and by
+# Strava's servers (/webhook, public per Strava), none of which carry a Supabase JWT; POST /state
+# verifies the user's JWT itself with auth.getUser. Secrets: STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET,
+# STRAVA_VERIFY_TOKEN, STRAVA_STATE_SECRET (docs/DEPLOY.md "Strava").
+[functions.strava-sync]
+enabled = true
+verify_jwt = false
+entrypoint = "./functions/strava-sync/index.ts"
 
 [analytics]
 # Local log explorer. Off: it is the heaviest container and nothing here reads it.

@@ -6,6 +6,7 @@
  */
 import { addDaysToLocalDate, isoWeekday, localDateInZone, zonedLocalToUtc } from '../../lib/time';
 import type {
+  ActivityRow,
   CheckinRow,
   FreezeRow,
   GroupMemberRow,
@@ -69,11 +70,14 @@ export const members: GroupMemberRow[] = [
 
 export const PACTS = { classA: 'p1', gym: 'p2', run: 'p3', library: 'p4' } as const;
 
+/** The original kind: a place, a window, a tap (20261109000100 adds the kind columns with these defaults). */
+const SHOW_UP = { kind: 'show_up', period: 'daily', goal_value: null, goal_unit: null, activity_types: null, race_start: null, race_end: null, proof_required: false } as const;
+
 export const pacts: PactRow[] = [
-  { id: PACTS.classA, group_id: GROUP_ID, title: '9am in Kane Hall', days_of_week: [1, 2, 3, 4, 5], window_open_local: '08:00:00', deadline_local: '09:00:00', stake_cents: 500, tz: TZ, paused: false, created_by: USERS.you, created_at: ago(40 * DAY) },
-  { id: PACTS.gym, group_id: GROUP_ID, title: 'Gym before dinner', days_of_week: [1, 3, 5], window_open_local: '16:30:00', deadline_local: '18:00:00', stake_cents: 300, tz: TZ, paused: false, created_by: USERS.maya, created_at: ago(30 * DAY) },
-  { id: PACTS.run, group_id: GROUP_ID, title: 'Sunrise run', days_of_week: [1, 2, 3, 4, 5, 6, 7], window_open_local: '06:00:00', deadline_local: '07:00:00', stake_cents: 200, tz: TZ, paused: false, created_by: USERS.diego, created_at: ago(28 * DAY) },
-  { id: PACTS.library, group_id: GROUP_ID, title: 'Library by 8', days_of_week: [1, 2, 3, 4], window_open_local: '19:00:00', deadline_local: '20:00:00', stake_cents: 100, tz: TZ, paused: true, created_by: USERS.priya, created_at: ago(20 * DAY) },
+  { id: PACTS.classA, group_id: GROUP_ID, title: '9am in Kane Hall', days_of_week: [1, 2, 3, 4, 5], window_open_local: '08:00:00', deadline_local: '09:00:00', stake_cents: 500, tz: TZ, paused: false, created_by: USERS.you, created_at: ago(40 * DAY), ...SHOW_UP },
+  { id: PACTS.gym, group_id: GROUP_ID, title: 'Gym before dinner', days_of_week: [1, 3, 5], window_open_local: '16:30:00', deadline_local: '18:00:00', stake_cents: 300, tz: TZ, paused: false, created_by: USERS.maya, created_at: ago(30 * DAY), ...SHOW_UP },
+  { id: PACTS.run, group_id: GROUP_ID, title: 'Sunrise run', days_of_week: [1, 2, 3, 4, 5, 6, 7], window_open_local: '06:00:00', deadline_local: '07:00:00', stake_cents: 200, tz: TZ, paused: false, created_by: USERS.diego, created_at: ago(28 * DAY), ...SHOW_UP },
+  { id: PACTS.library, group_id: GROUP_ID, title: 'Library by 8', days_of_week: [1, 2, 3, 4], window_open_local: '19:00:00', deadline_local: '20:00:00', stake_cents: 100, tz: TZ, paused: true, created_by: USERS.priya, created_at: ago(20 * DAY), ...SHOW_UP },
 ];
 
 const place = (pactId: string, userId: string, lat: number, lng: number, radius: number, label: string, joinedAgo: number): PactParticipantRow => ({
@@ -107,9 +111,9 @@ const historyRow = (p: PactParticipantRow, extra: Partial<PactParticipantPlaceRo
   id: `ph-${p.pact_id}-${p.user_id}`,
   pact_id: p.pact_id,
   user_id: p.user_id,
-  lat: p.place_lat,
-  lng: p.place_lng,
-  radius_m: p.place_radius_m,
+  lat: p.place_lat ?? 0,
+  lng: p.place_lng ?? 0,
+  radius_m: p.place_radius_m ?? 0,
   label: p.place_label,
   effective_from: p.joined_at,
   created_at: p.joined_at,
@@ -269,7 +273,7 @@ export const freezes: FreezeRow[] = [
 export const upcomingInstances: PactInstanceRow[] = pacts.flatMap((p) =>
   Array.from({ length: 7 }, (_, i) => i + 1)
     .map((i) => addDaysToLocalDate(TODAY, i))
-    .filter((d) => p.days_of_week.includes(isoWeekday(d)))
+    .filter((d) => (p.days_of_week ?? []).includes(isoWeekday(d)))
     .map<PactInstanceRow>((d) => ({
       id: `i-${p.id}-${d}`,
       pact_id: p.id,
@@ -315,7 +319,7 @@ const historyCheckins: CheckinRow[] = [];
 for (let back = 1; back <= 27; back += 1) {
   const d = addDaysToLocalDate(TODAY, -back);
   for (const p of pacts) {
-    if (!p.days_of_week.includes(isoWeekday(d))) continue;
+    if (!(p.days_of_week ?? []).includes(isoWeekday(d))) continue;
     if (p.id === PACTS.library && back > 6) continue; // created 20 days ago, paused a week in
     const deadline = zonedLocalToUtc(d, p.deadline_local, TZ);
     const open = zonedLocalToUtc(d, p.window_open_local, TZ);
@@ -401,7 +405,7 @@ export { historyCheckins, historyInstances, historyResults };
 
 /** A pact you have not joined: group home shows "Set your place"; /checkin/i-notin is the not-a-participant state. */
 export const PACT_NOT_JOINED = 'p5';
-pacts.push({ id: PACT_NOT_JOINED, group_id: GROUP_ID, title: 'Chem lab by 2', days_of_week: [2, 4], window_open_local: '13:00:00', deadline_local: '14:00:00', stake_cents: 400, tz: TZ, paused: false, created_by: USERS.maya, created_at: ago(3 * DAY) });
+pacts.push({ id: PACT_NOT_JOINED, group_id: GROUP_ID, title: 'Chem lab by 2', days_of_week: [2, 4], window_open_local: '13:00:00', deadline_local: '14:00:00', stake_cents: 400, tz: TZ, paused: false, created_by: USERS.maya, created_at: ago(3 * DAY), ...SHOW_UP });
 participants.push(
   place(PACT_NOT_JOINED, USERS.maya, 47.6532, -122.3086, 80, 'Bagley Hall', 3 * DAY),
   place(PACT_NOT_JOINED, USERS.diego, 47.6532, -122.3086, 80, 'Bagley Hall', 2 * DAY),
@@ -422,7 +426,7 @@ freezes.push({ id: 'f2', pact_id: PACTS.run, user_id: USERS.you, instance_id: EX
  */
 export const PACT_MISSED = 'p6';
 export const INSTANCE_MISSED = 'i-missed';
-pacts.push({ id: PACT_MISSED, group_id: GROUP_ID, title: 'Lab notebook by noon', days_of_week: [1, 2, 3, 4, 5, 6, 7], window_open_local: '11:00:00', deadline_local: '12:00:00', stake_cents: 200, tz: TZ, paused: false, created_by: USERS.you, created_at: ago(9 * DAY) });
+pacts.push({ id: PACT_MISSED, group_id: GROUP_ID, title: 'Lab notebook by noon', days_of_week: [1, 2, 3, 4, 5, 6, 7], window_open_local: '11:00:00', deadline_local: '12:00:00', stake_cents: 200, tz: TZ, paused: false, created_by: USERS.you, created_at: ago(9 * DAY), ...SHOW_UP });
 const missedParticipants = [
   place(PACT_MISSED, USERS.you, 47.6532, -122.3086, 80, 'Bagley Hall', 9 * DAY),
   place(PACT_MISSED, USERS.maya, 47.6532, -122.3086, 80, 'Bagley Hall', 8 * DAY),
@@ -435,6 +439,141 @@ todayResults.push(
   { instance_id: INSTANCE_MISSED, user_id: USERS.you, status: 'failed', first_success_at: null, decided_at: ago(3 * HOUR - MIN) },
   { instance_id: INSTANCE_MISSED, user_id: USERS.maya, status: 'success', first_success_at: ago(3 * HOUR + 25 * MIN), decided_at: ago(3 * HOUR - MIN) },
 );
+
+// ---------- challenge kinds (CB): a weekly distance pact and a weekly workouts pact ----------
+
+/**
+ * `p7` "15 miles a week": distance, running, weekly, 24 140 m, everyone in. This week (`w-current`,
+ * open) you are at 11.2 mi, Maya 16.5 (reached), Diego 4.0, Priya 0. Last week (`w-last`, settled)
+ * you fell short at 12.1 / 15, Maya and Diego made it, Priya froze: you forfeited $5.00, split two
+ * ways. `p8` "3 workouts" is one you have not joined (the Join row on the pact screen); Maya has
+ * reached it this week.
+ */
+export const PACT_DISTANCE = 'p7';
+export const PACT_WORKOUTS = 'p8';
+export const WEEK_INSTANCES = { current: 'w-current', last: 'w-last', workouts: 'w8-current' } as const;
+export const MILE_M = 1609.344;
+const mi = (n: number) => Math.round(n * MILE_M);
+
+pacts.push(
+  { id: PACT_DISTANCE, group_id: GROUP_ID, title: '15 miles a week', days_of_week: [], window_open_local: '00:00:00', deadline_local: '23:59:00', stake_cents: 500, tz: TZ, paused: false, created_by: USERS.you, created_at: ago(16 * DAY), kind: 'distance', period: 'weekly', goal_value: 24140, goal_unit: 'm', activity_types: ['running'], race_start: null, race_end: null, proof_required: false },
+  { id: PACT_WORKOUTS, group_id: GROUP_ID, title: '3 workouts', days_of_week: [], window_open_local: '00:00:00', deadline_local: '23:59:00', stake_cents: 300, tz: TZ, paused: false, created_by: USERS.maya, created_at: ago(10 * DAY), kind: 'workouts', period: 'weekly', goal_value: 3, goal_unit: 'count', activity_types: ['running', 'walking', 'cycling', 'swimming', 'hiking', 'rowing', 'strength', 'yoga', 'other'], race_start: null, race_end: null, proof_required: false },
+);
+
+/** Goal kinds join without a place (join_pact's place args are nullable). */
+const noPlace = (pactId: string, userId: string, joinedAgo: number): PactParticipantRow => ({
+  pact_id: pactId,
+  user_id: userId,
+  place_lat: null,
+  place_lng: null,
+  place_radius_m: null,
+  place_label: null,
+  joined_at: ago(joinedAgo),
+  left_at: null,
+});
+participants.push(
+  noPlace(PACT_DISTANCE, USERS.you, 16 * DAY),
+  noPlace(PACT_DISTANCE, USERS.maya, 16 * DAY),
+  noPlace(PACT_DISTANCE, USERS.diego, 15 * DAY),
+  noPlace(PACT_DISTANCE, USERS.priya, 15 * DAY),
+  noPlace(PACT_WORKOUTS, USERS.maya, 10 * DAY),
+  noPlace(PACT_WORKOUTS, USERS.diego, 9 * DAY),
+  noPlace(PACT_WORKOUTS, USERS.priya, 9 * DAY),
+);
+
+/** Weekly windows: Monday 00:00 to the next Monday 00:00 in the pact zone (spec). */
+const weekWindow = (monday: string) => ({ open: zonedLocalToUtc(monday, '00:00:00', TZ), deadline: zonedLocalToUtc(addDaysToLocalDate(monday, 7), '00:00:00', TZ) });
+const thisWeek = weekWindow(THIS_MONDAY);
+const lastWeek = weekWindow(LAST_MONDAY);
+
+export const weekInstances: PactInstanceRow[] = [
+  { id: WEEK_INSTANCES.current, pact_id: PACT_DISTANCE, local_date: THIS_MONDAY, window_open_at: iso(thisWeek.open), deadline_at: iso(thisWeek.deadline), status: 'open', carry_in_cents: null, closed_at: null, deadline_soon_sent_at: null },
+  { id: WEEK_INSTANCES.last, pact_id: PACT_DISTANCE, local_date: LAST_MONDAY, window_open_at: iso(lastWeek.open), deadline_at: iso(lastWeek.deadline), status: 'settled', carry_in_cents: 0, closed_at: iso(lastWeek.deadline + MIN), deadline_soon_sent_at: iso(lastWeek.deadline - 6 * HOUR) },
+  { id: WEEK_INSTANCES.workouts, pact_id: PACT_WORKOUTS, local_date: THIS_MONDAY, window_open_at: iso(thisWeek.open), deadline_at: iso(thisWeek.deadline), status: 'open', carry_in_cents: null, closed_at: null, deadline_soon_sent_at: null },
+];
+
+export const weekResults: ResultRow[] = [
+  { instance_id: WEEK_INSTANCES.last, user_id: USERS.you, status: 'failed', first_success_at: null, decided_at: iso(lastWeek.deadline + MIN) },
+  { instance_id: WEEK_INSTANCES.last, user_id: USERS.maya, status: 'success', first_success_at: iso(lastWeek.open + 5 * DAY + 8 * HOUR), decided_at: iso(lastWeek.deadline + MIN) },
+  { instance_id: WEEK_INSTANCES.last, user_id: USERS.diego, status: 'success', first_success_at: iso(lastWeek.open + 6 * DAY + 10 * HOUR), decided_at: iso(lastWeek.deadline + MIN) },
+  { instance_id: WEEK_INSTANCES.last, user_id: USERS.priya, status: 'frozen', first_success_at: null, decided_at: iso(lastWeek.deadline + MIN) },
+];
+// weekly pacts allow one freeze per calendar month: `iso_week` holds the month of the instance's Monday (CONTRACT "Kinds")
+freezes.push({ id: 'f3', pact_id: PACT_DISTANCE, user_id: USERS.priya, instance_id: WEEK_INSTANCES.last, declared_at: iso(lastWeek.open - DAY), iso_week: LAST_MONDAY.slice(0, 7) });
+
+/**
+ * This week's activities sit at fractions of the time elapsed since Monday, so the week reads the
+ * same whether the screenshots are taken on a Tuesday or a Sunday; last week's at fixed offsets.
+ */
+const elapsed = Math.max(2 * HOUR, DEMO_T0 - thisWeek.open - 30 * MIN);
+const thisWeekAt = (fraction: number) => thisWeek.open + Math.round(elapsed * fraction);
+
+type ActivitySpec = {
+  id: string;
+  user: string;
+  source: ActivityRow['source'];
+  type: string;
+  startMs: number;
+  durationS: number;
+  distanceM: number | null;
+  steps?: number | null;
+  device: string | null;
+  bundle: string | null;
+  manual?: boolean;
+  verdict?: ActivityRow['verdict'];
+  reason?: string | null;
+};
+
+const activity = (s: ActivitySpec): ActivityRow => ({
+  id: s.id,
+  user_id: s.user,
+  source: s.source,
+  external_id: `${s.source}-${s.id}`,
+  activity_type: s.type,
+  started_at: iso(s.startMs),
+  ended_at: iso(s.startMs + s.durationS * 1000),
+  distance_m: s.distanceM,
+  duration_s: s.durationS,
+  steps: s.steps ?? null,
+  device: s.device,
+  app_bundle: s.bundle,
+  is_manual: s.manual ?? false,
+  raw_hash: `h-${s.id}`,
+  submitted_at: iso(s.startMs + s.durationS * 1000 + 5 * MIN),
+  verdict: s.verdict ?? 'accepted',
+  reject_reason: s.reason ?? null,
+});
+
+const WATCH = { device: 'Apple Watch', bundle: 'com.apple.health' };
+const GARMIN = { device: 'Garmin Forerunner 255', bundle: 'com.strava.stravaride' };
+const PHONE = { device: 'iPhone', bundle: 'com.apple.health' };
+
+export const activities: ActivityRow[] = [
+  // this week: you 4.0 + 7.2 = 11.2 mi, plus a manual 5.0 mi entry the server rejected
+  activity({ id: 'a-you-1', user: USERS.you, source: 'healthkit', type: 'running', startMs: thisWeekAt(0.2), durationS: 36 * 60 + 10, distanceM: mi(4.0), ...WATCH }),
+  activity({ id: 'a-you-2', user: USERS.you, source: 'healthkit', type: 'running', startMs: thisWeekAt(0.65), durationS: 65 * 60 + 30, distanceM: mi(7.2), ...WATCH }),
+  activity({ id: 'a-you-3', user: USERS.you, source: 'healthkit', type: 'running', startMs: thisWeekAt(0.45), durationS: 45 * 60, distanceM: mi(5.0), ...PHONE, manual: true, verdict: 'rejected_manual', reason: 'entered by hand in Apple Health' }),
+  // Maya 6.2 + 5.1 + 5.2 = 16.5 mi from Strava on a Garmin
+  activity({ id: 'a-maya-1', user: USERS.maya, source: 'strava', type: 'running', startMs: thisWeekAt(0.1), durationS: 54 * 60 + 20, distanceM: mi(6.2), ...GARMIN }),
+  activity({ id: 'a-maya-2', user: USERS.maya, source: 'strava', type: 'running', startMs: thisWeekAt(0.5), durationS: 44 * 60 + 5, distanceM: mi(5.1), ...GARMIN }),
+  activity({ id: 'a-maya-3', user: USERS.maya, source: 'strava', type: 'running', startMs: thisWeekAt(0.85), durationS: 46 * 60 + 40, distanceM: mi(5.2), ...GARMIN }),
+  // Diego 4.0 mi from his phone
+  activity({ id: 'a-diego-1', user: USERS.diego, source: 'healthkit', type: 'running', startMs: thisWeekAt(0.3), durationS: 41 * 60, distanceM: mi(4.0), ...PHONE }),
+  // last week: you 12.1 (short), Maya 15.6, Diego 15.2
+  activity({ id: 'a-you-l1', user: USERS.you, source: 'healthkit', type: 'running', startMs: lastWeek.open + DAY + 7 * HOUR, durationS: 38 * 60, distanceM: mi(4.1), ...WATCH }),
+  activity({ id: 'a-you-l2', user: USERS.you, source: 'healthkit', type: 'running', startMs: lastWeek.open + 3 * DAY + 7 * HOUR, durationS: 50 * 60, distanceM: mi(5.0), ...WATCH }),
+  activity({ id: 'a-you-l3', user: USERS.you, source: 'healthkit', type: 'running', startMs: lastWeek.open + 5 * DAY + 9 * HOUR, durationS: 29 * 60, distanceM: mi(3.0), ...WATCH }),
+  activity({ id: 'a-maya-l1', user: USERS.maya, source: 'strava', type: 'running', startMs: lastWeek.open + DAY + 6 * HOUR, durationS: 70 * 60, distanceM: mi(8.1), ...GARMIN }),
+  activity({ id: 'a-maya-l2', user: USERS.maya, source: 'strava', type: 'running', startMs: lastWeek.open + 5 * DAY + 7 * HOUR, durationS: 66 * 60, distanceM: mi(7.5), ...GARMIN }),
+  activity({ id: 'a-diego-l1', user: USERS.diego, source: 'healthkit', type: 'running', startMs: lastWeek.open + 2 * DAY + 18 * HOUR, durationS: 62 * 60, distanceM: mi(6.0), ...PHONE }),
+  activity({ id: 'a-diego-l2', user: USERS.diego, source: 'healthkit', type: 'running', startMs: lastWeek.open + 6 * DAY + 9 * HOUR, durationS: 95 * 60, distanceM: mi(9.2), ...PHONE }),
+  // 3 workouts this week: Maya 3 (reached), Diego 1, Priya 2 (one too short to count)
+  activity({ id: 'a-w-maya-1', user: USERS.maya, source: 'healthkit', type: 'strength', startMs: thisWeekAt(0.15), durationS: 40 * 60, distanceM: null, ...WATCH }),
+  activity({ id: 'a-w-maya-2', user: USERS.maya, source: 'healthkit', type: 'yoga', startMs: thisWeekAt(0.55), durationS: 30 * 60, distanceM: null, ...WATCH }),
+  activity({ id: 'a-w-diego-1', user: USERS.diego, source: 'healthkit', type: 'cycling', startMs: thisWeekAt(0.4), durationS: 48 * 60, distanceM: mi(9.6), ...PHONE }),
+  activity({ id: 'a-w-priya-1', user: USERS.priya, source: 'healthkit', type: 'swimming', startMs: thisWeekAt(0.25), durationS: 35 * 60, distanceM: 1200, ...WATCH }),
+  activity({ id: 'a-w-priya-2', user: USERS.priya, source: 'healthkit', type: 'strength', startMs: thisWeekAt(0.7), durationS: 8 * 60, distanceM: null, ...WATCH }),
+];
 
 // ---------- ledger ----------
 
@@ -525,6 +664,10 @@ export interface DemoStore {
   balances: MemberBalanceRow[];
   settlements: SettlementRow[];
   obligations: ObligationRow[];
+  /** goal-kind evidence (`activities`); demo `submitActivities` appends here */
+  activities: ActivityRow[];
+  /** custom-kind marks (`mark_done`): instance id → user ids */
+  marks: Array<{ instance_id: string; user_id: string; marked_at: string; photo_path: string | null }>;
 }
 
 const clone = <T>(xs: T[]): T[] => xs.map((x) => ({ ...x }));
@@ -538,15 +681,17 @@ export function createStore(): DemoStore {
     participants: clone(participants),
     placeHistory: clone(placeHistory),
     placeEvents: clone(placeEvents),
-    instances: [...clone(todayInstances), ...clone(upcomingInstances), ...clone(historyInstances)],
+    instances: [...clone(todayInstances), ...clone(upcomingInstances), ...clone(historyInstances), ...clone(weekInstances)],
     checkins: [...clone(todayCheckins), ...clone(historyCheckins)],
-    results: [...clone(todayResults), ...clone(historyResults)],
+    results: [...clone(todayResults), ...clone(historyResults), ...clone(weekResults)],
     freezes: clone(freezes),
     reviews: clone(reviews),
     votes: clone(reviewVotes),
     balances: clone(balances),
     settlements: clone(settlements),
     obligations: clone(obligations),
+    activities: clone(activities),
+    marks: [],
   };
 }
 

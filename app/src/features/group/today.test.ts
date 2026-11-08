@@ -49,6 +49,14 @@ describe('nothingTodayBody', () => {
     paused: false,
     created_by: 'u',
     created_at: '2026-01-01T00:00:00Z',
+    kind: 'show_up',
+    period: 'daily',
+    goal_value: null,
+    goal_unit: null,
+    activity_types: null,
+    race_start: null,
+    race_end: null,
+  proof_required: false,
     ...over,
   });
   // Sat Nov 14 2026, 10:00 PST

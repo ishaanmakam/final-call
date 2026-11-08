@@ -1,10 +1,8 @@
 import { useQueryClient } from '@tanstack/react-query';
-import type { ImagePickerAsset } from 'expo-image-picker';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Image,
-  KeyboardAvoidingView,
   Linking,
   Platform,
   Pressable,
@@ -17,7 +15,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { DEMO } from '@/api/demo/settings';
 import { useFeed, type Feed, type FeedItem, type ReviewWithVotes } from '@/api/queries';
-import { castVote, openReview } from '@/api/rpc';
+import { castVote } from '@/api/rpc';
 import { REVIEW_PHOTO_BUCKET, supabase } from '@/api/supabase';
 import type { ReviewKind } from '@/api/types';
 import {
@@ -27,11 +25,9 @@ import {
   Icon,
   ListRow,
   Pill,
-  Sheet,
   Skeleton,
   StatusPill,
   Text,
-  TextField,
   reviewStatusTone,
   useToast,
 } from '@/components';
@@ -51,23 +47,20 @@ import {
 } from '@/features/feed/groupFeed';
 import { ObjectionSheet, PlaceActions, type ObjectionTarget } from '@/features/place/PlaceGate';
 import { placeEventFootnote, placeEventLine } from '@/features/place/placeCopy';
+import { ReviewSheet } from '@/features/feed/ReviewSheet';
 import {
-  REASON_ERROR,
-  REASON_MIN_LENGTH,
   canVoteOn,
   defaultFootnote,
   kindLabel,
   myVoteText,
   openerLine,
   reviewOutcomeText,
-  reviewSheetCopy,
   tally,
   tallyText,
   voteLabels,
 } from '@/features/feed/reviewCopy';
 import { useUserId } from '@/lib/auth';
 import { classifyRpcError, userMessage } from '@/lib/errors';
-import { pickEvidencePhoto, uploadEvidencePhoto } from '@/lib/reviewPhoto';
 import { reviewActions } from '@/lib/reviews';
 import { formatDateInZone, formatTimeInZone } from '@/lib/time';
 import { gutter, radius, space, useTheme } from '@/theme';
@@ -367,113 +360,6 @@ function PlaceEventBlock({
   );
 }
 
-// ---------- the appeal / challenge sheet ----------
-
-function ReviewSheet({
-  target,
-  open,
-  namer,
-  onClose,
-  onDone,
-}: {
-  target: ReviewTarget | null;
-  open: boolean;
-  namer: Namer;
-  onClose: () => void;
-  onDone: (kind: ReviewKind) => void;
-}) {
-  const [reason, setReason] = useState('');
-  const [photo, setPhoto] = useState<ImagePickerAsset | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (open) {
-      setReason('');
-      setPhoto(null);
-      setError(null);
-    }
-  }, [open, target]);
-
-  if (!target) return null;
-  const { item, kind } = target;
-  const copy = reviewSheetCopy(kind, formatDateInZone(item.instance.deadline_at, item.pact.tz), shortName(namer, item.result.user_id));
-
-  const submit = async () => {
-    if (busy) return;
-    if (reason.trim().length < REASON_MIN_LENGTH) {
-      setError(REASON_ERROR);
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const photoPath = photo ? await uploadEvidencePhoto(photo, item.pact.group_id, namer.userId) : null;
-      await openReview({
-        instanceId: item.result.instance_id,
-        subjectUserId: item.result.user_id,
-        kind,
-        reason: reason.trim(),
-        photoPath,
-      });
-      onDone(kind);
-    } catch (e) {
-      setError(userMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const sheet = (
-    <Sheet open={open} onClose={onClose} title={copy.title}>
-      <Text variant="subheadline" color="secondary">
-        {item.pact.title}
-      </Text>
-      <TextField
-        label={copy.fieldLabel}
-        value={reason}
-        onChangeText={(t) => {
-          setReason(t);
-          if (error) setError(null);
-        }}
-        placeholder={copy.placeholder}
-        multiline
-        maxLength={500}
-        error={error}
-        autoFocus={Platform.OS !== 'web'}
-      />
-      {kind === 'appeal' ? (
-        <Button
-          title={photo ? 'Photo attached · Change' : 'Add a photo'}
-          variant="secondary"
-          size="small"
-          leading={<Icon name="photo" size={18} color="label" />}
-          onPress={() =>
-            void pickEvidencePhoto()
-              .then((p) => p && setPhoto(p))
-              .catch((e: unknown) => setError(userMessage(e)))
-          }
-          accessibilityHint="Optional. Picks a photo from your library as evidence."
-        />
-      ) : null}
-      <Text variant="footnote" color="secondary">
-        {copy.rule}
-      </Text>
-      <Button title="Send" onPress={() => void submit()} loading={busy} />
-      <Button title="Cancel" variant="tertiary" onPress={onClose} disabled={busy} />
-    </Sheet>
-  );
-
-  if (Platform.OS === 'ios') {
-    return (
-      <KeyboardAvoidingView behavior="padding" style={StyleSheet.absoluteFill} pointerEvents="box-none">
-        {sheet}
-      </KeyboardAvoidingView>
-    );
-  }
-  return sheet;
-}
-
 // ---------- loading / error / empty ----------
 
 function FeedSkeleton() {
@@ -617,9 +503,21 @@ export default function FeedScreen() {
       <Stack.Screen options={{ title: 'Feed' }} />
       {content}
       <ReviewSheet
-        target={target}
+        target={
+          target
+            ? {
+                instanceId: target.item.result.instance_id,
+                subjectUserId: target.item.result.user_id,
+                subjectShortName: shortName(namer, target.item.result.user_id),
+                dayLabel: formatDateInZone(target.item.instance.deadline_at, target.item.pact.tz),
+                pactTitle: target.item.pact.title,
+                groupId: target.item.pact.group_id,
+                kind: target.kind,
+              }
+            : null
+        }
         open={sheetOpen}
-        namer={namer}
+        userId={userId}
         onClose={() => setSheetOpen(false)}
         onDone={(kind) => {
           setSheetOpen(false);

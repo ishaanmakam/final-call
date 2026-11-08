@@ -5,6 +5,8 @@ import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import type { InstanceDetail } from '@/api/queries';
 import type { CheckinRow } from '@/api/types';
 import { useToast } from '@/components';
+import { syncToast } from '@/features/health/health';
+import { useHealthForegroundSync } from '@/features/health/healthRuntime';
 import { useAuth } from '@/lib/auth';
 import type { QueueEvent } from '@/lib/checkinQueue';
 import { useCheckinQueueRunner } from '@/lib/checkinQueueRuntime';
@@ -29,6 +31,12 @@ function SignedIn({ userId }: { userId: string }) {
   useNotificationRouting();
   // Boarding / Final call reminders on the phone itself, re-planned as the group and pact queries settle
   useLocalNotificationSync(userId);
+  // goal kinds: Apple Health syncs on foreground while the person is in a distance / workouts / steps pact
+  useHealthForegroundSync(userId, (outcome) => {
+    if (outcome.written === 0 && outcome.manual === 0) return;
+    const t = syncToast(outcome);
+    toast.show({ message: t.message, tone: t.tone, icon: t.tone === 'unverified' ? 'exclamationmark.triangle' : 'heart' });
+  });
 
   const onQueueEvent = useCallback(
     (event: QueueEvent<CheckinRow>) => {

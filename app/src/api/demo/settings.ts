@@ -21,6 +21,8 @@
  *                   (the check-in screen's "Gate closed · tallying…" card); queries otherwise work
  *   ?outcome=win|forfeit|unverified|frozen|void   what today's closed instance (i-closed) did to you: results
  *                   and ledger nets are rewritten so the gate-close card shows that outcome
+ *   ?week=closed    the weekly pact's current week (w-current) closed a minute ago with results posted: you fell
+ *                   short at 11.2 / 15 mi and forfeited, Maya made it (the weekly gate-close money line)
  */
 import type { CheckinVerdict } from '../types';
 
@@ -33,6 +35,8 @@ export type DemoSettleVariant = 'mixed' | 'owe' | 'owed';
 export type DemoFix = 'ok' | 'none';
 /** the gate-close card's outcome on today's closed instance; 'fixture' keeps the fixture results */
 export type DemoOutcome = 'fixture' | 'win' | 'forfeit' | 'unverified' | 'frozen' | 'void';
+/** the weekly pact's current week: open as the fixtures have it, or closed a minute ago with results */
+export type DemoWeek = 'open' | 'closed';
 
 export interface DemoSettings {
   verdict: CheckinVerdict;
@@ -51,6 +55,8 @@ export interface DemoSettings {
   skew: number;
   /** what today's closed instance did to you (the gate-close card and the group home's compact line) */
   outcome: DemoOutcome;
+  /** the weekly distance pact's current week (challenge kinds, CB) */
+  week: DemoWeek;
 }
 
 export const DEFAULT_DEMO_SETTINGS: DemoSettings = {
@@ -66,6 +72,7 @@ export const DEFAULT_DEMO_SETTINGS: DemoSettings = {
   budget: 0,
   skew: 0,
   outcome: 'fixture',
+  week: 'open',
 };
 
 const VERDICTS: readonly CheckinVerdict[] = ['in_fence', 'out_of_fence', 'unjudgeable', 'rejected_simulated'];
@@ -74,6 +81,7 @@ const PERMS: readonly DemoPermission[] = ['granted', 'denied', 'blocked'];
 const SETTLES: readonly DemoSettleVariant[] = ['mixed', 'owe', 'owed'];
 const FIXES: readonly DemoFix[] = ['ok', 'none'];
 const OUTCOMES: readonly DemoOutcome[] = ['fixture', 'win', 'forfeit', 'unverified', 'frozen', 'void'];
+const WEEKS: readonly DemoWeek[] = ['open', 'closed'];
 
 type Params = Record<string, string | string[] | undefined>;
 
@@ -109,6 +117,7 @@ export function demoSettingsFromParams(params: Params): DemoSettings {
     budget: digit(params.budget, DEFAULT_DEMO_SETTINGS.budget),
     skew: seconds(params.skew, DEFAULT_DEMO_SETTINGS.skew),
     outcome: pick(params.outcome, OUTCOMES, DEFAULT_DEMO_SETTINGS.outcome),
+    week: pick(params.week, WEEKS, DEFAULT_DEMO_SETTINGS.week),
   };
 }
 
@@ -131,7 +140,8 @@ export function setDemoSettings(next: DemoSettings): void {
     next.precise === current.precise &&
     next.budget === current.budget &&
     next.skew === current.skew &&
-    next.outcome === current.outcome
+    next.outcome === current.outcome &&
+    next.week === current.week
   ) {
     return;
   }
@@ -145,4 +155,4 @@ export function subscribeDemoSettings(listener: (s: DemoSettings) => void): () =
 }
 
 /** Stable cache-key fragment so TanStack Query refetches when the demo scenario changes. */
-export const demoKey = (s: DemoSettings): string => `${s.empty ? 'empty' : 'full'}:${s.state}:${s.settle}:${s.outcome}`;
+export const demoKey = (s: DemoSettings): string => `${s.empty ? 'empty' : 'full'}:${s.state}:${s.settle}:${s.outcome}:${s.week}`;
